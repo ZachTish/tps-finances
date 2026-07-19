@@ -296,6 +296,17 @@ test("optional holdings outages preserve only current Item holdings and authorit
   assert.deepEqual(investmentSync.holdingsForSnapshot({ status: "ok", value: [] }, new Set(["current-a", "current-b"]), previous), { holdings: [], preserved: 0 });
 });
 
+function plaidTransaction(id, accountId = "account") {
+  return { transaction_id: id, account_id: accountId, date: "2026-01-01", amount: 1 };
+}
+
+function plaidSyncResponse({ added = [], modified = [], removed = [], nextCursor, hasMore }) {
+  return {
+    status: 200,
+    json: { added, modified, removed, next_cursor: nextCursor, has_more: hasMore },
+  };
+}
+
 test("transaction sync discards a mutated partial page and restarts from the durable cursor", async () => {
   const cursors = [];
   let call = 0;
@@ -303,16 +314,276 @@ test("transaction sync discards a mutated partial page and restarts from the dur
     const body = JSON.parse(options.body);
     cursors.push(body.cursor);
     call += 1;
-    if (call === 1) return { status: 200, json: { added: [{ transaction_id: "discarded", account_id: "account", date: "2026-01-01", amount: 1 }], modified: [], removed: [], next_cursor: "page-2", has_more: true } };
-    if (call === 2) return { status: 400, json: { error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", error_message: "Restart pagination." } };
-    return { status: 200, json: { added: [{ transaction_id: "kept", account_id: "account", date: "2026-01-02", amount: 2 }], modified: [], removed: [], next_cursor: "complete", has_more: false } };
+    if (call === 1 || call === 3) {
+      const attempt = call === 1 ? 1 : 2;
+      return plaidSyncResponse({
+        added: [plaidTransaction(`discarded-added-${attempt}`)],
+        modified: [plaidTransaction(`discarded-modified-${attempt}`)],
+        removed: [{ transaction_id: `discarded-removed-${attempt}` }],
+        nextCursor: `page-2-attempt-${attempt}`,
+        hasMore: true,
+      });
+    }
+    if (call === 2 || call === 4) {
+      return { status: 400, json: { error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", error_message: "Restart pagination." } };
+    }
+    return plaidSyncResponse({
+      added: [plaidTransaction("kept-added")],
+      modified: [plaidTransaction("kept-modified")],
+      removed: [{ transaction_id: "kept-removed" }],
+      nextCursor: "complete",
+      hasMore: false,
+    });
   };
   const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
-  const patch = await plaid.syncTransactions({ accessToken: "access-test", cursor: "" }, { providerIdentityMap: {} });
-  assert.deepEqual(cursors, [undefined, "page-2", undefined]);
+  const item = { accessToken: "access-test", cursor: "durable" };
+  const state = { providerIdentityMap: { "account:account": "finance-account-existing" } };
+  const patch = await plaid.syncTransactions(item, state);
+  assert.deepEqual(cursors, ["durable", "page-2-attempt-1", "durable", "page-2-attempt-2", "durable"]);
+  assert.equal(call, 5);
   assert.equal(patch.added.length, 1);
-  assert.equal(patch.added[0].providerTransactionId, "kept");
+  assert.equal(patch.added[0].providerTransactionId, "kept-added");
+  assert.equal(patch.modified[0].providerTransactionId, "kept-modified");
+  assert.deepEqual(patch.removedProviderIds, ["kept-removed"]);
   assert.equal(patch.nextCursor, "complete");
+  assert.equal(item.cursor, "durable");
+  assert.deepEqual(Object.keys(state.providerIdentityMap).sort(), [
+    "account:account",
+    "transaction:kept-added",
+    "transaction:kept-modified",
+  ]);
+});
+
+test("transaction sync bounds repeated mutation recovery and leaves failed attempts side-effect free", async () => {
+  const cursors = [];
+  let call = 0;
+  globalThis.__tpsPlaidRequestUrl = async (options) => {
+    const body = JSON.parse(options.body);
+    cursors.push(body.cursor);
+    call += 1;
+    const attempt = Math.ceil(call / 2);
+    if (call % 2 === 1) {
+      return plaidSyncResponse({
+        added: [plaidTransaction(`discarded-${attempt}`)],
+        nextCursor: `attempt-${attempt}`,
+        hasMore: true,
+      });
+    }
+    return {
+      status: 400,
+      json: {
+        error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
+        error_message: "Restart pagination.",
+        request_id: `mutation-${attempt}`,
+      },
+    };
+  };
+  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const item = { accessToken: "access-test", cursor: "durable" };
+  const state = { providerIdentityMap: { existing: "identity" } };
+  await assert.rejects(
+    () => plaid.syncTransactions(item, state),
+    (error) => error instanceof plaidClientModule.PlaidApiError
+      && error.code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+      && error.requestId === "mutation-3",
+  );
+  assert.equal(call, 6);
+  assert.deepEqual(cursors, ["durable", "attempt-1", "durable", "attempt-2", "durable", "attempt-3"]);
+  assert.equal(item.cursor, "durable");
+  assert.deepEqual(state.providerIdentityMap, { existing: "identity" });
+});
+
+test("transaction sync restarts only for the structured Plaid mutation code", async () => {
+  let call = 0;
+  globalThis.__tpsPlaidRequestUrl = async () => {
+    call += 1;
+    if (call === 1) {
+      return plaidSyncResponse({ added: [plaidTransaction("discarded")], nextCursor: "page-2", hasMore: true });
+    }
+    return {
+      status: 400,
+      json: {
+        error_code: "INSTITUTION_DOWN",
+        error_message: "Message mentions TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION but this is not that error.",
+      },
+    };
+  };
+  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const state = { providerIdentityMap: {} };
+  await assert.rejects(
+    () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state),
+    (error) => error instanceof plaidClientModule.PlaidApiError && error.code === "INSTITUTION_DOWN",
+  );
+  assert.equal(call, 2);
+  assert.deepEqual(state.providerIdentityMap, {});
+});
+
+test("transaction sync does not invent a recovery when mutation is returned on the first request", async () => {
+  let call = 0;
+  globalThis.__tpsPlaidRequestUrl = async () => {
+    call += 1;
+    return {
+      status: 400,
+      json: { error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", error_message: "No active page sequence." },
+    };
+  };
+  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  await assert.rejects(
+    () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, { providerIdentityMap: {} }),
+    (error) => error instanceof plaidClientModule.PlaidApiError
+      && error.code === "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
+  );
+  assert.equal(call, 1);
+});
+
+test("transaction sync rejects malformed and non-progressing cursor responses without retrying", async () => {
+  const cases = [
+    {
+      name: "missing has_more",
+      responses: [plaidSyncResponse({ nextCursor: "next" })],
+      expected: /invalid has_more/,
+    },
+    {
+      name: "non-boolean has_more",
+      responses: [plaidSyncResponse({ nextCursor: "next", hasMore: "false" })],
+      expected: /invalid has_more/,
+    },
+    {
+      name: "missing next_cursor",
+      responses: [plaidSyncResponse({ hasMore: false })],
+      expected: /invalid next_cursor/,
+    },
+    {
+      name: "empty terminal cursor on an active stream",
+      responses: [plaidSyncResponse({ nextCursor: "", hasMore: false })],
+      expected: /empty terminal next_cursor/,
+    },
+    {
+      name: "stationary continuing cursor",
+      responses: [plaidSyncResponse({ nextCursor: "durable", hasMore: true })],
+      expected: /non-progressing next_cursor/,
+    },
+    {
+      name: "continuing cursor cycle",
+      responses: [
+        plaidSyncResponse({ nextCursor: "page-2", hasMore: true }),
+        plaidSyncResponse({ nextCursor: "durable", hasMore: true }),
+      ],
+      expected: /non-progressing next_cursor/,
+    },
+    {
+      name: "terminal cursor rewind",
+      responses: [
+        plaidSyncResponse({ nextCursor: "page-2", hasMore: true }),
+        plaidSyncResponse({ nextCursor: "durable", hasMore: false }),
+      ],
+      expected: /rewinds pagination/,
+    },
+    {
+      name: "stationary terminal cursor with changes",
+      responses: [plaidSyncResponse({ added: [plaidTransaction("replayed")], nextCursor: "durable", hasMore: false })],
+      expected: /changes without advancing/,
+    },
+    {
+      name: "invalid change collection",
+      responses: [{ status: 200, json: { added: null, modified: [], removed: [], next_cursor: "next", has_more: false } }],
+      expected: /invalid added collection/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    let call = 0;
+    globalThis.__tpsPlaidRequestUrl = async () => scenario.responses[call++];
+    const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+    const state = { providerIdentityMap: {} };
+    await assert.rejects(
+      () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state),
+      scenario.expected,
+      scenario.name,
+    );
+    assert.equal(call, scenario.responses.length, scenario.name);
+    assert.deepEqual(state.providerIdentityMap, {}, scenario.name);
+  }
+});
+
+test("transaction sync accepts supported empty and stationary terminal no-op cursors", async () => {
+  for (const cursor of ["", "durable"]) {
+    let requestCursor = "not-called";
+    globalThis.__tpsPlaidRequestUrl = async (options) => {
+      requestCursor = JSON.parse(options.body).cursor;
+      return plaidSyncResponse({ nextCursor: cursor, hasMore: false });
+    };
+    const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+    const state = { providerIdentityMap: {} };
+    const patch = await plaid.syncTransactions({ accessToken: "access-test", cursor }, state);
+    assert.equal(requestCursor, cursor || undefined);
+    assert.deepEqual(patch, { added: [], modified: [], removedProviderIds: [], nextCursor: cursor });
+    assert.deepEqual(state.providerIdentityMap, {});
+  }
+});
+
+test("transaction sync commits identity mappings only after terminal normalization succeeds", async () => {
+  const malformed = plaidTransaction("malformed");
+  Object.defineProperty(malformed, "personal_finance_category", {
+    get() {
+      throw new Error("Malformed category payload.");
+    },
+  });
+  globalThis.__tpsPlaidRequestUrl = async () => plaidSyncResponse({
+    added: [malformed],
+    nextCursor: "complete",
+    hasMore: false,
+  });
+  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const state = { providerIdentityMap: { existing: "identity" } };
+  await assert.rejects(
+    () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state),
+    /Malformed category payload/,
+  );
+  assert.deepEqual(state.providerIdentityMap, { existing: "identity" });
+});
+
+test("transaction sync enforces the 100-page attempt limit without normalizing partial data", async () => {
+  let call = 0;
+  globalThis.__tpsPlaidRequestUrl = async () => {
+    call += 1;
+    return plaidSyncResponse({
+      added: [plaidTransaction(`partial-${call}`)],
+      nextCursor: `cursor-${call}`,
+      hasMore: true,
+    });
+  };
+  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const item = { accessToken: "access-test", cursor: "durable" };
+  const state = { providerIdentityMap: {} };
+  await assert.rejects(() => plaid.syncTransactions(item, state), /exceeded 100 pages/);
+  assert.equal(call, 100);
+  assert.equal(item.cursor, "durable");
+  assert.deepEqual(state.providerIdentityMap, {});
+});
+
+test("transaction sync accepts a terminal 100th page and retains all buffered pages", async () => {
+  let call = 0;
+  globalThis.__tpsPlaidRequestUrl = async () => {
+    call += 1;
+    const added = call === 1
+      ? [plaidTransaction("first-page")]
+      : call === 100
+        ? [plaidTransaction("terminal-page")]
+        : [];
+    return plaidSyncResponse({ added, nextCursor: `cursor-${call}`, hasMore: call < 100 });
+  };
+  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const state = { providerIdentityMap: { "account:account": "finance-account-existing" } };
+  const patch = await plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state);
+  assert.equal(call, 100);
+  assert.equal(patch.nextCursor, "cursor-100");
+  assert.deepEqual(patch.added.map((transaction) => transaction.providerTransactionId), ["first-page", "terminal-page"]);
+  assert.deepEqual(Object.keys(state.providerIdentityMap).sort(), [
+    "account:account",
+    "transaction:first-page",
+    "transaction:terminal-page",
+  ]);
 });
 
 test("disconnect and logging behavior protect financial integrations", () => {

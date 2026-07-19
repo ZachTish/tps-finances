@@ -19,6 +19,9 @@ const PLAID_HOSTS: Record<PlaidEnvironment, string> = {
   production: "https://production.plaid.com",
 };
 const PLAID_API_VERSION = "2020-09-14";
+const MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT = 100;
+const MAX_TRANSACTION_SYNC_MUTATION_RESTARTS = 2;
+const TRANSACTION_SYNC_MUTATION_CODE = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
 
 export class PlaidApiError extends Error {
   constructor(
@@ -74,41 +77,79 @@ export class PlaidClient {
 
   async syncTransactions(item: DeviceItemState, state: DeviceState): Promise<TransactionSyncPatch> {
     const originalCursor = item.cursor || "";
-    let cursor = originalCursor;
-    const added: FinanceTransaction[] = [];
-    const modified: FinanceTransaction[] = [];
-    const removedProviderIds: string[] = [];
+    for (let attempt = 0; attempt <= MAX_TRANSACTION_SYNC_MUTATION_RESTARTS; attempt += 1) {
+      let cursor = originalCursor;
+      let acceptedPages = 0;
+      let restartRequested = false;
+      const seenCursors = new Set([cursor]);
+      const rawAdded: any[] = [];
+      const rawModified: any[] = [];
+      const rawRemoved: any[] = [];
 
-    for (let page = 0; page < 100; page += 1) {
-      let response: any;
-      try {
-        response = await this.post("/transactions/sync", {
-          access_token: item.accessToken,
-          cursor: cursor || undefined,
-          count: 500,
-        });
-      } catch (error) {
-        if (String(error).includes("TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION") && cursor !== originalCursor) {
-          cursor = originalCursor;
-          added.length = 0;
-          modified.length = 0;
-          removedProviderIds.length = 0;
-          page = -1;
-          continue;
+      for (let page = 0; page < MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT; page += 1) {
+        let response: any;
+        try {
+          response = await this.post("/transactions/sync", {
+            access_token: item.accessToken,
+            cursor: cursor || undefined,
+            count: 500,
+          });
+        } catch (error) {
+          const canRestart = error instanceof PlaidApiError
+            && error.code === TRANSACTION_SYNC_MUTATION_CODE
+            && acceptedPages > 0
+            && attempt < MAX_TRANSACTION_SYNC_MUTATION_RESTARTS;
+          if (!canRestart) throw error;
+          logger.warn("Plaid", "transactions-pagination-restart", {
+            restart: attempt + 1,
+            maxRestarts: MAX_TRANSACTION_SYNC_MUTATION_RESTARTS,
+            code: error.code,
+            requestId: error.requestId,
+          });
+          restartRequested = true;
+          break;
         }
-        throw error;
+
+        if (typeof response.has_more !== "boolean") {
+          throw new Error("Plaid transaction sync returned an invalid has_more value.");
+        }
+        if (typeof response.next_cursor !== "string") {
+          throw new Error("Plaid transaction sync returned an invalid next_cursor value.");
+        }
+        const nextCursor = response.next_cursor;
+        const pageAdded = transactionSyncRows(response.added, "added");
+        const pageModified = transactionSyncRows(response.modified, "modified");
+        const pageRemoved = transactionSyncRows(response.removed, "removed");
+        const pageHasChanges = pageAdded.length > 0 || pageModified.length > 0 || pageRemoved.length > 0;
+
+        if (response.has_more) {
+          if (!nextCursor || seenCursors.has(nextCursor)) {
+            throw new Error("Plaid transaction sync returned a non-progressing next_cursor while more pages remain.");
+          }
+        } else if (!nextCursor && (cursor.length > 0 || pageHasChanges)) {
+          throw new Error("Plaid transaction sync returned an empty terminal next_cursor for an active update stream.");
+        } else if (nextCursor !== cursor && seenCursors.has(nextCursor)) {
+          throw new Error("Plaid transaction sync returned a terminal next_cursor that rewinds pagination.");
+        } else if (nextCursor === cursor && pageHasChanges) {
+          throw new Error("Plaid transaction sync returned changes without advancing its terminal next_cursor.");
+        }
+
+        rawAdded.push(...pageAdded);
+        rawModified.push(...pageModified);
+        rawRemoved.push(...pageRemoved);
+        acceptedPages += 1;
+
+        if (!response.has_more) {
+          return normalizeTransactionSyncPatch(rawAdded, rawModified, rawRemoved, nextCursor, state);
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
       }
 
-      for (const transaction of asArray(response.added)) added.push(normalizeTransaction(transaction, state));
-      for (const transaction of asArray(response.modified)) modified.push(normalizeTransaction(transaction, state));
-      for (const removed of asArray(response.removed)) {
-        const id = String(removed.transaction_id || "");
-        if (id) removedProviderIds.push(id);
-      }
-      cursor = String(response.next_cursor || cursor);
-      if (!response.has_more) return { added, modified, removedProviderIds, nextCursor: cursor };
+      if (restartRequested) continue;
+      throw new Error(`Plaid transaction sync exceeded ${MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT} pages in one pagination attempt.`);
     }
-    throw new Error("Plaid transaction sync exceeded 100 pages.");
+    throw new Error("Plaid transaction sync exhausted its mutation restart budget.");
   }
 
   async getHoldings(item: DeviceItemState, state: DeviceState): Promise<OptionalPlaidResult<FinanceHolding[]>> {
@@ -201,6 +242,46 @@ function normalizeTransaction(transaction: any, state: DeviceState): FinanceTran
     subtype: ordinaryTransactionSubtype(transaction),
     kind: "transaction",
   };
+}
+
+function transactionSyncRows(value: unknown, field: "added" | "modified" | "removed"): any[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Plaid transaction sync returned an invalid ${field} collection.`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const row = value[index];
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} row at index ${index}.`);
+    }
+    if (typeof row.transaction_id !== "string" || row.transaction_id.length === 0) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} transaction_id at index ${index}.`);
+    }
+    if (field !== "removed" && (typeof row.account_id !== "string" || row.account_id.length === 0)) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} account_id at index ${index}.`);
+    }
+  }
+  return value;
+}
+
+function normalizeTransactionSyncPatch(
+  rawAdded: any[],
+  rawModified: any[],
+  rawRemoved: any[],
+  nextCursor: string,
+  state: DeviceState,
+): TransactionSyncPatch {
+  const stagedState: DeviceState = {
+    ...state,
+    providerIdentityMap: { ...state.providerIdentityMap },
+  };
+  const patch = {
+    added: rawAdded.map((transaction) => normalizeTransaction(transaction, stagedState)),
+    modified: rawModified.map((transaction) => normalizeTransaction(transaction, stagedState)),
+    removedProviderIds: rawRemoved.map((removed) => removed.transaction_id as string),
+    nextCursor,
+  };
+  Object.assign(state.providerIdentityMap, stagedState.providerIdentityMap);
+  return patch;
 }
 
 function normalizeInvestmentTransaction(transaction: any, state: DeviceState): FinanceTransaction {

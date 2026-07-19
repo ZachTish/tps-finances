@@ -10,9 +10,10 @@ This plugin is distributed from the private GitHub repository `ZachTish/tps-fina
 
 ## Development and deployment
 
-Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtisherman/TishOS Plugin Development/TPS-Finances (Dev)`, outside both vaults. `npm run build` deploys byte-changed runtime artifacts by default only to `/Users/zachtisherman/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Plugin Test Vault/.obsidian/plugins/tps-finances`; `npm test` is therefore isolated even though it ends with a production-mode build. Promotion to `/Users/zachtisherman/TishOS v0.1/.obsidian/plugins/tps-finances` is an explicit guarded post-validation action. Neither target overwrites `data.json` or other runtime-owned state.
+Canonical source, tests, Git metadata, and dependency links live in this test vault under `Plugin Development`. Stable work uses `TPS-Finances (Dev)` on `main`; optimization work uses the separate `TPS-Finances (Optimize)` worktree on `optimization`. Stable builds may deploy byte-changed runtime artifacts only to this test vault. Optimization builds are build-only and report `[runtime-deploy] target=none lane=optimization`, so they cannot replace the installed test or production plugin. Promotion to `/Users/zachtisherman/TishOS v0.1/.obsidian/plugins/tps-finances` remains an explicit guarded post-validation action, and deployment never overwrites `data.json` or other runtime-owned state.
 
 - 2026-07-16 isolation validation: the contract test was made source-owned instead of reading the production TPS contract, all 15 tests passed, and the required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Finances in the registered test vault and created only empty local QA storage. No live promotion occurred, and production runtime checksums remained unchanged.
+- 2026-07-19 optimization validation: all nine transaction-sync regressions and all 23 declared tests passed. The required separate `npm run build` reported `[runtime-deploy] target=none lane=optimization`; no vault runtime was deployed, so reload and UI verification were not applicable. No version, tag, release, or production promotion was created.
 
 ## Mobile modal contract
 
@@ -74,6 +75,8 @@ TPS Finances turns the vault into a readable, contract-native account, transacti
 ## Plaid products and limitations
 
 - Regular bank and credit activity uses cursor-based `/transactions/sync`, including added, modified, and removed records.
+- Transactions pagination requires explicit boolean `has_more`, string `next_cursor`, and contract-shaped change collections. An empty cursor is accepted only for a terminal initial-sync no-op; active streams reject stationary or cyclic continuation cursors, terminal rewinds, and changes that do not advance their checkpoint. Raw pages and identity mappings remain staged until a complete terminal patch has normalized successfully.
+- Plaid's documented mutation-during-pagination error restarts from the original durable cursor only after an accepted partial attempt. Recovery is limited to two restarts, each attempt is limited to 100 pages at Plaid's maximum 500-record page size, and every other provider error fails without fallback or automatic retry.
 - Holdings use `/investments/holdings/get`. A failed or pending optional response is a non-observation, not an authoritative empty response; the newest snapshot retains only last-known holdings belonging to that Item's currently returned accounts. A successful empty response clears those holdings.
 - Investment activity uses paginated `/investments/transactions/get` with the initial history range and a rolling 14-day overlap after a successful history sync. Its separate device-local watermark advances only after the complete response has been written, so `PRODUCT_NOT_READY` and transport/provider outages retry the full initial range.
 - Institutions without the Investments product continue syncing ordinary accounts and transactions.
@@ -91,7 +94,7 @@ TPS Finances turns the vault into a readable, contract-native account, transacti
 
 ## Validation
 
-- `npm test` runs contract/storage regressions, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/pagination/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
+- `npm test` runs contract/storage regressions, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/strict cursor-progress/bounded-restart/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
 - Validate Sandbox first, then separately configure the production SecretStorage entry before switching environments.
 - After every source change, rebuild and reload Obsidian before testing the dashboard or Plaid Link.
 - Populated dashboard validation covered mixed checking, credit, and brokerage accounts; transfers and investment buys were excluded from spending; income, net worth, source-line navigation, TPS Home summary, and responsive layouts were checked before the temporary data was removed.
