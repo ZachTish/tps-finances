@@ -1,5 +1,13 @@
 # TPS Finances
 
+## Install with BRAT
+
+This plugin is distributed from the private GitHub repository `ZachTish/tps-finances`. To let BRAT read its releases:
+
+1. Create a fine-grained GitHub personal access token scoped only to `ZachTish/tps-finances`, with **Repository permissions → Contents: Read-only**.
+2. In BRAT, add `ZachTish/tps-finances` as a beta plugin, provide that token for private-repository access, and select **Latest** so BRAT tracks the newest published release.
+3. Store the token only in BRAT's device-local configuration. Never put it in this repository, a vault note, plugin settings, or any committed file.
+
 ## Development and deployment
 
 Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtisherman/TishOS Plugin Development/TPS-Finances (Dev)`, outside both vaults. `npm run build` deploys byte-changed runtime artifacts by default only to `/Users/zachtisherman/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Plugin Test Vault/.obsidian/plugins/tps-finances`; `npm test` is therefore isolated even though it ends with a production-mode build. Promotion to `/Users/zachtisherman/TishOS v0.1/.obsidian/plugins/tps-finances` is an explicit guarded post-validation action. Neither target overwrites `data.json` or other runtime-owned state.
