@@ -27,6 +27,8 @@ const deviceStateBuild = await build({ entryPoints: [fileURLToPath(new URL("../s
 const deviceState = await import(`data:text/javascript;base64,${Buffer.from(deviceStateBuild.outputFiles[0].text).toString("base64")}`);
 const transactionContentBuild = await build({ entryPoints: [fileURLToPath(new URL("../src/transaction-content.ts", import.meta.url))], bundle: true, write: false, format: "esm", platform: "node" });
 const transactionContent = await import(`data:text/javascript;base64,${Buffer.from(transactionContentBuild.outputFiles[0].text).toString("base64")}`);
+const settingsPersistenceBuild = await build({ entryPoints: [fileURLToPath(new URL("../src/settings-persistence.ts", import.meta.url))], bundle: true, write: false, format: "esm", platform: "node" });
+const settingsPersistence = await import(`data:text/javascript;base64,${Buffer.from(settingsPersistenceBuild.outputFiles[0].text).toString("base64")}`);
 const plaidClientBuild = await build({
   entryPoints: [fileURLToPath(new URL("../src/plaid-client.ts", import.meta.url))],
   bundle: true,
@@ -141,6 +143,222 @@ test("finance modal saves are single-flight and dashboard month keys are local",
   assert.match(dashboard, /now\.getMonth\(\) \+ 1/);
   assert.doesNotMatch(dashboard, /toISOString\(\)\.slice\(0, 7\)/);
 });
+
+test("settings writes merge local intent into latest data and preserve external and future fields", async () => {
+  assert.match(main, /new CoalescedSnapshotWriter/);
+  assert.match(main, /settingsWriter\.save\(this\.settings\)/);
+  assert.doesNotMatch(main, /await this\.saveData\(this\.settings\)/);
+  const baseline = normalizeWriterSettings({ financeFolder: "Finances", oauthRedirectUri: "https://old.example" });
+  const state = { current: { ...baseline } };
+  let disk = {
+    financeFolder: "Finances",
+    oauthRedirectUri: "https://external.example",
+    settingsVersion: 99,
+    futureProviderOption: { enabled: true },
+  };
+  const writes = [];
+  const writer = createSettingsWriter({ baseline, state, read: () => disk, write: (value) => {
+    writes.push(structuredClone(value));
+    disk = structuredClone(value);
+  } });
+
+  state.current.financeFolder = "Money";
+  await writer.save(state.current);
+
+  assert.deepEqual(disk, {
+    financeFolder: "Money",
+    oauthRedirectUri: "https://external.example",
+    settingsVersion: 99,
+    futureProviderOption: { enabled: true },
+  });
+  assert.equal(writes.length, 1);
+  assert.equal(state.current.oauthRedirectUri, "https://external.example", "the live baseline should adopt unrelated external changes");
+  assert.equal(state.current.financeFolder, "Money");
+});
+
+test("settings writes retain an old-new-old revert while an older write is in flight", async () => {
+  const baseline = normalizeWriterSettings({ financeFolder: "Finances", oauthRedirectUri: "https://old.example" });
+  const state = { current: { ...baseline } };
+  let disk = { ...baseline, futureSetting: "preserved" };
+  const writes = [];
+  const writer = createSettingsWriter({ baseline, state, read: () => disk, write: async (value) => {
+    const gate = deferred();
+    writes.push({ value: structuredClone(value), gate });
+    await gate.promise;
+    disk = structuredClone(value);
+  } });
+
+  state.current.oauthRedirectUri = "https://new.example";
+  const first = writer.save(state.current);
+  await waitFor(() => writes.length === 1);
+  state.current.oauthRedirectUri = "https://old.example";
+  const reverted = writer.save(state.current);
+  state.current.financeFolder = "Money";
+  const newest = writer.save(state.current);
+  assert.strictEqual(reverted, first);
+  assert.strictEqual(newest, first);
+
+  writes[0].gate.resolve();
+  await waitFor(() => writes.length === 2);
+  assert.equal(writes[1].value.oauthRedirectUri, "https://old.example");
+  assert.equal(writes[1].value.financeFolder, "Money");
+  writes[1].gate.resolve();
+  await Promise.all([first, reverted, newest]);
+  assert.equal(disk.oauthRedirectUri, "https://old.example");
+  assert.equal(disk.financeFolder, "Money");
+  assert.equal(disk.futureSetting, "preserved");
+});
+
+test("external reconciliation is rebased into pending snapshots without becoming local intent", async () => {
+  const baseline = normalizeWriterSettings({ financeFolder: "Finances", oauthRedirectUri: "https://old.example" });
+  const state = { current: { ...baseline } };
+  let disk = { ...baseline, oauthRedirectUri: "https://external-one.example", futureSetting: "preserved" };
+  const writes = [];
+  let reads = 0;
+  let newest;
+  let writer;
+  writer = new settingsPersistence.CoalescedSnapshotWriter({
+    initialSnapshot: baseline,
+    readLatest: async () => {
+      reads += 1;
+      if (reads === 2) {
+        disk.oauthRedirectUri = "https://external-two.example";
+        state.current.financeFolder = "Plans";
+        newest = writer.save(state.current);
+      }
+      return structuredClone(disk);
+    },
+    writeMerged: async (value) => {
+      const gate = deferred();
+      writes.push({ value: structuredClone(value), gate });
+      await gate.promise;
+      disk = structuredClone(value);
+    },
+    normalize: normalizeWriterSettings,
+    reconcile: (requested, persisted) => {
+      state.current = settingsPersistence.reconcilePersistedSnapshot(state.current, requested, persisted);
+    },
+  });
+
+  state.current.financeFolder = "Money";
+  const first = writer.save(state.current);
+  await waitFor(() => writes.length === 1);
+  state.current.financeFolder = "Budget";
+  const pending = writer.save(state.current);
+  writes[0].gate.resolve();
+  await waitFor(() => writes.length === 2);
+  writes[1].gate.resolve();
+  await waitFor(() => writes.length === 3);
+  assert.strictEqual(pending, first);
+  assert.strictEqual(newest, first);
+  assert.equal(writes[2].value.oauthRedirectUri, "https://external-two.example");
+  writes[2].gate.resolve();
+  await Promise.all([first, pending, newest]);
+  assert.equal(disk.oauthRedirectUri, "https://external-two.example");
+  assert.equal(disk.financeFolder, "Plans");
+  assert.equal(disk.futureSetting, "preserved");
+});
+
+test("a pending newest settings snapshot supersedes a failed in-flight write", async () => {
+  const baseline = normalizeWriterSettings({ financeFolder: "Finances", oauthRedirectUri: "https://old.example" });
+  const state = { current: { ...baseline } };
+  let disk = { ...baseline, unknown: true };
+  const firstWrite = deferred();
+  let attempts = 0;
+  const writer = createSettingsWriter({ baseline, state, read: () => disk, write: async (value) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await firstWrite.promise;
+      throw new Error("simulated stale write failure");
+    }
+    disk = structuredClone(value);
+  } });
+
+  state.current.oauthRedirectUri = "https://failed.example";
+  const first = writer.save(state.current);
+  await waitFor(() => attempts === 1);
+  state.current.oauthRedirectUri = "https://newest.example";
+  const newest = writer.save(state.current);
+  assert.strictEqual(newest, first);
+  firstWrite.resolve();
+
+  await Promise.all([first, newest]);
+  assert.equal(attempts, 2);
+  assert.equal(disk.oauthRedirectUri, "https://newest.example");
+  assert.equal(disk.unknown, true);
+});
+
+test("completion-window callers remain pending until their newer settings are durable", async () => {
+  const baseline = normalizeWriterSettings({ financeFolder: "Finances", oauthRedirectUri: "https://old.example" });
+  const state = { current: { ...baseline } };
+  let disk = { ...baseline };
+  const writes = [];
+  const writer = createSettingsWriter({ baseline, state, read: () => disk, write: async (value) => {
+    const gate = deferred();
+    writes.push({ value: structuredClone(value), gate });
+    await gate.promise;
+    disk = structuredClone(value);
+  } });
+
+  state.current.oauthRedirectUri = "https://first.example";
+  const first = writer.save(state.current);
+  await waitFor(() => writes.length === 1);
+  let late;
+  writes[0].gate.promise.then(() => Promise.resolve()).then(() => {
+    state.current.oauthRedirectUri = "https://late.example";
+    late = writer.save(state.current);
+  });
+  writes[0].gate.resolve();
+  await waitFor(() => writes.length === 2);
+  assert.strictEqual(late, first);
+
+  let cycleResolved = false;
+  void first.then(() => { cycleResolved = true; });
+  await Promise.resolve();
+  assert.equal(cycleResolved, false);
+  writes[1].gate.resolve();
+  await Promise.all([first, late]);
+  assert.equal(cycleResolved, true);
+  assert.equal(disk.oauthRedirectUri, "https://late.example");
+});
+
+function createSettingsWriter({ baseline, state, read, write }) {
+  return new settingsPersistence.CoalescedSnapshotWriter({
+    initialSnapshot: baseline,
+    readLatest: async () => structuredClone(read()),
+    writeMerged: async (value) => write(value),
+    normalize: normalizeWriterSettings,
+    reconcile: (requested, persisted) => {
+      state.current = settingsPersistence.reconcilePersistedSnapshot(state.current, requested, persisted);
+    },
+  });
+}
+
+function normalizeWriterSettings(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    financeFolder: String(source.financeFolder || "Finances"),
+    oauthRedirectUri: String(source.oauthRedirectUri || ""),
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("Timed out waiting for deferred settings write.");
+}
 
 test("Plaid sync handles cursor patches and investment products", () => {
   assert.match(client, /"\/transactions\/sync"/);

@@ -1,12 +1,17 @@
 # TPS Finances
 
+## 0.4.3
+
+- Settings writes are serialized, reload the newest plugin data, and merge only fields changed in this running instance. Synchronized changes and unknown newer-release fields are preserved.
+- Overlapping edits retain quick reverts, wait for durable state, and allow a queued newer snapshot to supersede a failed in-flight write.
+- This backward-compatible patch keeps the minimum supported Obsidian version at 1.12.0 and requires no manual migration.
+
 ## Install with BRAT
 
-This plugin is distributed from the private GitHub repository `ZachTish/tps-finances`. To let BRAT read its releases:
+This GitHub repository is public. BRAT 2.2.0 or newer can install `ZachTish/tps-finances` without a private-repository token:
 
-1. Create a fine-grained GitHub personal access token scoped only to `ZachTish/tps-finances`, with **Repository permissions → Contents: Read-only**.
-2. In BRAT, add `ZachTish/tps-finances` as a beta plugin, provide that token for private-repository access, and select **Latest** so BRAT tracks the newest published release.
-3. Store the token only in BRAT's device-local configuration. Never put it in this repository, a vault note, plugin settings, or any committed file.
+1. Add `ZachTish/tps-finances` as a beta plugin.
+2. Select **Latest** to follow numbered releases, or freeze a numeric version for controlled rollout.
 
 ## Development and deployment
 
@@ -46,6 +51,7 @@ TPS Finances turns the vault into a readable, contract-native account, transacti
 - The client ID and environment secret must be two separate populated SecretStorage entries. Values are trimmed when read and whitespace-only entries remain missing. Settings show whether credentials are missing, conflicting, ready to connect, or paired with a connected institution; TPS Finances never changes a current settings selection automatically.
 - Each connected Item freezes the client-ID and environment-secret references used to create it. On first load after upgrading, a legacy Item without a client-ID reference captures the currently configured reference and persists that migration in device-local SecretStorage before later settings changes can retarget it.
 - Plugin `data.json` stores only non-secret preferences such as folder, environment, selected SecretStorage names, history range, and logging state.
+- Settings writes use immutable snapshots in one serialized, coalescing drain. Rapid text edits cannot finish out of order, and every overlapping settings handler waits until the newest complete snapshot is durable.
 - Plaid Link opens in the system browser from a temporary `127.0.0.1` server. The server exists only for the Link result and shuts down after success, exit, or timeout.
 - OAuth institutions can use desktop popup OAuth without a redirect URI in many cases. An optional HTTPS redirect URI can be configured for institutions that require it; it must also be registered in the Plaid Dashboard.
 - Each device must be connected independently. Separate connections can create separate Plaid Items and may incur separate subscription charges. The current implementation is intended to have one Mac act as the synchronized writer while other devices consume the daily-note logs and snapshots.

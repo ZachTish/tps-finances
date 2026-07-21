@@ -11,6 +11,7 @@ import { PlaidClient } from "./plaid-client";
 import { inspectPlaidCredentials, readPlaidCredentials } from "./plaid-credentials";
 import { openLocalPlaidLink } from "./plaid-link";
 import { TPSFinancesSettingTab } from "./settings";
+import { CoalescedSnapshotWriter, reconcilePersistedSnapshot } from "./settings-persistence";
 import {
   DEFAULT_SETTINGS,
   DeviceItemState,
@@ -38,9 +39,19 @@ export default class TPSFinancesPlugin extends Plugin {
   private syncing = false;
   private unregisterGcmAction: (() => void) | null = null;
   private transactionRouteOverrides = new Map<string, TransactionLogTarget>();
+  private settingsWriter: CoalescedSnapshotWriter<TPSFinancesSettings> | null = null;
 
   async onload(): Promise<void> {
     this.settings = normalizeSettings(await this.loadData());
+    this.settingsWriter = new CoalescedSnapshotWriter({
+      initialSnapshot: this.settings,
+      readLatest: () => this.loadData(),
+      writeMerged: (value) => this.saveData(value),
+      normalize: normalizeSettings,
+      reconcile: (requested, persisted) => {
+        this.settings = reconcilePersistedSnapshot(this.settings, requested, persisted);
+      },
+    });
     logger.setLoggingEnabled(this.settings.enableLogging);
     this.deviceState = this.loadDeviceState();
     this.registerView(TPS_FINANCES_VIEW_TYPE, (leaf) => new TPSFinancesView(leaf, this));
@@ -81,7 +92,8 @@ export default class TPSFinancesPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     this.settings = normalizeSettings(this.settings);
     logger.setLoggingEnabled(this.settings.enableLogging);
-    await this.saveData(this.settings);
+    if (!this.settingsWriter) throw new Error("TPS Finances settings persistence is not ready.");
+    await this.settingsWriter.save(this.settings);
   }
 
   async setDefaultTransactionLogTarget(target: TransactionLogTarget): Promise<void> {
