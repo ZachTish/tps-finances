@@ -132,12 +132,12 @@ export default class TPSFinancesPlugin extends Plugin {
     );
   }
 
-  runConnectPlaid(source: "command" | "settings"): void {
-    this.runUserAction("Connect", source, () => this.connectPlaid());
+  runConnectPlaid(source: "command" | "settings"): Promise<void> {
+    return this.runUserAction("Connect", source, () => this.connectPlaid());
   }
 
-  runSync(reason: string): void {
-    this.runUserAction("Sync", reason, () => this.syncAll(reason));
+  runSync(reason: string): Promise<void> {
+    return this.runUserAction("Sync", reason, () => this.syncAll(reason));
   }
 
   async openDashboard(): Promise<void> {
@@ -461,11 +461,13 @@ export default class TPSFinancesPlugin extends Plugin {
     return readPlaidCredentials(clientIdSecretName, secretName, (name) => this.app.secretStorage.getSecret(name));
   }
 
-  private runUserAction(scope: string, trigger: string, action: () => Promise<void>): void {
-    void action().catch((error) => {
+  private async runUserAction(scope: string, trigger: string, action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
       new Notice(`TPS Finances ${scope.toLocaleLowerCase()} failed: ${userFacingError(error)}`, 12000);
       logger.failure(scope, "user-action-failed", error, { trigger });
-    });
+    }
   }
 
   private createStore(): FinanceStore {

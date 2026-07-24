@@ -1,10 +1,10 @@
 # TPS Finances
 
-## 0.4.3
+## 0.5.0
 
-- Settings writes are serialized, reload the newest plugin data, and merge only fields changed in this running instance. Synchronized changes and unknown newer-release fields are preserved.
-- Overlapping edits retain quick reverts, wait for durable state, and allow a queued newer snapshot to supersede a failed in-flight write.
-- This backward-compatible patch keeps the minimum supported Obsidian version at 1.12.0 and requires no manual migration.
+- Settings now use four clean, task-oriented destinations for Plaid setup, data routing, connections, and rules/budgets, with only the selected page rendered.
+- Direct actions make sync, the dashboard, categorization-rule creation, and monthly-budget creation easy to find without duplicating their persisted models.
+- Existing settings keys, device-local secrets, connection state, and finance records are unchanged. This backward-compatible minor release keeps the minimum supported Obsidian version at 1.12.0 and requires no migration.
 
 ## Install with BRAT
 
@@ -18,6 +18,7 @@ This GitHub repository is public. BRAT 2.2.0 or newer can install `ZachTish/tps-
 Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtisherman/TishOS Plugin Development/TPS-Finances (Dev)`, outside both vaults. `npm run build` deploys byte-changed runtime artifacts by default only to `/Users/zachtisherman/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Plugin Test Vault/.obsidian/plugins/tps-finances`; `npm test` is therefore isolated even though it ends with a production-mode build. Promotion to `/Users/zachtisherman/TishOS v0.1/.obsidian/plugins/tps-finances` is an explicit guarded post-validation action. Neither target overwrites `data.json` or other runtime-owned state.
 
 - 2026-07-16 isolation validation: the contract test was made source-owned instead of reading the production TPS contract, all 15 tests passed, and the required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Finances in the registered test vault and created only empty local QA storage. No live promotion occurred, and production runtime checksums remained unchanged.
+- 2026-07-24 settings-release validation: all 21 declared tests passed, including the routed-settings, post-connect/post-sync refresh, persistence, and finance-contract regressions. The required final standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; all four settings destinations and the shared nine-plugin `Choose what to configure` pattern were inspected in the registered test vault without connecting Plaid, syncing, changing settings, or invoking a mutating shortcut. Runtime-owned state remained absent and production was not accessed or promoted.
 
 ## Mobile modal contract
 
@@ -77,6 +78,17 @@ TPS Finances turns the vault into a readable, contract-native account, transacti
 - Connect and sync actions surface credential, provider, and callback failures in an Obsidian notice instead of leaving a rejected background promise in the console.
 - Rule, budget, and classification saves are single-flight: the action disables while saving and re-enables with a visible error if persistence fails.
 
+## Settings layout
+
+Settings open on a four-destination `Choose what to configure` hub:
+
+- **Plaid setup** (default): environment, device-local client ID and environment secrets, setup status, and optional OAuth redirect.
+- **Data & routing**: finance folder, initial transaction history, and the default daily-note/account-note owner.
+- **Connections**: connect, sync, connected institutions, confirmation-gated disconnect, and debug logging.
+- **Rules & budgets**: direct shortcuts to open Finances, add a categorization rule, or add a monthly budget.
+
+Only the selected destination is rendered. The selection is transient and never becomes a persisted preference, so this redesign does not migrate or replace any finance setting. Secret edits retain the active destination and scroll position; connect, sync, and disconnect refresh the connection page and return focus to its heading. The hub uses native `aria-pressed` buttons and visible focus rings; narrow settings windows switch to a horizontal destination strip and stacked, full-width controls. There are no nested settings disclosures.
+
 ## Plaid products and limitations
 
 - Regular bank and credit activity uses cursor-based `/transactions/sync`, including added, modified, and removed records.
@@ -106,6 +118,8 @@ TPS Finances turns the vault into a readable, contract-native account, transacti
 
 ## Version notes
 
+- 0.5.0: Reorganized settings into a shallow accessible destination hub, added direct connection/sync/dashboard/rule/budget actions, and added narrow-window layout plus focus restoration without changing finance data or settings schemas.
+- 0.4.3: Serialized settings writes, merged only locally changed fields into the newest persisted snapshot, preserved synchronized and future-version fields, retained quick reverts, and allowed queued snapshots to supersede failed writes.
 - 0.4.2: Made transaction and snapshot mutations concurrency-safe, changed transaction updates to write the destination before removing old copies, guarded modal saves against duplicate submissions and silent failures, and aligned dashboard month totals with the local calendar.
 - 0.4.1: Rejected missing, whitespace-only, and conflicting Plaid credentials with explicit setup status; froze and migrated per-Item credential references; surfaced connect/sync failures to users; hardened the localhost Link completion race; pinned the Plaid API version; and isolated optional Investments state so pending history cannot advance its watermark or erase last-known holdings while core sync succeeds.
 - 0.4.0: Added global and per-account daily-note/account-note transaction routing with automatic canonical re-homing and Home date filtering across both storage locations.

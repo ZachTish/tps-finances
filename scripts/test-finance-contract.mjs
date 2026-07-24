@@ -12,6 +12,7 @@ const dashboard = readFileSync(new URL("../src/dashboard-view.ts", import.meta.u
 const client = readFileSync(new URL("../src/plaid-client.ts", import.meta.url), "utf8");
 const link = readFileSync(new URL("../src/plaid-link.ts", import.meta.url), "utf8");
 const settings = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
+const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const types = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
 const investmentSyncSource = readFileSync(new URL("../src/investment-sync.ts", import.meta.url), "utf8");
 const deviceStateSource = readFileSync(new URL("../src/device-state.ts", import.meta.url), "utf8");
@@ -59,6 +60,48 @@ test("TPS Finances is a desktop finance view with device-local authentication", 
   assert.match(link, /if\(!response\.ok\)throw/);
   assert.match(link, /onExit\(err\)\{\s*if\(completing\)return/);
   assert.doesNotMatch(main, /accessToken.*saveData|saveData\([^)]*deviceState/);
+});
+
+test("finance settings use a shallow routed hub with complete controls and actions", () => {
+  for (const route of ["Plaid setup", "Data & routing", "Connections", "Rules & budgets"]) {
+    assert.ok(settings.includes(`title: "${route}"`));
+  }
+  for (const control of [
+    "Finance folder",
+    "Plaid environment",
+    "Plaid client ID",
+    "Plaid secret",
+    "OAuth redirect URI",
+    "Transaction history",
+    "Default transaction location",
+    "Debug logging",
+  ]) {
+    assert.match(settings, new RegExp(`setName\\("${control}"\\)`));
+  }
+  for (const action of ["Connect with Plaid", "Sync finances", "Open finances", "Add rule", "Add budget"]) {
+    assert.match(settings, new RegExp(`setButtonText\\("${action}"\\)`));
+  }
+
+  assert.match(settings, /private activeRoute: FinanceSettingsRoute = "plaid"/);
+  assert.match(settings, /"aria-pressed": String\(isActive\)/);
+  assert.match(settings, /pageHeading\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(settings, /pageHeading\.scrollIntoView\(\{ block: "start" \}\)/);
+  assert.match(settings, /activeRouteButton\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
+  assert.match(settings, /this\.renderSettings\(false, "Plaid client ID"\)/);
+  assert.match(settings, /this\.renderSettings\(false, "Plaid secret"\)/);
+  assert.match(settings, /await this\.plugin\.runConnectPlaid\("settings"\);\s*this\.renderSettings\(true\)/);
+  assert.match(settings, /await this\.plugin\.runSync\("settings"\);\s*this\.renderSettings\(true\)/);
+  assert.match(main, /runConnectPlaid\(source: "command" \| "settings"\): Promise<void>/);
+  assert.match(main, /runSync\(reason: string\): Promise<void>/);
+  assert.doesNotMatch(settings, /createEl\("details"/);
+  assert.doesNotMatch(types, /activeRoute|settingsRoute/);
+
+  assert.match(styles, /\.tps-finances-settings-hub\s*\{[^}]*position:\s*sticky/s);
+  assert.match(styles, /\.tps-finances-settings-route:focus-visible/);
+  assert.match(styles, /@media \(max-width: 800px\)/);
+  assert.match(styles, /\.tps-finances-settings-routes\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(styles, /\.tps-finances-settings-route\s*\{[^}]*height:\s*auto/s);
+  assert.match(styles, /\.tps-finances-settings-page > h3\s*\{[^}]*scroll-margin-top:/s);
 });
 
 test("finance transactions are contract-native daily-note log lines", () => {
