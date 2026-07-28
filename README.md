@@ -1,10 +1,10 @@
 # TPS Finances
 
-## 0.5.0
+## 0.5.1
 
-- Settings now use four clean, task-oriented destinations for Plaid setup, data routing, connections, and rules/budgets, with only the selected page rendered.
-- Direct actions make sync, the dashboard, categorization-rule creation, and monthly-budget creation easy to find without duplicating their persisted models.
-- Existing settings keys, device-local secrets, connection state, and finance records are unchanged. This backward-compatible minor release keeps the minimum supported Obsidian version at 1.12.0 and requires no migration.
+- Monthly budget progress now aggregates eligible spending in one transaction pass instead of filtering the complete transaction collection once per budget.
+- Budget order, duplicate-category totals, category normalization, date boundaries, eligible transaction kinds, and numeric behavior remain unchanged.
+- This backward-compatible patch changes no settings, persisted finance records, Plaid behavior, or minimum Obsidian version and requires no migration.
 
 ## Install with BRAT
 
@@ -19,6 +19,7 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 
 - 2026-07-16 isolation validation: the contract test was made source-owned instead of reading the production TPS contract, all 15 tests passed, and the required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Finances in the registered test vault and created only empty local QA storage. No live promotion occurred, and production runtime checksums remained unchanged.
 - 2026-07-24 settings-release validation: all 21 declared tests passed, including the routed-settings, post-connect/post-sync refresh, persistence, and finance-contract regressions. The required final standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; all four settings destinations and the shared nine-plugin `Choose what to configure` pattern were inspected in the registered test vault without connecting Plaid, syncing, changing settings, or invoking a mutating shortcut. Runtime-owned state remained absent and production was not accessed or promoted.
+- 2026-07-28 efficiency-release validation: all 23 declared tests passed, including exact legacy-result and single-traversal budget regressions. An independent 20,000-case randomized oracle found no difference within the production data contract; a synthetic 120-budget/30,000-transaction run measured about 359 ms for the prior algorithm and 2.5 ms for the one-pass implementation. The required standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; Finances commands registered and the empty, disconnected dashboard rendered without changing settings, connecting Plaid, syncing, or creating runtime state. Production was not accessed or promoted.
 
 ## Mobile modal contract
 
@@ -109,7 +110,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Validation
 
-- `npm test` runs contract/storage regressions, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/pagination/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
+- `npm test` runs contract/storage regressions, exact budget-aggregation equivalence and traversal checks, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/pagination/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
 - Validate Sandbox first, then separately configure the production SecretStorage entry before switching environments.
 - After every source change, rebuild and reload Obsidian before testing the dashboard or Plaid Link.
 - Populated dashboard validation covered mixed checking, credit, and brokerage accounts; transfers and investment buys were excluded from spending; income, net worth, source-line navigation, TPS Home summary, and responsive layouts were checked before the temporary data was removed.
@@ -118,6 +119,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Version notes
 
+- 0.5.1: Replaced per-budget transaction filtering with one shared monthly category aggregation pass, preserving the existing budget results while reducing dashboard work from budgets × transactions to budgets + transactions.
 - 0.5.0: Reorganized settings into a shallow accessible destination hub, added direct connection/sync/dashboard/rule/budget actions, and added narrow-window layout plus focus restoration without changing finance data or settings schemas.
 - 0.4.3: Serialized settings writes, merged only locally changed fields into the newest persisted snapshot, preserved synchronized and future-version fields, retained quick reverts, and allowed queued snapshots to supersede failed writes.
 - 0.4.2: Made transaction and snapshot mutations concurrency-safe, changed transaction updates to write the destination before removing old copies, guarded modal saves against duplicate submissions and silent failures, and aligned dashboard month totals with the local calendar.

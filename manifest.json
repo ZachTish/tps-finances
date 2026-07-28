@@ -1,7 +1,7 @@
 {
   "id": "tps-finances",
   "name": "TPS Finances",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "minAppVersion": "1.12.0",
   "description": "Contract-native account, transaction, and investment management for TPS.",
   "author": "Zach Tisherman",

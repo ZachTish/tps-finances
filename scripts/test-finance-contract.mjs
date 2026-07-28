@@ -140,6 +140,119 @@ test("local classification is ordered, additive, and manual-first", () => {
   assert.deepEqual(classification.classifyTransaction({ ...transaction, categoryOverride: "household" }, rules), { category: "household", tags: ["#receipt", "#food"], source: "manual", ruleId: "first" });
 });
 
+test("monthly budget aggregation is equivalent across boundaries, categories, and numeric edge cases", () => {
+  const month = "2026-07";
+  const budgets = [
+    { id: "groceries", name: "Groceries", category: " Groceries ", monthlyLimit: 500 },
+    { id: "groceries-duplicate", name: "Groceries duplicate", category: "groceries", monthlyLimit: 250 },
+    { id: "dining", name: "Dining", category: "dining out", monthlyLimit: 100 },
+    { id: "empty", name: "Blank category", category: "   ", monthlyLimit: 50 },
+    { id: "uncategorized", name: "Uncategorized", category: "uncategorized", monthlyLimit: 75 },
+    { id: "runtime-coercion", name: "Runtime coercion", category: "runtime", monthlyLimit: 10 },
+    { id: "travel", name: "Travel", category: "travel", monthlyLimit: 300 },
+  ];
+  const transaction = (overrides = {}) => ({
+    date: "2026-07-15",
+    amount: -1,
+    category: "groceries",
+    type: "transaction",
+    subtype: "purchase",
+    ...overrides,
+  });
+  const transactions = [
+    transaction({ amount: -12.25 }),
+    transaction({ amount: -7.75 }),
+    transaction({ date: "2026-07invalid", amount: -3 }),
+    transaction({ date: "2026-07", amount: -1 }),
+    transaction({ date: "2026-08-01", amount: -100 }),
+    transaction({ amount: 25 }),
+    transaction({ amount: -0 }),
+    transaction({ amount: Number.NaN }),
+    transaction({ amount: -80, type: "investmentTransaction" }),
+    transaction({ amount: -60, subtype: "transfer" }),
+    transaction({ amount: -9.5, category: "DINING_OUT" }),
+    transaction({ amount: -0.5, category: " dining   out ", subtype: "fee" }),
+    transaction({ amount: -4, category: "" }),
+    transaction({ amount: -6, category: " \t" }),
+    transaction({ amount: -11, category: "uncategorized" }),
+    transaction({ amount: "-4", category: "runtime" }),
+  ];
+  const normalizeCategory = (value) => value.trim().toLocaleLowerCase().replace(/[\s_]+/g, "-");
+  const legacyBudgetProgress = budgets.map((budget) => ({
+    ...budget,
+    spent: -transactions.filter((item) => item.date.startsWith(month)
+      && item.amount < 0
+      && item.type === "transaction"
+      && ["purchase", "payment", "fee", "cash-advance"].includes(item.subtype)
+      && normalizeCategory(item.category) === normalizeCategory(budget.category))
+      .reduce((sum, item) => sum + item.amount, 0),
+  }));
+
+  const aggregated = classification.calculateMonthlyBudgetProgress(budgets, transactions, month);
+
+  assert.deepEqual(aggregated, legacyBudgetProgress);
+  assert.deepEqual(aggregated.map(({ id }) => id), budgets.map(({ id }) => id), "budget order must remain unchanged");
+  assert.equal(aggregated[0].spent, 24);
+  assert.equal(aggregated[1].spent, 24, "duplicate normalized categories must receive the same total");
+  assert.equal(aggregated[2].spent, 10);
+  assert.equal(aggregated[3].spent, 10, "blank normalized categories retain their existing uncategorized behavior");
+  assert.equal(aggregated[4].spent, 11);
+  assert.equal(Number.isNaN(aggregated[5].spent), true, "runtime numeric coercion must match the prior reducer");
+  assert.equal(Object.is(aggregated[6].spent, -0), true, "an unmatched budget must retain the prior negative-zero total");
+  const dashboardModelStart = main.indexOf("async getDashboardModel");
+  const dashboardModelImplementation = main.slice(dashboardModelStart, main.indexOf("addCategorizationRule", dashboardModelStart));
+  assert.match(dashboardModelImplementation, /const month = localDate\(new Date\(\)\)\.slice\(0, 7\)/);
+  assert.match(dashboardModelImplementation, /calculateMonthlyBudgetProgress\(store\.readBudgets\(\), transactions, month\)/);
+  assert.doesNotMatch(dashboardModelImplementation, /transactions\.filter\(/);
+});
+
+test("monthly budget aggregation traverses transactions once regardless of budget count", () => {
+  const forbiddenTransactions = [{
+    date: "2026-07-15",
+    amount: -1,
+    category: "groceries",
+    type: "transaction",
+    subtype: "purchase",
+  }];
+  forbiddenTransactions[Symbol.iterator] = () => {
+    throw new Error("zero budgets must retain the prior zero-transaction traversal");
+  };
+  assert.deepEqual(classification.calculateMonthlyBudgetProgress([], forbiddenTransactions, "2026-07"), []);
+
+  const budgets = Array.from({ length: 120 }, (_, index) => ({
+    id: `budget-${index}`,
+    name: `Budget ${index}`,
+    category: `category-${index % 12}`,
+    monthlyLimit: 100,
+  }));
+  const transactions = Array.from({ length: 300 }, (_, index) => ({
+    date: index % 5 === 0 ? "2026-06-30" : "2026-07-15",
+    amount: -(index + 1),
+    category: `category-${index % 12}`,
+    type: "transaction",
+    subtype: index % 7 === 0 ? "transfer" : "purchase",
+  }));
+  let iteratorStarts = 0;
+  let yieldedTransactions = 0;
+  const nativeIterator = transactions[Symbol.iterator].bind(transactions);
+  transactions[Symbol.iterator] = function* iterator() {
+    iteratorStarts += 1;
+    for (const item of nativeIterator()) {
+      yieldedTransactions += 1;
+      yield item;
+    }
+  };
+  transactions.filter = () => {
+    throw new Error("budget aggregation must not filter the transaction collection per budget");
+  };
+
+  const result = classification.calculateMonthlyBudgetProgress(budgets, transactions, "2026-07");
+
+  assert.equal(result.length, budgets.length);
+  assert.equal(iteratorStarts, 1);
+  assert.equal(yieldedTransactions, transactions.length);
+});
+
 test("transaction ownership supports daily-note defaults and per-account overrides", () => {
   assert.match(types, /transactionLogTarget: TransactionLogTarget/);
   assert.match(types, /transactionLogTarget: "daily-note"/);

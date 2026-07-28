@@ -1,4 +1,4 @@
-import type { FinanceRule } from "./types";
+import type { FinanceBudget, FinanceRule } from "./types";
 
 export interface ClassifiableTransaction {
   account: string;
@@ -16,6 +16,39 @@ export interface ClassificationResult {
   tags: string[];
   source: "manual" | "rule" | "provider" | "uncategorized";
   ruleId: string;
+}
+
+export interface BudgetSpendingTransaction {
+  date: string;
+  amount: number;
+  category: string;
+  subtype: string;
+  type: "transaction" | "investmentTransaction";
+}
+
+const SPENDING_TRANSACTION_SUBTYPES = ["purchase", "payment", "fee", "cash-advance"];
+
+export function calculateMonthlyBudgetProgress<T extends FinanceBudget>(
+  budgets: readonly T[],
+  transactions: readonly BudgetSpendingTransaction[],
+  month: string,
+): Array<T & { spent: number }> {
+  if (!budgets.length) return [];
+
+  const spendingByCategory = new Map<string, number>();
+  for (const transaction of transactions) {
+    if (!transaction.date.startsWith(month)
+      || !(transaction.amount < 0)
+      || transaction.type !== "transaction"
+      || !SPENDING_TRANSACTION_SUBTYPES.includes(transaction.subtype)) continue;
+    const category = normalizedBudgetCategory(transaction.category);
+    spendingByCategory.set(category, (spendingByCategory.get(category) ?? 0) + transaction.amount);
+  }
+
+  return budgets.map((budget) => ({
+    ...budget,
+    spent: -(spendingByCategory.get(normalizedBudgetCategory(budget.category)) ?? 0),
+  }));
 }
 
 export function classifyTransaction(transaction: ClassifiableTransaction, rules: FinanceRule[]): ClassificationResult {
@@ -43,4 +76,8 @@ export function ruleMatches(rule: FinanceRule, transaction: ClassifiableTransact
 
 export function normalizeTags(tags: string[]): string[] {
   return [...new Set(tags.map((tag) => tag.trim().replace(/^#+/, "")).filter(Boolean).map((tag) => `#${tag.replace(/\s+/g, "-")}`))];
+}
+
+function normalizedBudgetCategory(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/[\s_]+/g, "-");
 }

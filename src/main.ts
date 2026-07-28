@@ -1,6 +1,6 @@
 import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
-import { classifyTransaction, normalizeTags } from "./classification";
+import { calculateMonthlyBudgetProgress, classifyTransaction, normalizeTags } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
 import { FinanceStore } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
@@ -340,14 +340,7 @@ export default class TPSFinancesPlugin extends Plugin {
         return { ...resolved, category: classification.category, tags: classification.tags, categorySource: classification.source, ruleId: classification.ruleId };
       }).sort((left, right) => right.date.localeCompare(left.date));
     const month = localDate(new Date()).slice(0, 7);
-    const budgets = store.readBudgets().map((budget) => ({
-      ...budget,
-      spent: -transactions.filter((transaction) => transaction.date.startsWith(month)
-        && transaction.amount < 0
-        && isSpendingTransaction(transaction)
-        && normalizedCategory(transaction.category) === normalizedCategory(budget.category))
-        .reduce((sum, transaction) => sum + transaction.amount, 0),
-    }));
+    const budgets = calculateMonthlyBudgetProgress(store.readBudgets(), transactions, month);
     const lastSyncAt = this.deviceState.items.map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
       accounts,
@@ -853,10 +846,6 @@ function signedMoney(value: number, currency: string, showSign = true): string {
 
 function isSpendingTransaction(transaction: DashboardTransaction): boolean {
   return transaction.type === "transaction" && ["purchase", "payment", "fee", "cash-advance"].includes(transaction.subtype);
-}
-
-function normalizedCategory(value: string): string {
-  return value.trim().toLocaleLowerCase().replace(/[\s_]+/g, "-");
 }
 
 function userFacingError(error: unknown): string {
