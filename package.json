@@ -1,6 +1,6 @@
 {
   "name": "tps-finances",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Contract-native account, transaction, and investment management for TPS.",
   "main": "main.js",
   "scripts": {

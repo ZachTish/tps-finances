@@ -664,9 +664,8 @@ export default class TPSFinancesPlugin extends Plugin {
     const content = await this.app.vault.cachedRead(file);
     const snapshotDate = String(this.app.metadataCache.getFileCache(file)?.frontmatter?.date || file.basename);
     const pathToId = new Map<string, string>();
-    for (const accountFile of this.accountFiles()) {
-      const frontmatter = this.app.metadataCache.getFileCache(accountFile)?.frontmatter || {};
-      pathToId.set(accountFile.path.replace(/\.md$/i, ""), String(frontmatter.financeAccountId || ""));
+    for (const account of accounts) {
+      if (account.path) pathToId.set(account.path.replace(/\.md$/i, ""), account.financeAccountId);
     }
     const accountCurrency = new Map(accounts.map((account) => [account.financeAccountId, account.currency]));
     return content.split("\n").filter((line) => line.includes("[type:: holdingSnapshot]")).map((line) => {
@@ -706,11 +705,18 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private latestSnapshotFile(): TFile | null {
     const prefix = normalizePath(`${this.settings.financeFolder}/Snapshots/`);
-    return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix)).sort((left, right) => {
-      const leftDate = String(this.app.metadataCache.getFileCache(left)?.frontmatter?.date || "");
-      const rightDate = String(this.app.metadataCache.getFileCache(right)?.frontmatter?.date || "");
-      return rightDate.localeCompare(leftDate) || right.path.localeCompare(left.path);
-    })[0] || null;
+    let latest: TFile | null = null;
+    let latestDate = "";
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(prefix)) continue;
+      const date = String(this.app.metadataCache.getFileCache(file)?.frontmatter?.date || "");
+      const dateOrder = date.localeCompare(latestDate);
+      if (!latest || dateOrder > 0 || (dateOrder === 0 && file.path.localeCompare(latest.path) > 0)) {
+        latest = file;
+        latestDate = date;
+      }
+    }
+    return latest;
   }
 
   private accountFiles(): TFile[] {

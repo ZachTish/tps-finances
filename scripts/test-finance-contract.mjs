@@ -253,6 +253,40 @@ test("monthly budget aggregation traverses transactions once regardless of budge
   assert.equal(yieldedTransactions, transactions.length);
 });
 
+test("snapshot reads reuse parsed accounts and select the latest file in one pass", () => {
+  const latestSnapshotStart = main.indexOf("private latestSnapshotFile()");
+  const latestSnapshotImplementation = main.slice(latestSnapshotStart, main.indexOf("private accountFiles()", latestSnapshotStart));
+  assert.match(latestSnapshotImplementation, /for \(const file of this\.app\.vault\.getMarkdownFiles\(\)\)/);
+  assert.doesNotMatch(latestSnapshotImplementation, /\.filter\(|\.sort\(/);
+
+  const readLatestStart = main.indexOf("private async readLatestSnapshot");
+  const readLatestImplementation = main.slice(readLatestStart, main.indexOf("private async readSnapshotBalanceMap", readLatestStart));
+  assert.match(readLatestImplementation, /for \(const account of accounts\)/);
+  assert.doesNotMatch(readLatestImplementation, /this\.accountFiles\(\)/);
+
+  const files = [
+    { path: "Finances/Snapshots/no-date.md", date: "" },
+    { path: "Finances/Snapshots/2026-06-30.md", date: "2026-06-30" },
+    { path: "Other/2027-01-01.md", date: "2027-01-01" },
+    { path: "Finances/Snapshots/2026-07-01-a.md", date: "2026-07-01" },
+    { path: "Finances/Snapshots/2026-07-01-z.md", date: "2026-07-01" },
+  ];
+  const prefix = "Finances/Snapshots/";
+  const legacy = files.filter((file) => file.path.startsWith(prefix)).sort((left, right) =>
+    right.date.localeCompare(left.date) || right.path.localeCompare(left.path))[0] || null;
+  let selected = null;
+  let selectedDate = "";
+  for (const file of files) {
+    if (!file.path.startsWith(prefix)) continue;
+    const dateOrder = file.date.localeCompare(selectedDate);
+    if (!selected || dateOrder > 0 || (dateOrder === 0 && file.path.localeCompare(selected.path) > 0)) {
+      selected = file;
+      selectedDate = file.date;
+    }
+  }
+  assert.equal(selected, legacy);
+});
+
 test("transaction ownership supports daily-note defaults and per-account overrides", () => {
   assert.match(types, /transactionLogTarget: TransactionLogTarget/);
   assert.match(types, /transactionLogTarget: "daily-note"/);

@@ -1,5 +1,12 @@
 # TPS Finances
 
+## 0.5.2
+
+- Holding snapshot parsing now reuses the already parsed account path/ID model instead of rescanning every Markdown file and rereading account metadata.
+- Latest-snapshot selection now keeps the best date/path candidate in one pass instead of filtering and sorting the complete snapshot collection.
+- Snapshot selection, holding ownership/currency, settings, persisted finance records, and Plaid behavior remain unchanged.
+- This backward-compatible performance patch keeps the minimum supported Obsidian version at 1.12.0 and requires no migration.
+
 ## 0.5.1
 
 - Monthly budget progress now aggregates eligible spending in one transaction pass instead of filtering the complete transaction collection once per budget.
@@ -20,6 +27,7 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 - 2026-07-16 isolation validation: the contract test was made source-owned instead of reading the production TPS contract, all 15 tests passed, and the required final `npm run build` reported `[runtime-deploy] target=test ... unchanged`. Obsidian 1.12.7 loaded Finances in the registered test vault and created only empty local QA storage. No live promotion occurred, and production runtime checksums remained unchanged.
 - 2026-07-24 settings-release validation: all 21 declared tests passed, including the routed-settings, post-connect/post-sync refresh, persistence, and finance-contract regressions. The required final standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; all four settings destinations and the shared nine-plugin `Choose what to configure` pattern were inspected in the registered test vault without connecting Plaid, syncing, changing settings, or invoking a mutating shortcut. Runtime-owned state remained absent and production was not accessed or promoted.
 - 2026-07-28 efficiency-release validation: all 23 declared tests passed, including exact legacy-result and single-traversal budget regressions. An independent 20,000-case randomized oracle found no difference within the production data contract; a synthetic 120-budget/30,000-transaction run measured about 359 ms for the prior algorithm and 2.5 ms for the one-pass implementation. The required standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; Finances commands registered and the empty, disconnected dashboard rendered without changing settings, connecting Plaid, syncing, or creating runtime state. Production was not accessed or promoted.
+- 2026-07-28 snapshot-efficiency validation: all 24 declared tests passed, including source-backed account-reuse and latest-snapshot selection equivalence coverage; 100,000 randomized dense selectors matched the former ordering, and a synthetic 10,000-snapshot selector benchmark improved from about 113.72 ms to 19.61 ms over 30 iterations. The required standalone build deployed only to `[runtime-deploy] target=test`. After **Reload app without saving**, Obsidian 1.12.7 registered the Finances commands and rendered the disconnected dashboard without connecting Plaid, syncing, changing settings, or creating runtime state. Production was not accessed or promoted.
 
 ## Mobile modal contract
 
@@ -119,6 +127,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Version notes
 
+- 0.5.2: Removed a redundant account-vault scan from holding parsing and replaced full snapshot sorting with an equivalent one-pass selection.
 - 0.5.1: Replaced per-budget transaction filtering with one shared monthly category aggregation pass, preserving the existing budget results while reducing dashboard work from budgets × transactions to budgets + transactions.
 - 0.5.0: Reorganized settings into a shallow accessible destination hub, added direct connection/sync/dashboard/rule/budget actions, and added narrow-window layout plus focus restoration without changing finance data or settings schemas.
 - 0.4.3: Serialized settings writes, merged only locally changed fields into the newest persisted snapshot, preserved synchronized and future-version fields, retained quick reverts, and allowed queued snapshots to supersede failed writes.
