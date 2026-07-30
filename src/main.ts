@@ -32,6 +32,10 @@ type OptionalInvestmentWarning = {
   code: string;
   preserved: number;
 };
+type StoredFinanceSnapshot = Readonly<{
+  date: string;
+  lines: readonly string[];
+}>;
 
 export default class TPSFinancesPlugin extends Plugin {
   settings: TPSFinancesSettings = { ...DEFAULT_SETTINGS };
@@ -222,8 +226,9 @@ export default class TPSFinancesPlugin extends Plugin {
     try {
       await store.ensureStructure();
       await this.migrateLegacyTransactions(store);
-      const previousAccounts = await this.readAccountsFromVault();
-      const previousHoldings = await this.readLatestSnapshot(previousAccounts);
+      const previousSnapshot = await this.readLatestSnapshotDocument();
+      const previousAccounts = this.readAccountsFromVault(previousSnapshot);
+      const previousHoldings = this.parseSnapshotHoldings(previousSnapshot, previousAccounts);
       for (const item of this.deviceState.items) {
         try {
           const client = new PlaidClient(item.environment, this.getPlaidCredentials(item.plaidSecretName, item.plaidClientIdSecretName || this.settings.plaidClientIdSecret));
@@ -328,8 +333,9 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async getDashboardModel(): Promise<DashboardModel> {
-    const accounts = await this.readAccountsFromVault();
-    const holdings = await this.readLatestSnapshot(accounts);
+    const snapshot = await this.readLatestSnapshotDocument();
+    const accounts = this.readAccountsFromVault(snapshot);
+    const holdings = this.parseSnapshotHoldings(snapshot, accounts);
     const store = this.createStore();
     const transactionRecords = await store.readTransactionRecords();
     const rules = store.readRules();
@@ -626,15 +632,15 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  private async readAccountsFromVault(): Promise<FinanceAccount[]> {
+  private readAccountsFromVault(snapshot: StoredFinanceSnapshot | null): FinanceAccount[] {
     const prefix = normalizePath(`${this.settings.financeFolder}/Accounts/`);
-    const snapshot = await this.readSnapshotBalanceMap();
+    const balances = this.parseSnapshotBalanceMap(snapshot?.lines || []);
     const accounts: FinanceAccount[] = [];
     for (const file of this.app.vault.getMarkdownFiles().filter((candidate) => candidate.path.startsWith(prefix))) {
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
       const id = String(frontmatter.financeAccountId || "");
       if (!id) continue;
-      const balance = snapshot.get(file.path.replace(/\.md$/i, ""));
+      const balance = balances.get(file.path.replace(/\.md$/i, ""));
       accounts.push({
         financeAccountId: id,
         providerAccountId: "",
@@ -661,17 +667,14 @@ export default class TPSFinancesPlugin extends Plugin {
       || left.name.localeCompare(right.name));
   }
 
-  private async readLatestSnapshot(accounts: FinanceAccount[]): Promise<FinanceHolding[]> {
-    const file = this.latestSnapshotFile();
-    if (!file) return [];
-    const content = await this.app.vault.cachedRead(file);
-    const snapshotDate = String(this.app.metadataCache.getFileCache(file)?.frontmatter?.date || file.basename);
+  private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[]): FinanceHolding[] {
+    if (!snapshot) return [];
     const pathToId = new Map<string, string>();
     for (const account of accounts) {
       if (account.path) pathToId.set(account.path.replace(/\.md$/i, ""), account.financeAccountId);
     }
     const accountCurrency = new Map(accounts.map((account) => [account.financeAccountId, account.currency]));
-    return content.split("\n").filter((line) => line.includes("[type:: holdingSnapshot]")).map((line) => {
+    return snapshot.lines.filter((line) => line.includes("[type:: holdingSnapshot]")).map((line) => {
       const accountPath = wikilinkTarget(field(line, "account"));
       const financeAccountId = pathToId.get(accountPath) || "";
       return {
@@ -685,18 +688,26 @@ export default class TPSFinancesPlugin extends Plugin {
         value: numberField(line, "value"),
         costBasis: optionalNumberField(line, "costBasis"),
         currency: field(line, "currency") || accountCurrency.get(financeAccountId) || "USD",
-        asOf: field(line, "asOf") || snapshotDate,
+        asOf: field(line, "asOf") || snapshot.date,
         stale: field(line, "stale") === "true",
       };
     });
   }
 
-  private async readSnapshotBalanceMap(): Promise<Map<string, { balance: number | null; available: number | null; currency: string }>> {
-    const map = new Map<string, { balance: number | null; available: number | null; currency: string }>();
+  private async readLatestSnapshotDocument(): Promise<StoredFinanceSnapshot | null> {
     const file = this.latestSnapshotFile();
-    if (!file) return map;
+    if (!file) return null;
+    const date = String(this.app.metadataCache.getFileCache(file)?.frontmatter?.date || file.basename);
     const content = await this.app.vault.cachedRead(file);
-    for (const line of content.split("\n").filter((entry) => entry.includes("[type:: balanceSnapshot]"))) {
+    return {
+      date,
+      lines: content.split("\n"),
+    };
+  }
+
+  private parseSnapshotBalanceMap(lines: readonly string[]): Map<string, { balance: number | null; available: number | null; currency: string }> {
+    const map = new Map<string, { balance: number | null; available: number | null; currency: string }>();
+    for (const line of lines.filter((entry) => entry.includes("[type:: balanceSnapshot]"))) {
       map.set(wikilinkTarget(field(line, "account")), {
         balance: optionalNumberField(line, "balance"),
         available: optionalNumberField(line, "available"),

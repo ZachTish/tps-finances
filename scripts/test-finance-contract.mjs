@@ -186,6 +186,20 @@ function dashboardModel(plaidSetupState) {
   };
 }
 
+function snapshotDashboardPlugin(app) {
+  const plugin = new mainActionModule.default(app);
+  plugin.settings = { financeFolder: "Finances", transactionLogTarget: "daily-note" };
+  plugin.deviceState = { items: [] };
+  plugin.createStore = () => ({
+    readTransactionRecords: async () => [],
+    readRules: () => [],
+    readBudgets: () => [],
+  });
+  plugin.accountLabelsByPath = () => new Map();
+  plugin.getPlaidSetupStatus = () => ({ state: "ready" });
+  return plugin;
+}
+
 function createDashboardRenderHarness() {
   let activeReads = 0;
   let maximumActiveReads = 0;
@@ -731,16 +745,44 @@ test("monthly budget aggregation traverses transactions once regardless of budge
   assert.equal(yieldedTransactions, transactions.length);
 });
 
-test("snapshot reads reuse parsed accounts and select the latest file in one pass", () => {
+test("snapshot reads reuse one document and select the latest file in one pass", () => {
   const latestSnapshotStart = main.indexOf("private latestSnapshotFile()");
   const latestSnapshotImplementation = main.slice(latestSnapshotStart, main.indexOf("private accountFiles()", latestSnapshotStart));
   assert.match(latestSnapshotImplementation, /for \(const file of this\.app\.vault\.getMarkdownFiles\(\)\)/);
   assert.doesNotMatch(latestSnapshotImplementation, /\.filter\(|\.sort\(/);
 
-  const readLatestStart = main.indexOf("private async readLatestSnapshot");
-  const readLatestImplementation = main.slice(readLatestStart, main.indexOf("private async readSnapshotBalanceMap", readLatestStart));
-  assert.match(readLatestImplementation, /for \(const account of accounts\)/);
-  assert.doesNotMatch(readLatestImplementation, /this\.accountFiles\(\)/);
+  const readDocumentStart = main.indexOf("private async readLatestSnapshotDocument");
+  const readDocumentImplementation = main.slice(readDocumentStart, main.indexOf("private parseSnapshotBalanceMap", readDocumentStart));
+  assert.match(readDocumentImplementation, /const file = this\.latestSnapshotFile\(\)/);
+  assert.match(readDocumentImplementation, /const date = String\(/);
+  assert.match(readDocumentImplementation, /const content = await this\.app\.vault\.cachedRead\(file\)/);
+  assert.match(readDocumentImplementation, /lines: content\.split\("\\n"\)/);
+  assert.ok(readDocumentImplementation.indexOf("const date = String(") < readDocumentImplementation.indexOf("await this.app.vault.cachedRead(file)"),
+    "the selected snapshot date must be captured before yielding to the vault read");
+
+  const holdingsStart = main.indexOf("private parseSnapshotHoldings");
+  const holdingsImplementation = main.slice(holdingsStart, readDocumentStart);
+  assert.match(holdingsImplementation, /for \(const account of accounts\)/);
+  assert.match(holdingsImplementation, /snapshot\.lines\.filter/);
+  assert.doesNotMatch(holdingsImplementation, /latestSnapshotFile|cachedRead|this\.accountFiles\(\)/);
+
+  const balancesStart = main.indexOf("private parseSnapshotBalanceMap");
+  const balancesImplementation = main.slice(balancesStart, latestSnapshotStart);
+  assert.match(balancesImplementation, /lines\.filter/);
+  assert.doesNotMatch(balancesImplementation, /latestSnapshotFile|cachedRead/);
+
+  const dashboardStart = main.indexOf("async getDashboardModel()");
+  const dashboardImplementation = main.slice(dashboardStart, main.indexOf("addCategorizationRule()", dashboardStart));
+  assert.equal((dashboardImplementation.match(/readLatestSnapshotDocument\(\)/g) || []).length, 1);
+  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot\)/);
+  assert.match(dashboardImplementation, /parseSnapshotHoldings\(snapshot, accounts\)/);
+
+  const syncStart = main.indexOf("async syncAll(");
+  const syncImplementation = main.slice(syncStart, dashboardStart);
+  assert.equal((syncImplementation.match(/readLatestSnapshotDocument\(\)/g) || []).length, 1);
+  assert.match(syncImplementation, /readAccountsFromVault\(previousSnapshot\)/);
+  assert.match(syncImplementation, /parseSnapshotHoldings\(previousSnapshot, previousAccounts\)/);
+  assert.doesNotMatch(main, /readLatestSnapshot\(|readSnapshotBalanceMap\(/);
 
   const files = [
     { path: "Finances/Snapshots/no-date.md", date: "" },
@@ -763,6 +805,261 @@ test("snapshot reads reuse parsed accounts and select the latest file in one pas
     }
   }
   assert.equal(selected, legacy);
+});
+
+test("dashboard model reads one coherent snapshot document for balances and holdings", async () => {
+  const accountFile = {
+    path: "Finances/Accounts/Checking.md",
+    basename: "Checking",
+  };
+  const snapshotFile = {
+    path: "Finances/Snapshots/2026-07-30.md",
+    basename: "2026-07-30",
+  };
+  const snapshotContent = (value) => [
+    "---",
+    "date: 2026-07-30",
+    "---",
+    `- Checking [type:: balanceSnapshot] [account:: [[Finances/Accounts/Checking]]] [balance:: ${value}] [available:: ${value - 10}] [currency:: USD]`,
+    `- Security [type:: holdingSnapshot] [account:: [[Finances/Accounts/Checking]]] [securityId:: security] [quantity:: 1] [price:: ${value}] [value:: ${value}] [costBasis:: 50] [currency:: USD]`,
+  ].join("\n");
+  const contents = [snapshotContent(100), snapshotContent(200)];
+  let fileListReads = 0;
+  let snapshotReads = 0;
+  const app = {
+    vault: {
+      getMarkdownFiles() {
+        fileListReads += 1;
+        return [accountFile, snapshotFile];
+      },
+      async cachedRead(file) {
+        assert.equal(file, snapshotFile);
+        const content = contents[Math.min(snapshotReads, contents.length - 1)];
+        snapshotReads += 1;
+        return content;
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        if (file === snapshotFile) return { frontmatter: { date: "2026-07-30" } };
+        return {
+          frontmatter: {
+            financeAccountId: "finance-account",
+            institution: "Test Bank",
+            accountName: "Checking",
+            accountType: "depository",
+            currency: "USD",
+          },
+        };
+      },
+    },
+  };
+  const plugin = snapshotDashboardPlugin(app);
+
+  const model = await plugin.getDashboardModel();
+
+  assert.deepEqual({
+    snapshotReads,
+    fileListReads,
+    balance: model.accounts[0].current,
+    available: model.accounts[0].available,
+    holdingValue: model.holdings[0].value,
+  }, {
+    snapshotReads: 1,
+    fileListReads: 2,
+    balance: 100,
+    available: 90,
+    holdingValue: 100,
+  }, "one model must parse balances and holdings from one selected, immutable snapshot read");
+  assert.equal(model.holdings[0].asOf, "2026-07-30");
+});
+
+test("snapshot reuse preserves no-snapshot and rich parsing semantics", async () => {
+  const checkingFile = {
+    path: "Finances/Accounts/Checking.MD",
+    basename: "Checking",
+  };
+  const brokerageFile = {
+    path: "Finances/Accounts/Brokerage.md",
+    basename: "Brokerage",
+  };
+  const unrelatedFile = {
+    path: "Other/Ignore.md",
+    basename: "Ignore",
+  };
+  const accountCaches = new Map([
+    [checkingFile, {
+      frontmatter: {
+        financeAccountId: "checking",
+        institution: "Test Bank",
+        accountName: "Checking",
+        accountType: "depository",
+        currency: "EUR",
+      },
+    }],
+    [brokerageFile, {
+      frontmatter: {
+        financeAccountId: "brokerage",
+        institution: "Test Bank",
+        accountName: "Brokerage",
+        accountType: "investment",
+      },
+    }],
+  ]);
+  let fileListReads = 0;
+  let snapshotReads = 0;
+  const noSnapshotApp = {
+    vault: {
+      getMarkdownFiles() {
+        fileListReads += 1;
+        return [checkingFile, brokerageFile, unrelatedFile];
+      },
+      async cachedRead() {
+        snapshotReads += 1;
+        throw new Error("no snapshot must not be read");
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        return accountCaches.get(file) || {};
+      },
+    },
+  };
+
+  const noSnapshotModel = await snapshotDashboardPlugin(noSnapshotApp).getDashboardModel();
+
+  assert.equal(fileListReads, 2);
+  assert.equal(snapshotReads, 0);
+  assert.deepEqual(noSnapshotModel.accounts.map((account) => ({
+    id: account.financeAccountId,
+    current: account.current,
+    available: account.available,
+    currency: account.currency,
+  })), [
+    { id: "checking", current: null, available: null, currency: "EUR" },
+    { id: "brokerage", current: null, available: null, currency: "USD" },
+  ]);
+  assert.deepEqual(noSnapshotModel.holdings, []);
+
+  const olderSnapshot = {
+    path: "Finances/Snapshots/older.md",
+    basename: "older",
+  };
+  const sameDateA = {
+    path: "Finances/Snapshots/2026-07-30-a.md",
+    basename: "2026-07-30-a",
+  };
+  const sameDateZ = {
+    path: "Finances/Snapshots/2026-07-30-z.md",
+    basename: "2026-07-30-z",
+  };
+  const selectedContent = [
+    "- Checking first [type:: balanceSnapshot] [account:: [[Finances/Accounts/Checking]]] [balance:: 1] [available:: 2] [currency:: CAD]",
+    "- Checking last [type:: balanceSnapshot] [account:: [[Finances/Accounts/Checking]]] [balance:: 123] [available:: invalid] [currency:: CAD]",
+    "- Brokerage [type:: balanceSnapshot] [account:: [[Finances/Accounts/Brokerage]]] [balance:: 456] [available:: 400] [currency:: JPY]",
+    "- Explicit [type:: holdingSnapshot] [account:: [[Finances/Accounts/Checking]]] [securityId:: explicit] [quantity:: 2] [price:: 3] [value:: 6] [costBasis:: 4] [currency:: GBP] [asOf:: 2026-07-29] [stale:: true]",
+    "- Account currency [type:: holdingSnapshot] [account:: [[Finances/Accounts/Brokerage]]] [securityId:: account] [quantity:: invalid] [price:: invalid] [value:: invalid]",
+    "- Unknown account [type:: holdingSnapshot] [account:: [[Finances/Accounts/Missing]]] [securityId:: unknown] [quantity:: 1] [price:: 2] [value:: 2] [costBasis:: invalid]",
+  ].join("\n");
+  fileListReads = 0;
+  snapshotReads = 0;
+  const semanticApp = {
+    vault: {
+      getMarkdownFiles() {
+        fileListReads += 1;
+        return [olderSnapshot, sameDateA, checkingFile, unrelatedFile, sameDateZ, brokerageFile];
+      },
+      async cachedRead(file) {
+        snapshotReads += 1;
+        assert.equal(file, sameDateZ, "equal snapshot dates must retain the released descending-path tiebreak");
+        return selectedContent;
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        if (file === olderSnapshot) return { frontmatter: { date: "2026-07-29" } };
+        if (file === sameDateA || file === sameDateZ) return { frontmatter: { date: "2026-07-30" } };
+        return accountCaches.get(file) || {};
+      },
+    },
+  };
+
+  const semanticModel = await snapshotDashboardPlugin(semanticApp).getDashboardModel();
+  const accountsById = new Map(semanticModel.accounts.map((account) => [account.financeAccountId, account]));
+
+  assert.equal(fileListReads, 2);
+  assert.equal(snapshotReads, 1);
+  assert.deepEqual({
+    checking: {
+      current: accountsById.get("checking").current,
+      available: accountsById.get("checking").available,
+      currency: accountsById.get("checking").currency,
+    },
+    brokerage: {
+      current: accountsById.get("brokerage").current,
+      available: accountsById.get("brokerage").available,
+      currency: accountsById.get("brokerage").currency,
+    },
+  }, {
+    checking: { current: 123, available: null, currency: "EUR" },
+    brokerage: { current: 456, available: 400, currency: "JPY" },
+  });
+  assert.deepEqual(semanticModel.holdings.map((holding) => ({
+    id: holding.securityId,
+    account: holding.financeAccountId,
+    quantity: holding.quantity,
+    price: holding.price,
+    value: holding.value,
+    costBasis: holding.costBasis,
+    currency: holding.currency,
+    asOf: holding.asOf,
+    stale: holding.stale,
+  })), [
+    { id: "explicit", account: "checking", quantity: 2, price: 3, value: 6, costBasis: 4, currency: "GBP", asOf: "2026-07-29", stale: true },
+    { id: "account", account: "brokerage", quantity: 0, price: 0, value: 0, costBasis: null, currency: "JPY", asOf: "2026-07-30", stale: false },
+    { id: "unknown", account: "", quantity: 1, price: 2, value: 2, costBasis: null, currency: "USD", asOf: "2026-07-30", stale: false },
+  ]);
+});
+
+test("snapshot reuse preserves filename dates and propagates selected-file read failures", async () => {
+  const accountFile = {
+    path: "Finances/Accounts/Checking.md",
+    basename: "Checking",
+  };
+  const undatedSnapshot = {
+    path: "Finances/Snapshots/2026-07-31.md",
+    basename: "2026-07-31",
+  };
+  let reads = 0;
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [accountFile, undatedSnapshot],
+      async cachedRead(file) {
+        reads += 1;
+        assert.equal(file, undatedSnapshot);
+        return "- Holding [type:: holdingSnapshot] [account:: [[Finances/Accounts/Checking]]] [securityId:: holding] [quantity:: 1] [price:: 1] [value:: 1]";
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        if (file === accountFile) return { frontmatter: { financeAccountId: "checking", accountName: "Checking" } };
+        return {};
+      },
+    },
+  };
+
+  const model = await snapshotDashboardPlugin(app).getDashboardModel();
+
+  assert.equal(reads, 1);
+  assert.equal(model.holdings[0].asOf, "2026-07-31");
+
+  reads = 0;
+  app.vault.cachedRead = async () => {
+    reads += 1;
+    throw new Error("selected snapshot disappeared");
+  };
+  await assert.rejects(snapshotDashboardPlugin(app).getDashboardModel(), /selected snapshot disappeared/);
+  assert.equal(reads, 1, "a failed selected-file read must not reselect or fall back to another snapshot");
 });
 
 test("transaction ownership supports daily-note defaults and per-account overrides", () => {
