@@ -59,7 +59,7 @@ const dashboardViewBuild = await build({
         contents: [
           "export class ItemView { constructor() { this.contentEl = globalThis.__tpsCreateDashboardNode(); } }",
           "export class Menu {}",
-          "export class Notice {}",
+          "export class Notice { constructor(message) { globalThis.__tpsDashboardNotices?.push(String(message)); } }",
           "export class WorkspaceLeaf {}",
           "export const setIcon = () => {};",
         ].join("\n"),
@@ -68,6 +68,57 @@ const dashboardViewBuild = await build({
   }],
 });
 const dashboardViewModule = await import(`data:text/javascript;base64,${Buffer.from(dashboardViewBuild.outputFiles[0].text).toString("base64")}`);
+const mainActionBuild = await build({
+  entryPoints: [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
+  bundle: true,
+  write: false,
+  format: "esm",
+  platform: "node",
+  plugins: [{
+    name: "mock-main-actions",
+    setup(builder) {
+      builder.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "main-action-mock" }));
+      builder.onResolve({ filter: /^\.\/plaid-client$/ }, () => ({ path: "plaid-client", namespace: "main-action-mock" }));
+      builder.onResolve({ filter: /^\.\/plaid-link$/ }, () => ({ path: "plaid-link", namespace: "main-action-mock" }));
+      builder.onLoad({ filter: /.*/, namespace: "main-action-mock" }, (args) => {
+        if (args.path === "plaid-client") {
+          return {
+            contents: [
+              "export class PlaidClient {",
+              "  async createLinkToken() { return 'link-token'; }",
+              "  async exchangePublicToken() { return { accessToken: 'access-token', itemId: 'provider-item' }; }",
+              "}",
+            ].join("\n"),
+          };
+        }
+        if (args.path === "plaid-link") {
+          return { contents: "export async function openLocalPlaidLink() { return { publicToken: 'public-token', institutionName: 'Test Bank' }; }" };
+        }
+        return {
+          contents: [
+            "export class Plugin { constructor(app) { this.app = app; } }",
+            "export class App {}",
+            "export class ButtonComponent {}",
+            "export class ItemView { constructor() { this.contentEl = {}; } }",
+            "export class Menu {}",
+            "export class Modal {}",
+            "export class Notice { constructor(message) { globalThis.__tpsConnectNotices?.push(String(message)); } }",
+            "export class PluginSettingTab {}",
+            "export class SecretComponent {}",
+            "export class Setting {}",
+            "export class TFile {}",
+            "export class WorkspaceLeaf {}",
+            "export const Platform = { isDesktopApp: true };",
+            "export const normalizePath = (value) => value;",
+            "export const requestUrl = async () => ({ status: 200, json: {} });",
+            "export const setIcon = () => {};",
+          ].join("\n"),
+        };
+      });
+    },
+  }],
+});
+const mainActionModule = await import(`data:text/javascript;base64,${Buffer.from(mainActionBuild.outputFiles[0].text).toString("base64")}`);
 
 class DashboardNode {
   constructor(tag = "div", options = {}) {
@@ -140,7 +191,9 @@ function createDashboardRenderHarness() {
   let maximumActiveReads = 0;
   let synchronousError = null;
   const reads = [];
+  const notices = [];
   globalThis.__tpsCreateDashboardNode = () => new DashboardNode();
+  globalThis.__tpsDashboardNotices = notices;
   globalThis.document = {
     createElement: (tag) => new DashboardNode(tag),
     createTextNode: (text) => new DashboardNode("#text", { text }),
@@ -172,6 +225,7 @@ function createDashboardRenderHarness() {
   const view = new dashboardViewModule.TPSFinancesView({}, plugin);
   return {
     reads,
+    notices,
     view,
     maximumActiveReads: () => maximumActiveReads,
     throwSynchronously(error) {
@@ -183,6 +237,11 @@ function createDashboardRenderHarness() {
 async function waitForDashboardReads(reads, expected) {
   for (let attempt = 0; attempt < 20 && reads.length < expected; attempt += 1) await Promise.resolve();
   assert.equal(reads.length, expected);
+}
+
+async function waitForDashboardAction(predicate) {
+  for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) await Promise.resolve();
+  assert.equal(predicate(), true);
 }
 
 test("TPS Finances is a desktop finance view with device-local authentication", () => {
@@ -284,6 +343,135 @@ test("dashboard close cancels queued commits and reopening requests a fresh mode
   await reopeningRender;
   assert.equal(harness.view.contentEl.emptyCalls, 1);
   assert.match(dashboardNodeText(harness.view.contentEl), /Plaid credentials are ready/);
+});
+
+test("dashboard action wrapper leaves successful refresh ownership to the action", async () => {
+  const harness = createDashboardRenderHarness();
+  let settled = false;
+  const action = harness.view.runAction(() => harness.view.render());
+  void action.then(() => {
+    settled = true;
+  });
+  await waitForDashboardReads(harness.reads, 1);
+  harness.reads[0].resolve(dashboardModel("ready"));
+  await waitForDashboardAction(() => settled || harness.reads.length > 1);
+  const readsBeforeCleanup = harness.reads.length;
+  if (harness.reads[1]) harness.reads[1].resolve(dashboardModel("ready"));
+  await action;
+  assert.equal(readsBeforeCleanup, 1, "a self-refreshing action must not trigger a second model read");
+  assert.equal(harness.view.contentEl.emptyCalls, 1, "a self-refreshing action must rebuild the DOM once");
+});
+
+test("dashboard action wrapper does not refresh after a no-op or rejected action", async () => {
+  const noOpHarness = createDashboardRenderHarness();
+  let noOpSettled = false;
+  const noOp = noOpHarness.view.runAction(async () => {});
+  void noOp.then(() => {
+    noOpSettled = true;
+  });
+  await waitForDashboardAction(() => noOpSettled || noOpHarness.reads.length > 0);
+  const noOpReadsBeforeCleanup = noOpHarness.reads.length;
+  if (noOpHarness.reads[0]) noOpHarness.reads[0].resolve(dashboardModel("ready"));
+  await noOp;
+  assert.equal(noOpReadsBeforeCleanup, 0, "an action that makes no change must not read or rebuild the dashboard");
+
+  const rejectedHarness = createDashboardRenderHarness();
+  await rejectedHarness.view.runAction(async () => {
+    throw new Error("action failed");
+  });
+  assert.equal(rejectedHarness.reads.length, 0);
+  assert.deepEqual(rejectedHarness.notices, ["action failed"]);
+});
+
+test("dashboard action-owned render errors remain visible without a silent fallback retry", async () => {
+  const harness = createDashboardRenderHarness();
+  let settled = false;
+  const action = harness.view.runAction(() => harness.view.render());
+  void action.then(() => {
+    settled = true;
+  });
+  await waitForDashboardReads(harness.reads, 1);
+  harness.reads[0].reject(new Error("action refresh failed"));
+  await waitForDashboardAction(() => settled || harness.reads.length > 1);
+  const readsBeforeCleanup = harness.reads.length;
+  if (harness.reads[1]) harness.reads[1].resolve(dashboardModel("ready"));
+  await action;
+  assert.equal(readsBeforeCleanup, 1, "the wrapper must not hide a failed action-owned refresh with a retry");
+  assert.match(dashboardNodeText(harness.view.contentEl), /action refresh failed/);
+});
+
+test("dashboard action wrapper is limited to self-refreshing mutations", () => {
+  const actionTargets = [...dashboard.matchAll(/this\.runAction\(\(\) => this\.plugin\.(\w+)/g)]
+    .map((match) => match[1])
+    .sort();
+  assert.deepEqual(actionTargets, [
+    "connectPlaid",
+    "connectPlaid",
+    "setAccountTransactionLogTarget",
+    "setAccountTransactionLogTarget",
+    "setAccountTransactionLogTarget",
+    "syncAll",
+  ]);
+  assert.match(main, /await this\.syncAll\("connect"\)/);
+  assert.match(main, /const syncWasAlreadyRunning = this\.syncing;\s*await this\.syncAll\("connect"\);\s*if \(syncWasAlreadyRunning\) await this\.refreshDashboard\(\)/);
+  assert.match(main, /await this\.refreshDashboard\(\);\s*logger\.flow\("Sync", "done"/);
+  assert.match(main, /await this\.rerouteFinanceTransactions\("account-changed"\)/);
+  assert.match(main, /rerouteFinanceTransactions[\s\S]*?await this\.refreshDashboard\(\)/);
+  assert.doesNotMatch(dashboard, /await action\(\);\s*await this\.render\(\)/);
+});
+
+test("Connect owns exactly one refresh through normal and already-running Sync paths", async () => {
+  const createPlugin = () => {
+    const plugin = new mainActionModule.default({});
+    plugin.settings = {
+      plaidEnvironment: "sandbox",
+      transactionHistoryDays: 730,
+      oauthRedirectUri: "",
+      plaidClientIdSecret: "client-secret-name",
+      plaidSecretSecret: "environment-secret-name",
+    };
+    plugin.deviceState = {
+      plaidUserId: "device-user",
+      items: [],
+      providerIdentityMap: {},
+    };
+    plugin.getPlaidCredentials = () => ({ clientId: "client-id", secret: "environment-secret" });
+    let saves = 0;
+    let refreshes = 0;
+    plugin.saveDeviceState = () => {
+      saves += 1;
+    };
+    plugin.refreshDashboard = async () => {
+      refreshes += 1;
+    };
+    return { plugin, refreshes: () => refreshes, saves: () => saves };
+  };
+
+  globalThis.__tpsConnectNotices = [];
+  const normal = createPlugin();
+  let normalSyncs = 0;
+  normal.plugin.syncAll = async (reason) => {
+    assert.equal(reason, "connect");
+    normalSyncs += 1;
+    await normal.plugin.refreshDashboard();
+  };
+  await normal.plugin.connectPlaid();
+  assert.equal(normalSyncs, 1);
+  assert.equal(normal.refreshes(), 1, "normal Connect must rely on its completed Sync refresh without adding another");
+  assert.equal(normal.saves(), 1);
+  assert.equal(normal.plugin.deviceState.items.length, 1);
+
+  globalThis.__tpsConnectNotices = [];
+  const busy = createPlugin();
+  busy.plugin.syncing = true;
+  await busy.plugin.connectPlaid();
+  assert.equal(busy.refreshes(), 1, "Connect must refresh its persisted Item when Sync takes the busy early return");
+  assert.equal(busy.saves(), 1);
+  assert.equal(busy.plugin.deviceState.items.length, 1);
+  assert.deepEqual(globalThis.__tpsConnectNotices, [
+    "Test Bank connected. Syncing finances…",
+    "TPS Finances is already syncing.",
+  ]);
 });
 
 test("finance settings use a shallow routed hub with complete controls and actions", () => {

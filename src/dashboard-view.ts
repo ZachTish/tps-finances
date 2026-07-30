@@ -290,7 +290,6 @@ export class TPSFinancesView extends ItemView {
   private async runAction(action: () => Promise<void>): Promise<void> {
     try {
       await action();
-      await this.render();
     } catch (error) {
       new Notice(error instanceof Error ? error.message : String(error));
     }

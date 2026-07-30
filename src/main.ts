@@ -174,7 +174,9 @@ export default class TPSFinancesPlugin extends Plugin {
       this.saveDeviceState();
       logger.flow("Connect", "done", { institution: item.institutionName, connectedItems: this.deviceState.items.length });
       new Notice(`${item.institutionName} connected. Syncing finances…`);
+      const syncWasAlreadyRunning = this.syncing;
       await this.syncAll("connect");
+      if (syncWasAlreadyRunning) await this.refreshDashboard();
     } catch (error) {
       logger.failure("Connect", "failed", error, { environment: this.settings.plaidEnvironment });
       throw error;
