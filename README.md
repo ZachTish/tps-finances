@@ -1,5 +1,13 @@
 # TPS Finances
 
+## 0.5.5
+
+- Transactions Sync pagination now validates Plaid's required `has_more`, `next_cursor`, change-array, ID, account, amount, date, and pending-state fields before accepting a page. Continuing cursors must advance; cyclic/rewound checkpoints and changes attached to a stationary terminal cursor fail closed instead of being coerced into a plausible patch.
+- Plaid's documented mutation-during-pagination condition restarts from the original durable cursor only when its structured error code follows an accepted partial attempt. Recovery is limited to two automatic restarts and 100 pages per attempt; other errors are never text-matched, retried, or routed through a fallback.
+- Each attempt normalizes into compact attempt-local arrays and a staged new-identity overlay. Durable identity history is read in place instead of copied; discarded, malformed, over-limit, and normalization-failed attempts cannot leak provider identities or partial transaction patches into device state.
+- Empty terminal cursors with no observed changes remain supported for not-yet-ready Items. An existing durable cursor is preserved rather than overwritten with an empty checkpoint.
+- Account/transaction fields, cursor persistence after terminal success, settings, Plaid connection flows, Markdown records, dashboard behavior, and optional Investments behavior are unchanged. This backward-compatible reliability patch keeps minimum Obsidian 1.12.0 and requires no migration.
+
 ## 0.5.4
 
 - Dashboard refreshes that arrive during an active model read are now coalesced into one serialized follow-up instead of being discarded.
@@ -45,6 +53,7 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 - 2026-07-28 efficiency-release validation: all 23 declared tests passed, including exact legacy-result and single-traversal budget regressions. An independent 20,000-case randomized oracle found no difference within the production data contract; a synthetic 120-budget/30,000-transaction run measured about 359 ms for the prior algorithm and 2.5 ms for the one-pass implementation. The required standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; Finances commands registered and the empty, disconnected dashboard rendered without changing settings, connecting Plaid, syncing, or creating runtime state. Production was not accessed or promoted.
 - 2026-07-28 snapshot-efficiency validation: all 24 declared tests passed, including source-backed account-reuse and latest-snapshot selection equivalence coverage; 100,000 randomized dense selectors matched the former ordering, and a synthetic 10,000-snapshot selector benchmark improved from about 113.72 ms to 19.61 ms over 30 iterations. The required standalone build deployed only to `[runtime-deploy] target=test`. After **Reload app without saving**, Obsidian 1.12.7 registered the Finances commands and rendered the disconnected dashboard without connecting Plaid, syncing, changing settings, or creating runtime state. Production was not accessed or promoted.
 - 2026-07-30 refresh-reliability validation: the released 0.5.3 implementation passed its 25 tests but an executable real-view harness proved that a refresh during an active read was dropped after one model load. Version 0.5.4 passed all 28 declared tests; 150 overlapping requests across two active reads produced exactly two serialized follow-ups, one final DOM commit, and no parallel model reads. Superseded success/error, synchronous failure recovery, close-before-start, close-during-read, and reopen behavior passed. The required standalone build deployed only to `[runtime-deploy] target=test`; after **Reload app without saving**, Obsidian 1.12.7 opened and rendered the disconnected Finances dashboard without connecting Plaid, syncing, changing settings, or creating runtime state. Production was not accessed or promoted.
+- 2026-07-30 transaction-pagination validation: the exact 0.5.4 release passed 28/28 declared checks, then failed five of eight safe pagination probes plus a bounded-recovery probe that reached a synthetic runaway guard after eight completed provider calls. Version 0.5.5 passes all 37 declared checks: structured mutation recovery stops after six calls in the repeated-error fixture, seventeen malformed/non-progressing response cases fail without fallback, three valid terminal no-op cursor shapes remain accepted, a terminal 100th page succeeds, and failed attempts commit no partial identities. A deterministic 20,000-entry fixture proves sync reads durable identities without enumerating or copying their history; a local 100,000-entry benchmark measured about 41.07 ms median for the rejected full-map copy versus about 0.0001 ms for an empty overlay commit. TypeScript, the suite build, mandatory separate final build, and the disconnected test-vault dashboard smoke check passed without invoking Plaid or creating runtime state. Production was not accessed or promoted.
 
 ## Mobile modal contract
 
@@ -118,6 +127,8 @@ Only the selected destination is rendered. The selection is transient and never 
 ## Plaid products and limitations
 
 - Regular bank and credit activity uses cursor-based `/transactions/sync`, including added, modified, and removed records.
+- Transactions pagination requires explicit boolean `has_more`, string `next_cursor`, contract-shaped change arrays, nonempty IDs/accounts, finite amounts, ISO-shaped dates, and boolean pending state. Empty terminal cursors are accepted only when the page observed no changes; a saved durable cursor is retained in that not-yet-ready response.
+- Plaid's documented mutation-during-pagination error restarts from the original durable cursor only after an accepted partial attempt. Recovery is limited to two restarts, each attempt is limited to 100 pages at Plaid's maximum 500-record page size, and every other provider error fails without fallback or automatic retry. Attempt-local transaction arrays and new-identity overlays become shared state only after a valid terminal page; durable identity history is never copied just to start an attempt.
 - Holdings use `/investments/holdings/get`. A failed or pending optional response is a non-observation, not an authoritative empty response; the newest snapshot retains only last-known holdings belonging to that Item's currently returned accounts. A successful empty response clears those holdings.
 - Investment activity uses paginated `/investments/transactions/get` with the initial history range and a rolling 14-day overlap after a successful history sync. Its separate device-local watermark advances only after the complete response has been written, so `PRODUCT_NOT_READY` and transport/provider outages retry the full initial range.
 - Institutions without the Investments product continue syncing ordinary accounts and transactions.
@@ -135,7 +146,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Validation
 
-- `npm test` runs contract/storage regressions, real-view dashboard refresh coalescing/error/lifecycle tests, exact budget-aggregation equivalence and traversal checks, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/pagination/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
+- `npm test` runs contract/storage regressions, real-view dashboard refresh coalescing/error/lifecycle tests, exact budget-aggregation equivalence and traversal checks, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/strict cursor-progress/bounded-restart/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
 - Validate Sandbox first, then separately configure the production SecretStorage entry before switching environments.
 - After every source change, rebuild and reload Obsidian before testing the dashboard or Plaid Link.
 - Populated dashboard validation covered mixed checking, credit, and brokerage accounts; transfers and investment buys were excluded from spending; income, net worth, source-line navigation, TPS Home summary, and responsive layouts were checked before the temporary data was removed.
@@ -144,6 +155,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Version notes
 
+- 0.5.5: Made Transactions Sync pagination fail closed on malformed or non-progressing pages, bounded structured mutation restarts, preserved not-yet-ready durable cursors, and staged all attempt-local identities until terminal success.
 - 0.5.4: Coalesced dashboard refresh bursts, prevented stale model/error commits, made overlapping callers await the newest requested render, and cancelled queued DOM work when the view closes.
 - 0.5.3: Prepared enabled categorization-rule order once per dashboard model and reused it across transaction classification without adding persistent state or changing classification results.
 - 0.5.2: Removed a redundant account-vault scan from holding parsing and replaced full snapshot sorting with an equivalent one-pass selection.

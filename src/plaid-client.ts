@@ -19,6 +19,9 @@ const PLAID_HOSTS: Record<PlaidEnvironment, string> = {
   production: "https://production.plaid.com",
 };
 const PLAID_API_VERSION = "2020-09-14";
+const MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT = 100;
+const MAX_TRANSACTION_SYNC_MUTATION_RESTARTS = 2;
+const TRANSACTION_SYNC_MUTATION_CODE = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
 
 export class PlaidApiError extends Error {
   constructor(
@@ -74,41 +77,90 @@ export class PlaidClient {
 
   async syncTransactions(item: DeviceItemState, state: DeviceState): Promise<TransactionSyncPatch> {
     const originalCursor = item.cursor || "";
-    let cursor = originalCursor;
-    const added: FinanceTransaction[] = [];
-    const modified: FinanceTransaction[] = [];
-    const removedProviderIds: string[] = [];
+    let attempt = 0;
+    while (true) {
+      let cursor = originalCursor;
+      let acceptedPages = 0;
+      let restartRequested = false;
+      const seenCursors = new Set([cursor]);
+      const stagedProviderIdentityMap: Record<string, string> = {};
+      const resolveTransactionIdentity = (scope: string, providerId: string): string =>
+        stagedLocalIdentity(state.providerIdentityMap, stagedProviderIdentityMap, scope, providerId);
+      const added: FinanceTransaction[] = [];
+      const modified: FinanceTransaction[] = [];
+      const removedProviderIds: string[] = [];
 
-    for (let page = 0; page < 100; page += 1) {
-      let response: any;
-      try {
-        response = await this.post("/transactions/sync", {
-          access_token: item.accessToken,
-          cursor: cursor || undefined,
-          count: 500,
-        });
-      } catch (error) {
-        if (String(error).includes("TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION") && cursor !== originalCursor) {
-          cursor = originalCursor;
-          added.length = 0;
-          modified.length = 0;
-          removedProviderIds.length = 0;
-          page = -1;
-          continue;
+      for (let page = 0; page < MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT; page += 1) {
+        let response: any;
+        try {
+          response = await this.post("/transactions/sync", {
+            access_token: item.accessToken,
+            cursor: cursor || undefined,
+            count: 500,
+          });
+        } catch (error) {
+          const canRestart = error instanceof PlaidApiError
+            && error.code === TRANSACTION_SYNC_MUTATION_CODE
+            && acceptedPages > 0
+            && attempt < MAX_TRANSACTION_SYNC_MUTATION_RESTARTS;
+          if (!canRestart) throw error;
+          logger.warn("Plaid", "transactions-pagination-restart", {
+            restart: attempt + 1,
+            maxRestarts: MAX_TRANSACTION_SYNC_MUTATION_RESTARTS,
+            code: error.code,
+            requestId: error.requestId,
+          });
+          restartRequested = true;
+          break;
         }
-        throw error;
+
+        if (typeof response.has_more !== "boolean") {
+          throw new Error("Plaid transaction sync returned an invalid has_more value.");
+        }
+        if (typeof response.next_cursor !== "string") {
+          throw new Error("Plaid transaction sync returned an invalid next_cursor value.");
+        }
+        const nextCursor = response.next_cursor;
+        const pageAdded = transactionSyncRows(response.added, "added");
+        const pageModified = transactionSyncRows(response.modified, "modified");
+        const pageRemoved = transactionSyncRows(response.removed, "removed");
+        const pageHasChanges = pageAdded.length > 0 || pageModified.length > 0 || pageRemoved.length > 0;
+        let terminalCursor = nextCursor;
+
+        if (response.has_more) {
+          if (!nextCursor || seenCursors.has(nextCursor)) {
+            throw new Error("Plaid transaction sync returned a non-progressing next_cursor while more pages remain.");
+          }
+        } else if (!nextCursor) {
+          if (acceptedPages > 0 || pageHasChanges) {
+            throw new Error("Plaid transaction sync returned an empty terminal next_cursor after update activity.");
+          }
+          terminalCursor = originalCursor;
+        } else if (nextCursor !== cursor && seenCursors.has(nextCursor)) {
+          throw new Error("Plaid transaction sync returned a terminal next_cursor that rewinds pagination.");
+        } else if (nextCursor === cursor && pageHasChanges) {
+          throw new Error("Plaid transaction sync returned changes without advancing its terminal next_cursor.");
+        }
+
+        added.push(...pageAdded.map((transaction) => normalizeTransaction(transaction, resolveTransactionIdentity)));
+        modified.push(...pageModified.map((transaction) => normalizeTransaction(transaction, resolveTransactionIdentity)));
+        removedProviderIds.push(...pageRemoved.map((removed) => removed.transaction_id as string));
+        acceptedPages += 1;
+
+        if (!response.has_more) {
+          Object.assign(state.providerIdentityMap, stagedProviderIdentityMap);
+          return { added, modified, removedProviderIds, nextCursor: terminalCursor };
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
       }
 
-      for (const transaction of asArray(response.added)) added.push(normalizeTransaction(transaction, state));
-      for (const transaction of asArray(response.modified)) modified.push(normalizeTransaction(transaction, state));
-      for (const removed of asArray(response.removed)) {
-        const id = String(removed.transaction_id || "");
-        if (id) removedProviderIds.push(id);
+      if (restartRequested) {
+        attempt += 1;
+        continue;
       }
-      cursor = String(response.next_cursor || cursor);
-      if (!response.has_more) return { added, modified, removedProviderIds, nextCursor: cursor };
+      throw new Error(`Plaid transaction sync exceeded ${MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT} pages in one pagination attempt.`);
     }
-    throw new Error("Plaid transaction sync exceeded 100 pages.");
   }
 
   async getHoldings(item: DeviceItemState, state: DeviceState): Promise<OptionalPlaidResult<FinanceHolding[]>> {
@@ -184,11 +236,14 @@ function normalizeAccount(account: any, item: DeviceItemState, state: DeviceStat
   };
 }
 
-function normalizeTransaction(transaction: any, state: DeviceState): FinanceTransaction {
+function normalizeTransaction(
+  transaction: any,
+  resolveIdentity: (scope: string, providerId: string) => string,
+): FinanceTransaction {
   return {
-    financeId: localIdentity(state, "transaction", String(transaction.transaction_id || "")),
+    financeId: resolveIdentity("transaction", String(transaction.transaction_id || "")),
     providerTransactionId: String(transaction.transaction_id || ""),
-    financeAccountId: localIdentity(state, "account", String(transaction.account_id || "")),
+    financeAccountId: resolveIdentity("account", String(transaction.account_id || "")),
     date: String(transaction.date || transaction.authorized_date || ""),
     authorizedDate: String(transaction.authorized_date || ""),
     name: String(transaction.name || transaction.merchant_name || "Transaction"),
@@ -201,6 +256,34 @@ function normalizeTransaction(transaction: any, state: DeviceState): FinanceTran
     subtype: ordinaryTransactionSubtype(transaction),
     kind: "transaction",
   };
+}
+
+function transactionSyncRows(value: unknown, field: "added" | "modified" | "removed"): any[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Plaid transaction sync returned an invalid ${field} collection.`);
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const row = value[index];
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} row at index ${index}.`);
+    }
+    if (typeof row.transaction_id !== "string" || row.transaction_id.length === 0) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} transaction_id at index ${index}.`);
+    }
+    if (typeof row.account_id !== "string" || row.account_id.length === 0) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} account_id at index ${index}.`);
+    }
+    if (field !== "removed" && (typeof row.amount !== "number" || !Number.isFinite(row.amount))) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} amount at index ${index}.`);
+    }
+    if (field !== "removed" && (typeof row.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(row.date))) {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} date at index ${index}.`);
+    }
+    if (field !== "removed" && typeof row.pending !== "boolean") {
+      throw new Error(`Plaid transaction sync returned an invalid ${field} pending value at index ${index}.`);
+    }
+  }
+  return value;
 }
 
 function normalizeInvestmentTransaction(transaction: any, state: DeviceState): FinanceTransaction {
@@ -265,6 +348,21 @@ function localIdentity(state: DeviceState, scope: string, providerId: string): s
   if (existing) return existing;
   const created = createLocalId(`finance-${scope}`);
   state.providerIdentityMap[key] = created;
+  return created;
+}
+
+function stagedLocalIdentity(
+  durableIdentities: Readonly<Record<string, string>>,
+  stagedIdentities: Record<string, string>,
+  scope: string,
+  providerId: string,
+): string {
+  if (!providerId) return createLocalId(`finance-${scope}`);
+  const key = providerIdentityKey(scope, providerId);
+  const existing = stagedIdentities[key] || durableIdentities[key];
+  if (existing) return existing;
+  const created = createLocalId(`finance-${scope}`);
+  stagedIdentities[key] = created;
   return created;
 }
 
