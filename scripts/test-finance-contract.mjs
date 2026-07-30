@@ -45,6 +45,145 @@ const plaidClientBuild = await build({
   }],
 });
 const plaidClientModule = await import(`data:text/javascript;base64,${Buffer.from(plaidClientBuild.outputFiles[0].text).toString("base64")}`);
+const dashboardViewBuild = await build({
+  entryPoints: [fileURLToPath(new URL("../src/dashboard-view.ts", import.meta.url))],
+  bundle: true,
+  write: false,
+  format: "esm",
+  platform: "node",
+  plugins: [{
+    name: "mock-obsidian-dashboard",
+    setup(builder) {
+      builder.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "mock" }));
+      builder.onLoad({ filter: /.*/, namespace: "mock" }, () => ({
+        contents: [
+          "export class ItemView { constructor() { this.contentEl = globalThis.__tpsCreateDashboardNode(); } }",
+          "export class Menu {}",
+          "export class Notice {}",
+          "export class WorkspaceLeaf {}",
+          "export const setIcon = () => {};",
+        ].join("\n"),
+      }));
+    },
+  }],
+});
+const dashboardViewModule = await import(`data:text/javascript;base64,${Buffer.from(dashboardViewBuild.outputFiles[0].text).toString("base64")}`);
+
+class DashboardNode {
+  constructor(tag = "div", options = {}) {
+    this.tag = tag;
+    this.children = [];
+    this.text = String(options.text ?? "");
+    this.emptyCalls = 0;
+  }
+
+  empty() {
+    this.children = [];
+    this.text = "";
+    this.emptyCalls += 1;
+  }
+
+  createDiv(options = {}) {
+    return this.createEl("div", options);
+  }
+
+  createEl(tag, options = {}) {
+    const child = new DashboardNode(tag, options);
+    this.children.push(child);
+    return child;
+  }
+
+  createSpan(options = {}) {
+    return this.createEl("span", options);
+  }
+
+  appendChild(child) {
+    this.children.push(child);
+    return child;
+  }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  addClass() {}
+  addEventListener() {}
+  setAttr() {}
+
+  setText(value) {
+    this.text = String(value);
+  }
+
+  querySelector() {
+    return null;
+  }
+}
+
+function dashboardNodeText(node) {
+  return [node.text, ...node.children.map((child) => dashboardNodeText(child))].filter(Boolean).join(" ");
+}
+
+function dashboardModel(plaidSetupState) {
+  return {
+    accounts: [],
+    holdings: [],
+    transactions: [],
+    lastSyncAt: "",
+    connectedItems: 0,
+    plaidSetupState,
+    budgets: [],
+  };
+}
+
+function createDashboardRenderHarness() {
+  let activeReads = 0;
+  let maximumActiveReads = 0;
+  let synchronousError = null;
+  const reads = [];
+  globalThis.__tpsCreateDashboardNode = () => new DashboardNode();
+  globalThis.document = {
+    createElement: (tag) => new DashboardNode(tag),
+    createTextNode: (text) => new DashboardNode("#text", { text }),
+  };
+  const plugin = {
+    getDashboardModel() {
+      if (synchronousError) {
+        const error = synchronousError;
+        synchronousError = null;
+        throw error;
+      }
+      activeReads += 1;
+      maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+      const read = {};
+      read.promise = new Promise((resolve, reject) => {
+        read.resolve = (model) => {
+          activeReads -= 1;
+          resolve(model);
+        };
+        read.reject = (error) => {
+          activeReads -= 1;
+          reject(error);
+        };
+      });
+      reads.push(read);
+      return read.promise;
+    },
+  };
+  const view = new dashboardViewModule.TPSFinancesView({}, plugin);
+  return {
+    reads,
+    view,
+    maximumActiveReads: () => maximumActiveReads,
+    throwSynchronously(error) {
+      synchronousError = error;
+    },
+  };
+}
+
+async function waitForDashboardReads(reads, expected) {
+  for (let attempt = 0; attempt < 20 && reads.length < expected; attempt += 1) await Promise.resolve();
+  assert.equal(reads.length, expected);
+}
 
 test("TPS Finances is a desktop finance view with device-local authentication", () => {
   assert.equal(manifest.id, "tps-finances");
@@ -60,6 +199,91 @@ test("TPS Finances is a desktop finance view with device-local authentication", 
   assert.match(link, /if\(!response\.ok\)throw/);
   assert.match(link, /onExit\(err\)\{\s*if\(completing\)return/);
   assert.doesNotMatch(main, /accessToken.*saveData|saveData\([^)]*deviceState/);
+});
+
+test("dashboard rendering coalesces refresh bursts and commits only the newest model", async () => {
+  const harness = createDashboardRenderHarness();
+  const firstRender = harness.view.render();
+  await waitForDashboardReads(harness.reads, 1);
+
+  const firstBurst = Array.from({ length: 100 }, () => harness.view.render());
+  let burstSettled = false;
+  void Promise.all(firstBurst).then(() => {
+    burstSettled = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(burstSettled, false, "overlapping callers must wait for the coalesced refresh to finish");
+  assert.equal(harness.reads.length, 1, "a burst must not start parallel model reads");
+
+  harness.reads[0].resolve(dashboardModel("missing-credentials"));
+  await waitForDashboardReads(harness.reads, 2);
+  assert.equal(harness.view.contentEl.emptyCalls, 0, "a superseded model must not rebuild the DOM");
+
+  const secondBurst = Array.from({ length: 50 }, () => harness.view.render());
+  harness.reads[1].resolve(dashboardModel("conflicting-credentials"));
+  await waitForDashboardReads(harness.reads, 3);
+  assert.equal(harness.view.contentEl.emptyCalls, 0, "each superseded model must remain uncommitted");
+
+  harness.reads[2].resolve(dashboardModel("ready"));
+  await Promise.all([firstRender, ...firstBurst, ...secondBurst]);
+
+  const renderedText = dashboardNodeText(harness.view.contentEl);
+  assert.equal(harness.reads.length, 3, "150 overlapping requests across two active reads must coalesce into two follow-ups");
+  assert.equal(harness.maximumActiveReads(), 1);
+  assert.equal(harness.view.contentEl.emptyCalls, 1, "only the newest model should rebuild the DOM");
+  assert.match(renderedText, /Plaid credentials are ready/);
+  assert.doesNotMatch(renderedText, /same Obsidian secret|Add separate Plaid client ID/);
+});
+
+test("dashboard rendering retries dirty failures without flashing stale errors or becoming stuck", async () => {
+  const harness = createDashboardRenderHarness();
+  const firstRender = harness.view.render();
+  await waitForDashboardReads(harness.reads, 1);
+  const queuedRender = harness.view.render();
+  harness.reads[0].reject(new Error("superseded failure"));
+  await waitForDashboardReads(harness.reads, 2);
+  assert.doesNotMatch(dashboardNodeText(harness.view.contentEl), /superseded failure/);
+
+  harness.reads[1].resolve(dashboardModel("ready"));
+  await Promise.all([firstRender, queuedRender]);
+  assert.match(dashboardNodeText(harness.view.contentEl), /Plaid credentials are ready/);
+
+  harness.throwSynchronously(new Error("final failure"));
+  await harness.view.render();
+  assert.match(dashboardNodeText(harness.view.contentEl), /final failure/);
+
+  const recoveryRender = harness.view.render();
+  await waitForDashboardReads(harness.reads, 3);
+  harness.reads[2].resolve(dashboardModel("ready"));
+  await recoveryRender;
+  assert.doesNotMatch(dashboardNodeText(harness.view.contentEl), /final failure/);
+  assert.match(dashboardNodeText(harness.view.contentEl), /Plaid credentials are ready/);
+});
+
+test("dashboard close cancels queued commits and reopening requests a fresh model", async () => {
+  const deferredHarness = createDashboardRenderHarness();
+  const deferredRender = deferredHarness.view.render();
+  await deferredHarness.view.onClose();
+  await deferredRender;
+  assert.equal(deferredHarness.reads.length, 0, "closing before the deferred drain starts must avoid a post-close model read");
+
+  const harness = createDashboardRenderHarness();
+  const closingRender = harness.view.render();
+  await waitForDashboardReads(harness.reads, 1);
+  const queuedRender = harness.view.render();
+  await harness.view.onClose();
+  harness.reads[0].resolve(dashboardModel("missing-credentials"));
+  await Promise.all([closingRender, queuedRender]);
+  assert.equal(harness.reads.length, 1);
+  assert.equal(harness.view.contentEl.emptyCalls, 0);
+
+  const reopeningRender = harness.view.onOpen();
+  await waitForDashboardReads(harness.reads, 2);
+  harness.reads[1].resolve(dashboardModel("ready"));
+  await reopeningRender;
+  assert.equal(harness.view.contentEl.emptyCalls, 1);
+  assert.match(dashboardNodeText(harness.view.contentEl), /Plaid credentials are ready/);
 });
 
 test("finance settings use a shallow routed hub with complete controls and actions", () => {

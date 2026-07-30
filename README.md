@@ -1,5 +1,13 @@
 # TPS Finances
 
+## 0.5.4
+
+- Dashboard refreshes that arrive during an active model read are now coalesced into one serialized follow-up instead of being discarded.
+- Superseded models and errors no longer rebuild the dashboard; every overlapping caller waits for the newest requested model to settle, and closing the view prevents an in-flight read from committing into a detached surface.
+- Reopening requests a fresh model, while final model failures retain the existing visible error state. Commands, settings, finance records, classification, Plaid behavior, and supported fallback precedence remain unchanged.
+- The scheduler is transient view state only: it adds no cache, timer, persistent schema, retry fallback, monkeypatch, or unsupported Obsidian API.
+- This backward-compatible reliability and rendering-efficiency patch keeps the minimum supported Obsidian version at 1.12.0.
+
 ## 0.5.3
 
 - Dashboard classification now filters and orders enabled categorization rules once per model build instead of repeating that preparation for every historical transaction.
@@ -36,6 +44,7 @@ Canonical source, tests, Git metadata, and dependencies live in `/Users/zachtish
 - 2026-07-24 settings-release validation: all 21 declared tests passed, including the routed-settings, post-connect/post-sync refresh, persistence, and finance-contract regressions. The required final standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; all four settings destinations and the shared nine-plugin `Choose what to configure` pattern were inspected in the registered test vault without connecting Plaid, syncing, changing settings, or invoking a mutating shortcut. Runtime-owned state remained absent and production was not accessed or promoted.
 - 2026-07-28 efficiency-release validation: all 23 declared tests passed, including exact legacy-result and single-traversal budget regressions. An independent 20,000-case randomized oracle found no difference within the production data contract; a synthetic 120-budget/30,000-transaction run measured about 359 ms for the prior algorithm and 2.5 ms for the one-pass implementation. The required standalone build deployed only to `[runtime-deploy] target=test`. Obsidian 1.12.7 was reloaded with `Reload app without saving`; Finances commands registered and the empty, disconnected dashboard rendered without changing settings, connecting Plaid, syncing, or creating runtime state. Production was not accessed or promoted.
 - 2026-07-28 snapshot-efficiency validation: all 24 declared tests passed, including source-backed account-reuse and latest-snapshot selection equivalence coverage; 100,000 randomized dense selectors matched the former ordering, and a synthetic 10,000-snapshot selector benchmark improved from about 113.72 ms to 19.61 ms over 30 iterations. The required standalone build deployed only to `[runtime-deploy] target=test`. After **Reload app without saving**, Obsidian 1.12.7 registered the Finances commands and rendered the disconnected dashboard without connecting Plaid, syncing, changing settings, or creating runtime state. Production was not accessed or promoted.
+- 2026-07-30 refresh-reliability validation: the released 0.5.3 implementation passed its 25 tests but an executable real-view harness proved that a refresh during an active read was dropped after one model load. Version 0.5.4 passed all 28 declared tests; 150 overlapping requests across two active reads produced exactly two serialized follow-ups, one final DOM commit, and no parallel model reads. Superseded success/error, synchronous failure recovery, close-before-start, close-during-read, and reopen behavior passed. The required standalone build deployed only to `[runtime-deploy] target=test`; after **Reload app without saving**, Obsidian 1.12.7 opened and rendered the disconnected Finances dashboard without connecting Plaid, syncing, changing settings, or creating runtime state. Production was not accessed or promoted.
 
 ## Mobile modal contract
 
@@ -126,7 +135,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Validation
 
-- `npm test` runs contract/storage regressions, exact budget-aggregation equivalence and traversal checks, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/pagination/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
+- `npm test` runs contract/storage regressions, real-view dashboard refresh coalescing/error/lifecycle tests, exact budget-aggregation equivalence and traversal checks, atomic transaction-content/move tests, modal single-flight and local-month checks, mocked Plaid credential trimming/migration/transport/pagination/optional-product tests, success-only investment watermark tests, scoped last-known-holdings preservation tests, and a production TypeScript/esbuild build. The Plaid tests do not call the live API.
 - Validate Sandbox first, then separately configure the production SecretStorage entry before switching environments.
 - After every source change, rebuild and reload Obsidian before testing the dashboard or Plaid Link.
 - Populated dashboard validation covered mixed checking, credit, and brokerage accounts; transfers and investment buys were excluded from spending; income, net worth, source-line navigation, TPS Home summary, and responsive layouts were checked before the temporary data was removed.
@@ -135,6 +144,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Version notes
 
+- 0.5.4: Coalesced dashboard refresh bursts, prevented stale model/error commits, made overlapping callers await the newest requested render, and cancelled queued DOM work when the view closes.
 - 0.5.3: Prepared enabled categorization-rule order once per dashboard model and reused it across transaction classification without adding persistent state or changing classification results.
 - 0.5.2: Removed a redundant account-vault scan from holding parsing and replaced full snapshot sorting with an equivalent one-pass selection.
 - 0.5.1: Replaced per-budget transaction filtering with one shared monthly category aggregation pass, preserving the existing budget results while reducing dashboard work from budgets × transactions to budgets + transactions.

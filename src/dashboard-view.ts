@@ -58,7 +58,9 @@ interface FinancesViewPlugin {
 }
 
 export class TPSFinancesView extends ItemView {
-  private rendering = false;
+  private renderRequested = false;
+  private renderPromise: Promise<void> | null = null;
+  private closed = false;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: FinancesViewPlugin) {
     super(leaf);
@@ -77,45 +79,65 @@ export class TPSFinancesView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.closed = false;
     this.contentEl.addClass("tps-finances-view");
     await this.render();
   }
 
-  async render(): Promise<void> {
-    if (this.rendering) return;
-    this.rendering = true;
+  async onClose(): Promise<void> {
+    this.closed = true;
+    this.renderRequested = false;
+  }
+
+  render(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.renderRequested = true;
+    if (!this.renderPromise) {
+      this.renderPromise = Promise.resolve().then(() => this.drainRenderRequests());
+    }
+    return this.renderPromise;
+  }
+
+  private async drainRenderRequests(): Promise<void> {
     try {
-      const model = await this.plugin.getDashboardModel();
-      this.contentEl.empty();
-      const root = this.contentEl.createDiv({ cls: "tps-finances-root" });
-      this.renderHeader(root, model);
-      if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
-      else {
-        if (model.connectedItems && !model.accounts.length) {
-          root.createDiv({
-            cls: "tps-finances-status is-warning",
-            text: "Plaid is connected, but no account snapshot has synced yet. Run Sync; any provider or credential error will be shown here in Obsidian.",
-          });
+      while (!this.closed && this.renderRequested) {
+        this.renderRequested = false;
+        try {
+          const model = await this.plugin.getDashboardModel();
+          if (this.closed || this.renderRequested) continue;
+          this.contentEl.empty();
+          const root = this.contentEl.createDiv({ cls: "tps-finances-root" });
+          this.renderHeader(root, model);
+          if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
+          else {
+            if (model.connectedItems && !model.accounts.length) {
+              root.createDiv({
+                cls: "tps-finances-status is-warning",
+                text: "Plaid is connected, but no account snapshot has synced yet. Run Sync; any provider or credential error will be shown here in Obsidian.",
+              });
+            }
+            const staleHoldings = model.holdings.filter((holding) => holding.stale);
+            if (staleHoldings.length) {
+              const oldest = staleHoldings.map((holding) => holding.asOf || "").filter(Boolean).sort()[0] || "an earlier sync";
+              root.createDiv({
+                cls: "tps-finances-status is-warning",
+                text: `Investment values include ${staleHoldings.length} last-known holding${staleHoldings.length === 1 ? "" : "s"} as of ${oldest}; core accounts and Transactions are current, and Investments will retry on the next sync.`,
+              });
+            }
+            this.renderSummary(root, model);
+            this.renderBudgets(root, model.budgets);
+            this.renderAccounts(root, model.accounts);
+            this.renderHoldings(root, model.holdings);
+            this.renderTransactions(root, model.transactions);
+          }
+        } catch (error) {
+          if (this.closed || this.renderRequested) continue;
+          this.contentEl.empty();
+          this.contentEl.createDiv({ cls: "tps-finances-error", text: error instanceof Error ? error.message : String(error) });
         }
-        const staleHoldings = model.holdings.filter((holding) => holding.stale);
-        if (staleHoldings.length) {
-          const oldest = staleHoldings.map((holding) => holding.asOf || "").filter(Boolean).sort()[0] || "an earlier sync";
-          root.createDiv({
-            cls: "tps-finances-status is-warning",
-            text: `Investment values include ${staleHoldings.length} last-known holding${staleHoldings.length === 1 ? "" : "s"} as of ${oldest}; core accounts and Transactions are current, and Investments will retry on the next sync.`,
-          });
-        }
-        this.renderSummary(root, model);
-        this.renderBudgets(root, model.budgets);
-        this.renderAccounts(root, model.accounts);
-        this.renderHoldings(root, model.holdings);
-        this.renderTransactions(root, model.transactions);
       }
-    } catch (error) {
-      this.contentEl.empty();
-      this.contentEl.createDiv({ cls: "tps-finances-error", text: error instanceof Error ? error.message : String(error) });
     } finally {
-      this.rendering = false;
+      this.renderPromise = null;
     }
   }
 
