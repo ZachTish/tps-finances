@@ -140,6 +140,72 @@ test("local classification is ordered, additive, and manual-first", () => {
   assert.deepEqual(classification.classifyTransaction({ ...transaction, categoryOverride: "household" }, rules), { category: "household", tags: ["#receipt", "#food"], source: "manual", ruleId: "first" });
 });
 
+test("dashboard classification prepares rule ordering once without changing legacy results", () => {
+  const rules = [
+    { id: "disabled", name: "Disabled", enabled: false, priority: 0, accountContains: "", nameContains: "", merchantContains: "", minAmount: null, maxAmount: null, category: "disabled", tags: ["disabled"] },
+    { id: "tag-only-first", name: "Same", enabled: true, priority: 10, accountContains: "primary", nameContains: "", merchantContains: "", minAmount: null, maxAmount: null, category: "", tags: ["tag only"] },
+    { id: "same-order-second", name: "Same", enabled: true, priority: 10, accountContains: "primary", nameContains: "", merchantContains: "", minAmount: null, maxAmount: null, category: "must-not-win", tags: ["second"] },
+    { id: "groceries", name: "Groceries", enabled: true, priority: 20, accountContains: "", nameContains: "", merchantContains: "market", minAmount: 20, maxAmount: 100, category: "groceries", tags: ["food"] },
+    { id: "fallback-account", name: "Fallback account", enabled: true, priority: 30, accountContains: "fallback", nameContains: "", merchantContains: "", minAmount: null, maxAmount: null, category: "account", tags: [] },
+  ];
+  const transactions = [
+    { account: "Primary account", name: "Purchase", merchant: "Vendor", amount: -5, providerCategory: "provider", categoryOverride: "manual", tags: ["existing"] },
+    { account: "Primary account", name: "Purchase", merchant: "Vendor", amount: -5, providerCategory: "provider", categoryOverride: "", tags: ["existing"] },
+    { account: "Other", name: "Purchase", merchant: "Neighborhood Market", amount: -50, providerCategory: "provider", categoryOverride: "", tags: [] },
+    { account: "Fallback account", accountSearchText: "", name: "Purchase", merchant: "Vendor", amount: -5, providerCategory: "", categoryOverride: "", tags: [] },
+    { account: "Fallback account", accountSearchText: "Different account", name: "Purchase", merchant: "Vendor", amount: -5, providerCategory: "provider", categoryOverride: "", tags: [] },
+    { account: "Other", name: "Purchase", merchant: "Vendor", amount: -5, providerCategory: "", categoryOverride: "", tags: [] },
+  ];
+  const legacyClassify = (transaction, sourceRules) => {
+    const rule = sourceRules.filter((candidate) => candidate.enabled)
+      .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name))
+      .find((candidate) => classification.ruleMatches(candidate, transaction));
+    return {
+      category: transaction.categoryOverride || rule?.category || transaction.providerCategory || "uncategorized",
+      tags: classification.normalizeTags([...transaction.tags, ...(rule?.tags || [])]),
+      source: transaction.categoryOverride ? "manual" : rule?.category ? "rule" : transaction.providerCategory ? "provider" : "uncategorized",
+      ruleId: rule?.id || "",
+    };
+  };
+  const originalRuleOrder = rules.map(({ id }) => id);
+  const prepared = classification.prepareTransactionClassifier(rules);
+
+  for (const transaction of transactions) {
+    const expected = legacyClassify(transaction, rules);
+    assert.deepEqual(classification.classifyTransaction(transaction, rules), expected);
+    assert.deepEqual(prepared(transaction), expected);
+  }
+  assert.deepEqual(rules.map(({ id }) => id), originalRuleOrder, "preparation must not mutate stored rule order");
+  assert.deepEqual(prepared(transactions[0]), { category: "manual", tags: ["#existing", "#tag-only"], source: "manual", ruleId: "tag-only-first" });
+  assert.deepEqual(prepared(transactions[1]), { category: "provider", tags: ["#existing", "#tag-only"], source: "provider", ruleId: "tag-only-first" });
+
+  const orderingReads = { enabled: 0, priority: 0, name: 0 };
+  const trackedRules = rules.map((rule) => {
+    const tracked = { ...rule };
+    for (const key of Object.keys(orderingReads)) {
+      Object.defineProperty(tracked, key, {
+        enumerable: true,
+        get() {
+          orderingReads[key] += 1;
+          return rule[key];
+        },
+      });
+    }
+    return tracked;
+  });
+  const trackedClassifier = classification.prepareTransactionClassifier(trackedRules);
+  const readsAfterPreparation = { ...orderingReads };
+  for (let index = 0; index < 100; index += 1) trackedClassifier(transactions[index % transactions.length]);
+  assert.deepEqual(orderingReads, readsAfterPreparation, "transaction classification must not repeat rule filtering or sorting");
+  assert.equal(readsAfterPreparation.enabled, rules.length);
+
+  const dashboardModelStart = main.indexOf("async getDashboardModel");
+  const dashboardModelImplementation = main.slice(dashboardModelStart, main.indexOf("addCategorizationRule", dashboardModelStart));
+  assert.match(dashboardModelImplementation, /const classifyForDashboard = prepareTransactionClassifier\(rules\)/);
+  assert.match(dashboardModelImplementation, /const classification = classifyForDashboard\(resolved\)/);
+  assert.doesNotMatch(dashboardModelImplementation, /classifyTransaction\(resolved, rules\)/);
+});
+
 test("monthly budget aggregation is equivalent across boundaries, categories, and numeric edge cases", () => {
   const month = "2026-07";
   const budgets = [

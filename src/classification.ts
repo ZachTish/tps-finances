@@ -18,6 +18,8 @@ export interface ClassificationResult {
   ruleId: string;
 }
 
+export type PreparedTransactionClassifier = (transaction: ClassifiableTransaction) => ClassificationResult;
+
 export interface BudgetSpendingTransaction {
   date: string;
   amount: number;
@@ -52,8 +54,21 @@ export function calculateMonthlyBudgetProgress<T extends FinanceBudget>(
 }
 
 export function classifyTransaction(transaction: ClassifiableTransaction, rules: FinanceRule[]): ClassificationResult {
-  const rule = rules.filter((candidate) => candidate.enabled).sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name))
-    .find((candidate) => ruleMatches(candidate, transaction));
+  return classifyWithOrderedRules(transaction, orderedEnabledRules(rules));
+}
+
+export function prepareTransactionClassifier(rules: readonly FinanceRule[]): PreparedTransactionClassifier {
+  const orderedRules = orderedEnabledRules(rules);
+  return (transaction) => classifyWithOrderedRules(transaction, orderedRules);
+}
+
+function orderedEnabledRules(rules: readonly FinanceRule[]): FinanceRule[] {
+  return rules.filter((candidate) => candidate.enabled)
+    .sort((left, right) => left.priority - right.priority || left.name.localeCompare(right.name));
+}
+
+function classifyWithOrderedRules(transaction: ClassifiableTransaction, orderedRules: readonly FinanceRule[]): ClassificationResult {
+  const rule = orderedRules.find((candidate) => ruleMatches(candidate, transaction));
   const category = transaction.categoryOverride || rule?.category || transaction.providerCategory || "uncategorized";
   const tags = normalizeTags([...transaction.tags, ...(rule?.tags || [])]);
   return {

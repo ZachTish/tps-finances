@@ -1,5 +1,13 @@
 # TPS Finances
 
+## 0.5.3
+
+- Dashboard classification now filters and orders enabled categorization rules once per model build instead of repeating that preparation for every historical transaction.
+- Rule order, stable tie behavior, manual overrides, rule/provider/uncategorized precedence, additive tags, account matching, amount boundaries, settings, and stored finance records remain unchanged.
+- The prepared classifier is invocation-local and discarded with the dashboard model; this patch adds no persistent cache, invalidation state, migration, or fallback route.
+- This backward-compatible performance patch keeps the minimum supported Obsidian version at 1.12.0.
+- Validation passed all 25 declared tests and 100,000 seeded legacy-equivalence cases. A 20,000-transaction/120-rule classification benchmark improved from about 200.87 ms to 6.11 ms; Obsidian 1.12.7 reloaded and rendered the disconnected dashboard in the isolated test vault without creating runtime state.
+
 ## 0.5.2
 
 - Holding snapshot parsing now reuses the already parsed account path/ID model instead of rescanning every Markdown file and rereading account metadata.
@@ -127,6 +135,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Version notes
 
+- 0.5.3: Prepared enabled categorization-rule order once per dashboard model and reused it across transaction classification without adding persistent state or changing classification results.
 - 0.5.2: Removed a redundant account-vault scan from holding parsing and replaced full snapshot sorting with an equivalent one-pass selection.
 - 0.5.1: Replaced per-budget transaction filtering with one shared monthly category aggregation pass, preserving the existing budget results while reducing dashboard work from budgets × transactions to budgets + transactions.
 - 0.5.0: Reorganized settings into a shallow accessible destination hub, added direct connection/sync/dashboard/rule/budget actions, and added narrow-window layout plus focus restoration without changing finance data or settings schemas.

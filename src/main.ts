@@ -1,6 +1,6 @@
 import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
-import { calculateMonthlyBudgetProgress, classifyTransaction, normalizeTags } from "./classification";
+import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
 import { FinanceStore } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
@@ -331,12 +331,13 @@ export default class TPSFinancesPlugin extends Plugin {
     const store = this.createStore();
     const transactionRecords = await store.readTransactionRecords();
     const rules = store.readRules();
+    const classifyForDashboard = prepareTransactionClassifier(rules);
     const accountLabels = this.accountLabelsByPath();
     const transactions = transactionRecords.map((record) => parseDashboardTransaction(record.line, record.path, record.lineNumber)).filter((value): value is DashboardTransaction => value !== null)
       .map((transaction) => {
         const accountLabel = accountLabels.get(transaction.accountPath);
         const resolved = accountLabel ? { ...transaction, account: accountLabel.display, accountSearchText: accountLabel.search } : transaction;
-        const classification = classifyTransaction(resolved, rules);
+        const classification = classifyForDashboard(resolved);
         return { ...resolved, category: classification.category, tags: classification.tags, categorySource: classification.source, ruleId: classification.ruleId };
       }).sort((left, right) => right.date.localeCompare(left.date));
     const month = localDate(new Date()).slice(0, 7);
