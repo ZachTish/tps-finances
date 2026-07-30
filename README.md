@@ -1,5 +1,14 @@
 # TPS Finances
 
+## 0.5.8
+
+- Account synchronization now indexes existing account notes once per provider batch instead of traversing the complete Markdown collection separately for every account.
+- The invocation-local index preserves the first matching note in vault order, every frontmatter refresh, every returned account path, and the existing derived/unique path behavior for new accounts.
+- A genuine index miss still performs one live supported-vault scan before creation. This preserves accounts whose metadata becomes available late; a newly found or created note is then reused within the batch so duplicate provider input cannot create duplicate account notes while metadata cache catches up.
+- On an identical fixture containing 20,000 unrelated notes and 120 existing accounts, 30 batch upserts fell from 3,600 Markdown-list traversals and 217,800 account metadata reads to 30 traversals and 7,170 reads. Median isolated store time fell from 12.120 ms to 0.144 ms, a 98.8% reduction at this seam.
+- Exact released `0.5.7` passed all 45 declared checks but failed the two new optimization probes: it repeated the vault scan for every existing account and created a second note for duplicate new input while the first note's metadata cache was still empty. Version `0.5.8` passes the focused 4/4 gate and all 49 declared checks, including duplicate-note order, empty/all-new scan parity, late metadata recovery after awaited work, new-note reuse, stale ID/path revalidation, and exact refreshed frontmatter.
+- Commands, settings, Plaid requests, account/transaction/investment formats, transaction routing, GCM/Daily Notes compatibility, device state, and minimum Obsidian `1.12.0` remain unchanged. This patch adds no persistent cache, timer, migration, retry loop, monkeypatch, or unsupported API use.
+
 ## 0.5.7
 
 - Dashboard model construction and Sync's last-known-holdings pre-read now select, read, and split the latest finance snapshot once, then pass that immutable invocation-local document to both balance and holding parsers.
@@ -173,6 +182,7 @@ Only the selected destination is rendered. The selection is transient and never 
 
 ## Version notes
 
+- 0.5.8: Indexed account notes once per Sync batch, retained a miss-only live recovery scan, and reused found/created files within the invocation to remove repeated vault traversals and metadata-lag duplicate creation.
 - 0.5.7: Reused one immutable latest-snapshot document across account balances and holdings, removing a duplicate vault traversal/read/split and preventing cross-snapshot model tearing without adding cache state.
 - 0.5.6: Removed the dashboard action wrapper's redundant successful/no-op refresh and silent error retry while preserving mutation-owned refreshes and user-facing failure Notices.
 - 0.5.5: Made Transactions Sync pagination fail closed on malformed or non-progressing pages, bounded structured mutation restarts, preserved not-yet-ready durable cursors, and staged all attempt-local identities until terminal success.

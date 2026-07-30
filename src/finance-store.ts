@@ -35,8 +35,26 @@ export class FinanceStore {
 
   async upsertAccounts(accounts: FinanceAccount[]): Promise<Map<string, string>> {
     const paths = new Map<string, string>();
+    if (!accounts.length) return paths;
+    const accountFilesById = this.indexAccountFiles(
+      new Set(accounts.map((account) => account.financeAccountId)),
+    );
+    const refreshedAccountIds = new Set<string>();
+    let vaultMayHaveChanged = false;
     for (const account of accounts) {
-      const existing = this.findAccountFile(account.financeAccountId);
+      let existing = accountFilesById.get(account.financeAccountId) || null;
+      if (
+        existing
+        && vaultMayHaveChanged
+        && !refreshedAccountIds.has(account.financeAccountId)
+        && !this.isCurrentAccountFile(existing, account.financeAccountId)
+      ) {
+        accountFilesById.delete(account.financeAccountId);
+        existing = null;
+      }
+      if (!existing && vaultMayHaveChanged) {
+        existing = this.findAccountFile(account.financeAccountId);
+      }
       const path = existing?.path || this.accountPath(account);
       const file = existing || await this.createAccountFile(path, account);
       await this.processFrontmatter(file, (frontmatter) => {
@@ -50,6 +68,9 @@ export class FinanceStore {
         frontmatter.currency = account.currency;
         frontmatter.financeAccountId = account.financeAccountId;
       });
+      vaultMayHaveChanged = true;
+      accountFilesById.set(account.financeAccountId, file);
+      refreshedAccountIds.add(account.financeAccountId);
       paths.set(account.financeAccountId, file.path);
     }
     return paths;
@@ -282,6 +303,35 @@ export class FinanceStore {
       if (String(frontmatter?.financeAccountId || "") === financeAccountId) return file;
     }
     return null;
+  }
+
+  private indexAccountFiles(
+    requestedAccountIds: ReadonlySet<string>,
+  ): Map<string, TFile> {
+    const filesById = new Map<string, TFile>();
+    const prefix = normalizePath(`${this.rootFolder}/Accounts/`);
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(prefix)) continue;
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const financeAccountId = String(frontmatter?.financeAccountId || "");
+      if (
+        requestedAccountIds.has(financeAccountId)
+        && !filesById.has(financeAccountId)
+      ) {
+        filesById.set(financeAccountId, file);
+        if (filesById.size === requestedAccountIds.size) break;
+      }
+    }
+    return filesById;
+  }
+
+  private isCurrentAccountFile(
+    file: TFile,
+    financeAccountId: string,
+  ): boolean {
+    if (this.app.vault.getAbstractFileByPath(file.path) !== file) return false;
+    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    return String(frontmatter?.financeAccountId || "") === financeAccountId;
   }
 
   private findFinanceLedgerFile(folder: string, type: string, key: string, value: string): TFile | null {

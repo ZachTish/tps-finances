@@ -28,6 +28,27 @@ const deviceStateBuild = await build({ entryPoints: [fileURLToPath(new URL("../s
 const deviceState = await import(`data:text/javascript;base64,${Buffer.from(deviceStateBuild.outputFiles[0].text).toString("base64")}`);
 const transactionContentBuild = await build({ entryPoints: [fileURLToPath(new URL("../src/transaction-content.ts", import.meta.url))], bundle: true, write: false, format: "esm", platform: "node" });
 const transactionContent = await import(`data:text/javascript;base64,${Buffer.from(transactionContentBuild.outputFiles[0].text).toString("base64")}`);
+const financeStoreBuild = await build({
+  entryPoints: [fileURLToPath(new URL("../src/finance-store.ts", import.meta.url))],
+  bundle: true,
+  write: false,
+  format: "esm",
+  platform: "node",
+  plugins: [{
+    name: "mock-obsidian-finance-store",
+    setup(builder) {
+      builder.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "mock" }));
+      builder.onLoad({ filter: /.*/, namespace: "mock" }, () => ({
+        contents: [
+          "export class App {}",
+          "export class TFile {}",
+          "export const normalizePath = (value) => value;",
+        ].join("\n"),
+      }));
+    },
+  }],
+});
+const financeStoreModule = await import(`data:text/javascript;base64,${Buffer.from(financeStoreBuild.outputFiles[0].text).toString("base64")}`);
 const settingsPersistenceBuild = await build({ entryPoints: [fileURLToPath(new URL("../src/settings-persistence.ts", import.meta.url))], bundle: true, write: false, format: "esm", platform: "node" });
 const settingsPersistence = await import(`data:text/javascript;base64,${Buffer.from(settingsPersistenceBuild.outputFiles[0].text).toString("base64")}`);
 const plaidClientBuild = await build({
@@ -258,6 +279,24 @@ async function waitForDashboardAction(predicate) {
   assert.equal(predicate(), true);
 }
 
+function financeAccount(index, financeAccountId = `account-${index}`) {
+  return {
+    financeAccountId,
+    providerAccountId: `provider-${index}`,
+    localItemId: "item",
+    institutionName: "Test Bank",
+    name: `Account ${index}`,
+    officialName: "",
+    mask: String(index),
+    type: "depository",
+    subtype: "checking",
+    currency: "USD",
+    available: 0,
+    current: 0,
+    limit: null,
+  };
+}
+
 test("TPS Finances is a desktop finance view with device-local authentication", () => {
   assert.equal(manifest.id, "tps-finances");
   assert.equal(manifest.isDesktopOnly, true);
@@ -272,6 +311,315 @@ test("TPS Finances is a desktop finance view with device-local authentication", 
   assert.match(link, /if\(!response\.ok\)throw/);
   assert.match(link, /onExit\(err\)\{\s*if\(completing\)return/);
   assert.doesNotMatch(main, /accessToken.*saveData|saveData\([^)]*deviceState/);
+});
+
+test("account upsert indexes existing notes once while preserving first-wins paths", async () => {
+  const unrelatedFiles = Array.from({ length: 20_000 }, (_, index) => ({
+    path: `Notes/${index}.md`,
+    basename: String(index),
+  }));
+  const accountFiles = Array.from({ length: 120 }, (_, index) => ({
+    path: `Finances/Accounts/Account ${index}.md`,
+    basename: `Account ${index}`,
+  }));
+  const duplicate = {
+    path: "Finances/Accounts/Duplicate account 0.md",
+    basename: "Duplicate account 0",
+  };
+  const files = [
+    ...unrelatedFiles,
+    accountFiles[0],
+    duplicate,
+    ...accountFiles.slice(1),
+  ];
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
+  const cachedFrontmatter = new Map(
+    accountFiles.map((file, index) => [
+      file,
+      { financeAccountId: `account-${index}` },
+    ]),
+  );
+  cachedFrontmatter.set(duplicate, { financeAccountId: "account-0" });
+
+  let markdownListCalls = 0;
+  let metadataReads = 0;
+  let createCalls = 0;
+  const processed = [];
+  const app = {
+    vault: {
+      getMarkdownFiles() {
+        markdownListCalls += 1;
+        return files;
+      },
+      getAbstractFileByPath(path) {
+        return filesByPath.get(path) || null;
+      },
+      async create() {
+        createCalls += 1;
+        throw new Error("existing accounts must not create notes");
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        metadataReads += 1;
+        return { frontmatter: cachedFrontmatter.get(file) };
+      },
+    },
+    fileManager: {},
+  };
+  const financeStore = new financeStoreModule.FinanceStore(
+    app,
+    "Finances",
+    async (file, mutator) => {
+      const frontmatter = {};
+      mutator(frontmatter);
+      processed.push({ file, frontmatter });
+    },
+  );
+  const accounts = Array.from({ length: 120 }, (_, index) => financeAccount(index));
+
+  const paths = await financeStore.upsertAccounts(accounts);
+
+  assert.equal(markdownListCalls, 1);
+  assert.equal(
+    metadataReads,
+    accountFiles.length + 1 + accounts.length - 1,
+    "the index scans requested IDs once and later hits receive one current-file check",
+  );
+  assert.equal(createCalls, 0);
+  assert.equal(processed.length, accounts.length);
+  assert.equal(paths.size, accounts.length);
+  assert.equal(paths.get("account-0"), accountFiles[0].path, "the first duplicate note in vault order must win");
+  for (let index = 0; index < accounts.length; index += 1) {
+    assert.equal(paths.get(`account-${index}`), accountFiles[index].path);
+    assert.equal(processed[index].file, accountFiles[index]);
+    assert.deepEqual(processed[index].frontmatter, {
+      title: `Test Bank Account ${index} •${index}`,
+      kind: "account",
+      institution: "Test Bank",
+      accountType: "depository",
+      accountSubtype: "checking",
+      accountName: `Account ${index}`,
+      accountMask: String(index),
+      currency: "USD",
+      financeAccountId: `account-${index}`,
+    });
+  }
+});
+
+test("account upsert retains live recovery after awaited work and reuses a new note", async () => {
+  const knownFile = {
+    path: "Finances/Accounts/Known.md",
+    basename: "Known",
+  };
+  const lateFile = {
+    path: "Finances/Accounts/Late.md",
+    basename: "Late",
+  };
+  const files = [knownFile, lateFile];
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
+  let markdownListCalls = 0;
+  let lateMetadataReads = 0;
+  let lateMetadataVisible = false;
+  const created = [];
+  const processedFiles = [];
+  const app = {
+    vault: {
+      getMarkdownFiles() {
+        markdownListCalls += 1;
+        return files;
+      },
+      getAbstractFileByPath(path) {
+        return filesByPath.get(path) || null;
+      },
+      async create(path) {
+        const file = { path, basename: path.split("/").at(-1).replace(/\.md$/i, "") };
+        created.push(file);
+        files.push(file);
+        filesByPath.set(path, file);
+        return file;
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        if (file === knownFile) {
+          return { frontmatter: { financeAccountId: "known-account" } };
+        }
+        if (file !== lateFile) return {};
+        lateMetadataReads += 1;
+        return {
+          frontmatter: lateMetadataVisible
+            ? { financeAccountId: "late-account" }
+            : {},
+        };
+      },
+    },
+    fileManager: {},
+  };
+  const financeStore = new financeStoreModule.FinanceStore(
+    app,
+    "Finances",
+    async (file, mutator) => {
+      mutator({});
+      await Promise.resolve();
+      if (file === knownFile) lateMetadataVisible = true;
+      processedFiles.push(file);
+    },
+  );
+  const newAccountFirst = financeAccount(2, "new-account");
+  const newAccountAgain = {
+    ...financeAccount(3, "new-account"),
+    name: "Renamed provider account",
+  };
+
+  const paths = await financeStore.upsertAccounts([
+    financeAccount(0, "known-account"),
+    financeAccount(1, "late-account"),
+    newAccountFirst,
+    newAccountAgain,
+  ]);
+
+  assert.equal(paths.get("known-account"), knownFile.path);
+  assert.equal(paths.get("late-account"), lateFile.path);
+  assert.equal(lateMetadataReads, 3, "the initial index and two genuine miss scans must read the live metadata");
+  assert.equal(created.length, 1, "duplicate provider input must reuse the invocation-local newly created note");
+  assert.equal(paths.get("new-account"), created[0].path);
+  assert.equal(processedFiles[0], knownFile);
+  assert.equal(processedFiles[1], lateFile);
+  assert.equal(processedFiles[2], created[0]);
+  assert.equal(processedFiles[3], created[0]);
+  assert.equal(markdownListCalls, 3, "one initial index plus one live scan for each genuine initial miss");
+});
+
+test("account upsert keeps empty and all-new batches at the released scan budget", async () => {
+  const files = [];
+  const filesByPath = new Map();
+  let markdownListCalls = 0;
+  let createCalls = 0;
+  const app = {
+    vault: {
+      getMarkdownFiles() {
+        markdownListCalls += 1;
+        return files;
+      },
+      getAbstractFileByPath(path) {
+        return filesByPath.get(path) || null;
+      },
+      async create(path) {
+        createCalls += 1;
+        const file = { path, basename: path.split("/").at(-1).replace(/\.md$/i, "") };
+        files.push(file);
+        filesByPath.set(path, file);
+        return file;
+      },
+    },
+    metadataCache: {
+      getFileCache() {
+        return {};
+      },
+    },
+    fileManager: {},
+  };
+  const financeStore = new financeStoreModule.FinanceStore(
+    app,
+    "Finances",
+    async (_file, mutator) => mutator({}),
+  );
+
+  const emptyPaths = await financeStore.upsertAccounts([]);
+  assert.deepEqual(emptyPaths, new Map());
+  assert.equal(markdownListCalls, 0);
+
+  const accounts = Array.from({ length: 120 }, (_, index) => financeAccount(index, `new-${index}`));
+  const paths = await financeStore.upsertAccounts(accounts);
+
+  assert.equal(paths.size, accounts.length);
+  assert.equal(createCalls, accounts.length);
+  assert.equal(markdownListCalls, accounts.length, "the initial index must replace the first released miss scan");
+});
+
+test("account upsert revalidates indexed hits after awaited vault changes", async () => {
+  for (const mode of ["id-move", "same-path-replacement"]) {
+    const firstFile = {
+      path: "Finances/Accounts/First.md",
+      basename: "First",
+    };
+    const initiallyIndexedFile = {
+      path: "Finances/Accounts/Initially indexed.md",
+      basename: "Initially indexed",
+    };
+    const alternateFile = {
+      path: "Finances/Accounts/Alternate.md",
+      basename: "Alternate",
+    };
+    const files = mode === "id-move"
+      ? [firstFile, initiallyIndexedFile, alternateFile]
+      : [firstFile, initiallyIndexedFile];
+    const filesByPath = new Map(files.map((file) => [file.path, file]));
+    const accountIds = new Map([
+      [firstFile, "first-account"],
+      [initiallyIndexedFile, "second-account"],
+      [alternateFile, "alternate-account"],
+    ]);
+    let expectedSecondFile = alternateFile;
+    let markdownListCalls = 0;
+    const processedFiles = [];
+    const app = {
+      vault: {
+        getMarkdownFiles() {
+          markdownListCalls += 1;
+          return files;
+        },
+        getAbstractFileByPath(path) {
+          return filesByPath.get(path) || null;
+        },
+      },
+      metadataCache: {
+        getFileCache(file) {
+          return {
+            frontmatter: {
+              financeAccountId: accountIds.get(file) || "",
+            },
+          };
+        },
+      },
+      fileManager: {},
+    };
+    const financeStore = new financeStoreModule.FinanceStore(
+      app,
+      "Finances",
+      async (file, mutator) => {
+        mutator({});
+        if (file === firstFile) {
+          await Promise.resolve();
+          if (mode === "id-move") {
+            accountIds.set(initiallyIndexedFile, "moved-account");
+            accountIds.set(alternateFile, "second-account");
+          } else {
+            const replacement = {
+              path: initiallyIndexedFile.path,
+              basename: initiallyIndexedFile.basename,
+            };
+            expectedSecondFile = replacement;
+            files[1] = replacement;
+            filesByPath.set(replacement.path, replacement);
+            accountIds.set(replacement, "second-account");
+          }
+        }
+        processedFiles.push(file);
+      },
+    );
+
+    const paths = await financeStore.upsertAccounts([
+      financeAccount(0, "first-account"),
+      financeAccount(1, "second-account"),
+    ]);
+
+    assert.equal(processedFiles[0], firstFile, mode);
+    assert.equal(processedFiles[1], expectedSecondFile, mode);
+    assert.equal(paths.get("second-account"), expectedSecondFile.path, mode);
+    assert.equal(markdownListCalls, 2, `${mode}: stale indexed state must fall back to one current scan`);
+  }
 });
 
 test("dashboard rendering coalesces refresh bursts and commits only the newest model", async () => {
