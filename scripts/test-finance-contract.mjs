@@ -216,7 +216,6 @@ function snapshotDashboardPlugin(app) {
     readRules: () => [],
     readBudgets: () => [],
   });
-  plugin.accountLabelsByPath = () => new Map();
   plugin.getPlaidSetupStatus = () => ({ state: "ready" });
   return plugin;
 }
@@ -1122,7 +1121,8 @@ test("snapshot reads reuse one document and select the latest file in one pass",
   const dashboardStart = main.indexOf("async getDashboardModel()");
   const dashboardImplementation = main.slice(dashboardStart, main.indexOf("addCategorizationRule()", dashboardStart));
   assert.equal((dashboardImplementation.match(/readLatestSnapshotDocument\(\)/g) || []).length, 1);
-  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot\)/);
+  assert.match(dashboardImplementation, /const accountLabels = new Map<string, AccountLabel>\(\)/);
+  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot, accountLabels\)/);
   assert.match(dashboardImplementation, /parseSnapshotHoldings\(snapshot, accounts\)/);
 
   const syncStart = main.indexOf("async syncAll(");
@@ -1153,6 +1153,121 @@ test("snapshot reads reuse one document and select the latest file in one pass",
     }
   }
   assert.equal(selected, legacy);
+});
+
+test("dashboard account labels reuse the account scan without changing label semantics", async () => {
+  const checkingFile = {
+    path: "Finances/Accounts/Checking.md",
+    basename: "Checking",
+  };
+  const labelOnlyFile = {
+    path: "Finances/Accounts/Label Only.MD",
+    basename: "Label Only",
+  };
+  const unrelatedFile = {
+    path: "Other/Ignore.md",
+    basename: "Ignore",
+  };
+  const files = [checkingFile, unrelatedFile, labelOnlyFile];
+  const caches = new Map([
+    [checkingFile, {
+      frontmatter: {
+        financeAccountId: "checking",
+        institution: "Test Bank",
+        accountName: "Checking",
+        accountMask: "1234",
+        accountType: "depository",
+        currency: "USD",
+      },
+    }],
+    [labelOnlyFile, {
+      frontmatter: {
+        institution: "Example Bank",
+        title: "Reserve",
+        accountMask: "4321",
+      },
+    }],
+  ]);
+  let fileListReads = 0;
+  let metadataReads = 0;
+  const app = {
+    vault: {
+      getMarkdownFiles() {
+        fileListReads += 1;
+        return files;
+      },
+    },
+    metadataCache: {
+      getFileCache(file) {
+        metadataReads += 1;
+        return caches.get(file) || {};
+      },
+    },
+  };
+  const plugin = new mainActionModule.default(app);
+  plugin.settings = { financeFolder: "Finances", transactionLogTarget: "daily-note" };
+  plugin.deviceState = { items: [] };
+  plugin.createStore = () => ({
+    readTransactionRecords: async () => [{
+      line: "- Groceries [type:: transaction] [financeId:: transaction-one] [date:: 2026-07-15] [account:: [[Finances/Accounts/Label Only]]] [amount:: -12.5] [currency:: USD] [pending:: false] [providerCategory:: Groceries] [subtype:: purchase]",
+      path: "Daily/2026-07-15.md",
+      lineNumber: 7,
+    }],
+    readRules: () => [{
+      id: "account-label-rule",
+      name: "Account label rule",
+      enabled: true,
+      priority: 10,
+      accountContains: "example bank reserve",
+      nameContains: "",
+      merchantContains: "",
+      minAmount: null,
+      maxAmount: null,
+      category: "Matched account",
+      tags: ["account-match"],
+    }],
+    readBudgets: () => [],
+  });
+  plugin.getPlaidSetupStatus = () => ({ state: "ready" });
+
+  const model = await plugin.getDashboardModel();
+
+  assert.deepEqual(model.accounts.map((account) => ({
+    id: account.financeAccountId,
+    name: account.name,
+    institution: account.institutionName,
+    mask: account.mask,
+    path: account.path,
+  })), [{
+    id: "checking",
+    name: "Checking",
+    institution: "Test Bank",
+    mask: "1234",
+    path: checkingFile.path,
+  }], "an account note without financeAccountId must remain label-only");
+  assert.deepEqual(model.transactions.map((transaction) => ({
+    account: transaction.account,
+    accountPath: transaction.accountPath,
+    accountSearchText: transaction.accountSearchText,
+    category: transaction.category,
+    categorySource: transaction.categorySource,
+    tags: transaction.tags,
+    ruleId: transaction.ruleId,
+    sourcePath: transaction.sourcePath,
+    sourceLine: transaction.sourceLine,
+  })), [{
+    account: "Reserve •4321",
+    accountPath: "Finances/Accounts/Label Only",
+    accountSearchText: "Example Bank Reserve 4321 Label Only",
+    category: "Matched account",
+    categorySource: "rule",
+    tags: ["#account-match"],
+    ruleId: "account-label-rule",
+    sourcePath: "Daily/2026-07-15.md",
+    sourceLine: 7,
+  }]);
+  assert.equal(fileListReads, 2, "the dashboard must list Markdown files only for snapshot selection and one account scan");
+  assert.equal(metadataReads, 2, "each account note's metadata must be read once while account cards and labels are built");
 });
 
 test("dashboard model reads one coherent snapshot document for balances and holdings", async () => {

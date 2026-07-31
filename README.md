@@ -1,5 +1,16 @@
 # TPS Finances
 
+## 0.5.10
+
+- Dashboard model construction now builds account cards and transaction labels during one supported account-note scan instead of traversing the Markdown collection and reading every account note's metadata a second time.
+- Account sorting, balance and holding ownership, transaction display labels, account-search text, classification, and `.md`/`.MD` path handling are unchanged. Notes without `financeAccountId` remain available as transaction labels while correctly staying out of the account-card collection.
+- Exact public `0.5.9` passed all 66 release checks, then failed the new before-source optimization gate after producing the expected model: one dashboard read made three Markdown-list calls and four account metadata reads. Version `0.5.10` passes that gate with two list calls—the required snapshot selection and one account scan—and two metadata reads.
+- Across 2,001 deterministic actual-plugin scenarios, released and candidate dashboard models were identical. Markdown-list calls fell from 6,003 to 4,002 and metadata-cache reads from 18,833 to 11,621.
+- In a controlled 20,000-account, 20,000-unrelated-file, 4,000-transaction benchmark over 25 alternating rounds, the median model-build time fell from 58.064 ms to 53.437 ms (7.97%) and p95 from 62.220 ms to 59.846 ms (3.82%). The output digest was identical, account metadata reads fell from 40,000 to 20,000, and the production bundle shrank by 156 bytes.
+- Account metadata is now internally coherent within a dashboard model. If an account changes while transaction notes are being read, the existing account-change listener and coalescing renderer request a fresh model rather than mixing an old account card with a newer transaction label.
+- The test harness no longer replaces a private label method. This patch adds no cache, timer, listener, retry, fallback route, persisted state, migration, monkeypatch, or unsupported Obsidian API use. Commands, settings, Plaid behavior, note formats, and minimum Obsidian `1.12.0` are unchanged.
+- The final versioned suite passed 67/67 checks, followed by a separate production-mode build that deployed only byte-changed `main.js` and `manifest.json` to the isolated test runtime. Obsidian 1.12.7 reloaded and rendered the disconnected dashboard with all five Finances commands registered; Plaid was not connected, Sync and mutations were not invoked, runtime `data.json` remained absent, and production was not accessed.
+
 ## 0.5.9
 
 - Ordinary and investment transaction batches now build the Markdown transaction index lazily once on the normal path instead of rebuilding it after every successful removal or upsert.

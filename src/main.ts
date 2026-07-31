@@ -36,6 +36,10 @@ type StoredFinanceSnapshot = Readonly<{
   date: string;
   lines: readonly string[];
 }>;
+type AccountLabel = {
+  display: string;
+  search: string;
+};
 
 export default class TPSFinancesPlugin extends Plugin {
   settings: TPSFinancesSettings = { ...DEFAULT_SETTINGS };
@@ -334,13 +338,13 @@ export default class TPSFinancesPlugin extends Plugin {
 
   async getDashboardModel(): Promise<DashboardModel> {
     const snapshot = await this.readLatestSnapshotDocument();
-    const accounts = this.readAccountsFromVault(snapshot);
+    const accountLabels = new Map<string, AccountLabel>();
+    const accounts = this.readAccountsFromVault(snapshot, accountLabels);
     const holdings = this.parseSnapshotHoldings(snapshot, accounts);
     const store = this.createStore();
     const transactionRecords = await store.readTransactionRecords();
     const rules = store.readRules();
     const classifyForDashboard = prepareTransactionClassifier(rules);
-    const accountLabels = this.accountLabelsByPath();
     const transactions = transactionRecords.map((record) => parseDashboardTransaction(record.line, record.path, record.lineNumber)).filter((value): value is DashboardTransaction => value !== null)
       .map((transaction) => {
         const accountLabel = accountLabels.get(transaction.accountPath);
@@ -632,12 +636,25 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  private readAccountsFromVault(snapshot: StoredFinanceSnapshot | null): FinanceAccount[] {
+  private readAccountsFromVault(
+    snapshot: StoredFinanceSnapshot | null,
+    accountLabels?: Map<string, AccountLabel>,
+  ): FinanceAccount[] {
     const prefix = normalizePath(`${this.settings.financeFolder}/Accounts/`);
     const balances = this.parseSnapshotBalanceMap(snapshot?.lines || []);
     const accounts: FinanceAccount[] = [];
-    for (const file of this.app.vault.getMarkdownFiles().filter((candidate) => candidate.path.startsWith(prefix))) {
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(prefix)) continue;
       const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+      if (accountLabels) {
+        const institution = String(frontmatter.institution || "");
+        const name = String(frontmatter.accountName || frontmatter.title || file.basename);
+        const mask = String(frontmatter.accountMask || "");
+        accountLabels.set(file.path.replace(/\.md$/i, ""), {
+          display: `${name}${mask ? ` •${mask}` : ""}`,
+          search: [institution, name, mask, file.basename].filter(Boolean).join(" "),
+        });
+      }
       const id = String(frontmatter.financeAccountId || "");
       if (!id) continue;
       const balance = balances.get(file.path.replace(/\.md$/i, ""));
@@ -740,19 +757,6 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private findAccountFileById(financeAccountId: string): TFile | null {
     return this.accountFiles().find((file) => String(this.app.metadataCache.getFileCache(file)?.frontmatter?.financeAccountId || "") === financeAccountId) || null;
-  }
-
-  private accountLabelsByPath(): Map<string, { display: string; search: string }> {
-    return new Map(this.accountFiles().map((file) => {
-      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
-      const institution = String(frontmatter.institution || "");
-      const name = String(frontmatter.accountName || frontmatter.title || file.basename);
-      const mask = String(frontmatter.accountMask || "");
-      return [file.path.replace(/\.md$/i, ""), {
-        display: `${name}${mask ? ` •${mask}` : ""}`,
-        search: [institution, name, mask, file.basename].filter(Boolean).join(" "),
-      }];
-    }));
   }
 
   private async accountPathEntries(): Promise<Array<[string, string]>> {
