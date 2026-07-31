@@ -7,10 +7,16 @@ import { appendTransactionIfMissing, removeTransactionContent, upsertTransaction
 const GENERATED_START = "<!-- tps-finances:generated:start -->";
 const GENERATED_END = "<!-- tps-finances:generated:end -->";
 type TransactionRecord = { line: string; path: string; lineNumber: number };
+type TransactionIndex = {
+  recordsById: Map<string, TransactionRecord[]>;
+  idsByPath: Map<string, Set<string>>;
+  fileOrder: Map<string, number>;
+  nextFileOrder: number;
+};
 export type TransactionTargetContext = { date: string; accountPath: string; line: string };
 
 export class FinanceStore {
-  private transactionIndex: Map<string, TransactionRecord[]> | null = null;
+  private transactionIndex: TransactionIndex | null = null;
 
   constructor(
     private readonly app: App,
@@ -83,18 +89,30 @@ export class FinanceStore {
     state: DeviceState,
     accountPaths: Map<string, string>,
   ): Promise<{ added: number; modified: number; removed: number }> {
-    let removed = 0;
-    for (const providerId of removedProviderIds) {
-      const financeId = state.providerIdentityMap[providerIdentityKey("transaction", providerId)];
-      if (financeId && await this.removeTransaction(financeId)) removed += 1;
+    if (!added.length && !modified.length && !removedProviderIds.length) {
+      return { added: 0, modified: 0, removed: 0 };
     }
-    for (const transaction of modified) await this.upsertTransaction(transaction, accountPaths);
-    for (const transaction of added) await this.upsertTransaction(transaction, accountPaths);
-    return { added: added.length, modified: modified.length, removed };
+    try {
+      let removed = 0;
+      for (const providerId of removedProviderIds) {
+        const financeId = state.providerIdentityMap[providerIdentityKey("transaction", providerId)];
+        if (financeId && await this.removeTransaction(financeId)) removed += 1;
+      }
+      for (const transaction of modified) await this.upsertTransaction(transaction, accountPaths);
+      for (const transaction of added) await this.upsertTransaction(transaction, accountPaths);
+      return { added: added.length, modified: modified.length, removed };
+    } finally {
+      this.transactionIndex = null;
+    }
   }
 
   async replaceInvestmentTransactions(transactions: FinanceTransaction[], accountPaths: Map<string, string>): Promise<void> {
-    for (const transaction of transactions) await this.upsertTransaction(transaction, accountPaths);
+    if (!transactions.length) return;
+    try {
+      for (const transaction of transactions) await this.upsertTransaction(transaction, accountPaths);
+    } finally {
+      this.transactionIndex = null;
+    }
   }
 
   async writeSnapshot(accounts: FinanceAccount[], holdings: FinanceHolding[], accountPaths: Map<string, string>, at: Date): Promise<string> {
@@ -118,7 +136,7 @@ export class FinanceStore {
 
   async readTransactionRecords(): Promise<TransactionRecord[]> {
     const index = await this.ensureTransactionIndex();
-    return [...index.values()].flatMap((records) => records.slice(0, 1));
+    return [...index.recordsById.values()].flatMap((records) => records.slice(0, 1));
   }
 
   async migrateLegacyTransactionLedgers(): Promise<{ moved: number; skipped: number }> {
@@ -147,7 +165,7 @@ export class FinanceStore {
   }
 
   async rerouteTransactions(): Promise<{ moved: number; skipped: number }> {
-    const records = [...(await this.ensureTransactionIndex()).values()].flatMap((items) => items.slice(0, 1));
+    const records = [...(await this.ensureTransactionIndex()).recordsById.values()].flatMap((items) => items.slice(0, 1));
     let moved = 0;
     let skipped = 0;
     for (const record of records) {
@@ -216,7 +234,7 @@ export class FinanceStore {
   }
 
   async updateTransactionMetadata(financeId: string, categoryOverride: string, tags: string[]): Promise<boolean> {
-    const records = (await this.ensureTransactionIndex()).get(financeId) || [];
+    const records = (await this.ensureTransactionIndex()).recordsById.get(financeId) || [];
     if (!records.length) return false;
     for (const path of new Set(records.map((record) => record.path))) {
       const file = this.app.vault.getAbstractFileByPath(path);
@@ -231,62 +249,174 @@ export class FinanceStore {
 
   private async upsertTransaction(transaction: FinanceTransaction, accountPaths: Map<string, string>): Promise<void> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(transaction.date)) return;
-    const existingRecords = (await this.ensureTransactionIndex()).get(transaction.financeId) || [];
-    const localMetadata = await this.findTransactionMetadata(transaction.financeId);
+    const existingRecords = await this.refreshTransactionRecords(transaction.financeId);
+    const localMetadata = this.transactionMetadata(existingRecords);
     const line = transactionLine(transaction, accountPaths.get(transaction.financeAccountId) || "", localMetadata);
     const target = await this.resolveTransactionTarget({
       date: transaction.date,
       accountPath: accountPaths.get(transaction.financeAccountId)?.replace(/\.md$/i, "") || "",
       line,
     });
-    await this.app.vault.process(target, (content) => upsertTransactionContent(content, transaction.financeId, line));
-    this.transactionIndex = null;
+    const targetContent = await this.app.vault.process(
+      target,
+      (content) => upsertTransactionContent(
+        content,
+        transaction.financeId,
+        transactionLine(
+          transaction,
+          accountPaths.get(transaction.financeAccountId) || "",
+          this.transactionMetadataForTarget(
+            transaction.financeId,
+            target.path,
+            content,
+            existingRecords,
+            localMetadata,
+          ),
+        ),
+      ),
+    );
+    this.updateTransactionFileIndex(target.path, targetContent);
     for (const path of new Set(existingRecords.map((record) => record.path).filter((path) => path !== target.path))) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (file instanceof TFile) await this.removeTransactionFromFile(file, transaction.financeId);
+      else this.transactionIndex = null;
     }
   }
 
-  private async findTransactionMetadata(financeId: string): Promise<{ categoryOverride: string; tags: string[] }> {
-    const line = (await this.ensureTransactionIndex()).get(financeId)?.[0]?.line;
+  private transactionMetadata(records: TransactionRecord[]): { categoryOverride: string; tags: string[] } {
+    const line = records[0]?.line;
     if (line) return { categoryOverride: inlineField(line, "categoryOverride"), tags: arrayValue(inlineField(line, "tags")) };
     return { categoryOverride: "", tags: [] };
   }
 
   private async removeTransaction(financeId: string): Promise<boolean> {
-    const records = (await this.ensureTransactionIndex()).get(financeId) || [];
+    const records = await this.refreshTransactionRecords(financeId);
     if (!records.length) return false;
-    try {
-      for (const path of new Set(records.map((record) => record.path))) {
-        const file = this.app.vault.getAbstractFileByPath(path);
-        if (file instanceof TFile) await this.removeTransactionFromFile(file, financeId);
-      }
-    } finally {
-      this.transactionIndex = null;
+    for (const path of new Set(records.map((record) => record.path))) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) await this.removeTransactionFromFile(file, financeId);
+      else this.transactionIndex = null;
     }
     return true;
   }
 
-  private async ensureTransactionIndex(): Promise<Map<string, TransactionRecord[]>> {
-    if (this.transactionIndex) return this.transactionIndex;
-    const index = new Map<string, TransactionRecord[]>();
-    for (const file of this.app.vault.getMarkdownFiles()) {
+  private async refreshTransactionRecords(financeId: string): Promise<TransactionRecord[]> {
+    const index = await this.ensureTransactionIndex();
+    const records = index.recordsById.get(financeId) || [];
+    if (!records.length) return records;
+    for (const path of new Set(records.map((record) => record.path))) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) {
+        this.transactionIndex = null;
+        return (await this.ensureTransactionIndex()).recordsById.get(financeId) || [];
+      }
       const content = await this.app.vault.cachedRead(file);
-      content.split("\n").forEach((line, lineNumber) => {
-        if (!/^-\s/.test(line) || !line.includes("[financeId::")) return;
-        const financeId = inlineField(line, "financeId");
-        if (!financeId) return;
-        const records = index.get(financeId) || [];
-        records.push({ line, path: file.path, lineNumber });
-        index.set(financeId, records);
-      });
+      if (file.path !== path || this.app.vault.getAbstractFileByPath(path) !== file) {
+        this.transactionIndex = null;
+        return (await this.ensureTransactionIndex()).recordsById.get(financeId) || [];
+      }
+      this.indexTransactionFile(index, path, content);
+      if (!(index.recordsById.get(financeId) || []).some((record) => record.path === path)) {
+        this.transactionIndex = null;
+        return (await this.ensureTransactionIndex()).recordsById.get(financeId) || [];
+      }
+    }
+    return index.recordsById.get(financeId) || [];
+  }
+
+  private transactionMetadataForTarget(
+    financeId: string,
+    targetPath: string,
+    content: string,
+    existingRecords: TransactionRecord[],
+    fallback: { categoryOverride: string; tags: string[] },
+  ): { categoryOverride: string; tags: string[] } {
+    const line = content.split("\n").find((candidate) => (
+      /^-\s/.test(candidate)
+      && candidate.includes("[financeId::")
+      && inlineField(candidate, "financeId") === financeId
+    ));
+    if (!line) return fallback;
+    const firstExisting = existingRecords[0];
+    const targetOrder = this.transactionIndex?.fileOrder.get(targetPath) ?? Number.MAX_SAFE_INTEGER;
+    const existingOrder = firstExisting
+      ? this.transactionIndex?.fileOrder.get(firstExisting.path) ?? Number.MAX_SAFE_INTEGER
+      : Number.MAX_SAFE_INTEGER;
+    return !firstExisting || firstExisting.path === targetPath || targetOrder < existingOrder
+      ? { categoryOverride: inlineField(line, "categoryOverride"), tags: arrayValue(inlineField(line, "tags")) }
+      : fallback;
+  }
+
+  private async ensureTransactionIndex(): Promise<TransactionIndex> {
+    if (this.transactionIndex) return this.transactionIndex;
+    const files = this.app.vault.getMarkdownFiles();
+    const index: TransactionIndex = {
+      recordsById: new Map(),
+      idsByPath: new Map(),
+      fileOrder: new Map(),
+      nextFileOrder: files.length,
+    };
+    for (const [order, file] of files.entries()) {
+      const pathBeforeRead = file.path;
+      const content = await this.app.vault.cachedRead(file);
+      if (
+        file.path !== pathBeforeRead
+        && (
+          this.app.vault.getAbstractFileByPath(file.path) !== file
+          || index.fileOrder.has(file.path)
+        )
+      ) {
+        throw new Error("A transaction source changed identity while its index was being read.");
+      }
+      index.fileOrder.set(file.path, order);
+      this.indexTransactionFile(index, file.path, content);
     }
     this.transactionIndex = index;
     return index;
   }
 
   private async removeTransactionFromFile(file: TFile, financeId: string): Promise<void> {
-    await this.app.vault.process(file, (content) => removeTransactionContent(content, financeId));
+    const content = await this.app.vault.process(
+      file,
+      (current) => removeTransactionContent(current, financeId),
+    );
+    this.updateTransactionFileIndex(file.path, content);
+  }
+
+  private updateTransactionFileIndex(path: string, content: string): void {
+    if (this.transactionIndex) this.indexTransactionFile(this.transactionIndex, path, content);
+  }
+
+  private indexTransactionFile(index: TransactionIndex, path: string, content: string): void {
+    for (const financeId of index.idsByPath.get(path) || []) {
+      const records = (index.recordsById.get(financeId) || []).filter((record) => record.path !== path);
+      if (records.length) index.recordsById.set(financeId, records);
+      else index.recordsById.delete(financeId);
+    }
+
+    if (!index.fileOrder.has(path)) {
+      index.fileOrder.set(path, index.nextFileOrder);
+      index.nextFileOrder += 1;
+    }
+    const recordsById = new Map<string, TransactionRecord[]>();
+    content.split("\n").forEach((line, lineNumber) => {
+      if (!/^-\s/.test(line) || !line.includes("[financeId::")) return;
+      const financeId = inlineField(line, "financeId");
+      if (!financeId) return;
+      const records = recordsById.get(financeId) || [];
+      records.push({ line, path, lineNumber });
+      recordsById.set(financeId, records);
+    });
+    for (const [financeId, fileRecords] of recordsById) {
+      const records = [...(index.recordsById.get(financeId) || []), ...fileRecords];
+      records.sort((left, right) => (
+        (index.fileOrder.get(left.path) ?? 0) - (index.fileOrder.get(right.path) ?? 0)
+        || left.lineNumber - right.lineNumber
+      ));
+      index.recordsById.set(financeId, records);
+    }
+    if (recordsById.size) index.idsByPath.set(path, new Set(recordsById.keys()));
+    else index.idsByPath.delete(path);
   }
 
   private async removeEmptyLegacyLedger(file: TFile): Promise<void> {

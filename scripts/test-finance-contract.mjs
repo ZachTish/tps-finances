@@ -882,7 +882,6 @@ test("finance transactions are contract-native daily-note log lines", () => {
   assert.match(readme, /Bank and investment transactions are plain `log` bullets in the configured daily note/);
   assert.match(store, /resolveTransactionTarget\(\{/);
   assert.match(store, /date: transaction\.date/);
-  assert.match(store, /upsertTransactionContent\(content, transaction\.financeId, line\)/);
   assert.match(store, /`\[type:: \$\{transaction\.kind\}\]`/);
   assert.match(store, /`\[financeId:: \$\{transaction\.financeId\}\]`/);
   assert.match(store, /`\[account::/);
@@ -893,7 +892,8 @@ test("finance transactions are contract-native daily-note log lines", () => {
   assert.match(store, /String\(frontmatter\.type \|\| ""\) === type && String\(frontmatter\[key\] \|\| ""\) === value/);
   assert.match(store, /providerCategory/);
   assert.match(store, /categoryOverride/);
-  assert.match(store, /findTransactionMetadata/);
+  assert.match(store, /refreshTransactionRecords/);
+  assert.match(store, /transactionMetadataForTarget/);
   assert.match(store, /\[asOf::/);
   assert.match(store, /\[stale:: true\]/);
   assert.match(store, /migrateLegacyTransactionLedgers/);
@@ -1441,7 +1441,7 @@ test("transaction moves and updates preserve concurrent note edits atomically", 
     `User text\n${replacement}\n`,
   );
   assert.equal(transactionContent.removeTransactionContent(original, "finance-one"), "User text\nTail\n");
-  assert.match(store, /vault\.process\(target, \(content\) => upsertTransactionContent/);
+  assert.match(store, /vault\.process\(\s*target,\s*\(content\) => upsertTransactionContent/s);
   assert.match(store, /vault\.process\(dailyNote, \(content\) => appendTransactionIfMissing/);
   assert.doesNotMatch(store, /vault\.modify\(target, appendLine/);
   assert.ok(transactionContentSource.includes("transactionMarker"));
@@ -2221,3 +2221,5 @@ test("disconnect and logging behavior protect financial integrations", () => {
   assert.match(main, /updateTransactionMetadata/);
   assert.match(main, /Budget remaining/);
 });
+
+await import("./test-transaction-index-batching.mjs");
