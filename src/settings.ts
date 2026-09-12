@@ -51,10 +51,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
     const hub = containerEl.createDiv({ cls: "tps-finances-settings-hub" });
     hub.createEl("h3", { text: "Choose what to configure" });
-    hub.createEl("p", {
-      text: "Pick one destination. Finance data and connection state stay unchanged when you move between pages.",
-      cls: "setting-item-description",
-    });
     const navigation = hub.createDiv({
       cls: "tps-finances-settings-routes",
       attr: { role: "navigation", "aria-label": "Finances settings destinations" },
@@ -67,12 +63,11 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         attr: {
           type: "button",
           "aria-pressed": String(isActive),
-          "aria-label": `${route.title}: ${route.description}`,
+          "aria-label": route.title,
         },
       });
       if (isActive) activeRouteButton = button;
       button.createSpan({ cls: "tps-finances-settings-route-title", text: route.title });
-      button.createSpan({ cls: "tps-finances-settings-route-description", text: route.description });
       button.addEventListener("click", () => {
         if (route.id === this.activeRoute) return;
         this.activeRoute = route.id;
@@ -84,10 +79,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       ?? FINANCE_SETTINGS_ROUTES[0];
     const page = containerEl.createDiv({ cls: "tps-finances-settings-page" });
     const pageHeading = page.createEl("h3", { text: route.title, attr: { tabindex: "-1" } });
-    page.createEl("p", {
-      text: route.description,
-      cls: "setting-item-description tps-finances-settings-page-description",
-    });
 
     if (route.id === "plaid") this.renderPlaidSettings(page);
     else if (route.id === "data") this.renderDataSettings(page);
