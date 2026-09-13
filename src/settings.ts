@@ -162,9 +162,27 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
   }
 
   private renderDataSettings(parent: HTMLElement): void {
+    new Setting(parent).setName("Record format")
+      .addDropdown(dropdown => dropdown.addOption("atomic-note", "Atomic note").addOption("atomic-line", "Atomic line")
+        .setValue(this.plugin.settings.recordMode).onChange(async value => {
+          try { await this.plugin.setRecordMode(value === "atomic-line" ? "atomic-line" : "atomic-note"); }
+          catch (error) { new Notice(String(error)); }
+          this.display();
+        }));
+    if (this.plugin.settings.recordMode === "atomic-note") {
+      new Setting(parent).setName("Convert existing transactions")
+        .setDesc("Save each ledger entry as a note, then replace the original line with a link. Unresolved entries remain in place.")
+        .addButton(button => button.setButtonText("Convert to atomic notes").onClick(async () => {
+          button.setDisabled(true);
+          try { await this.plugin.migrateAtomicTransactions(); }
+          catch (error) { new Notice(String(error)); }
+          finally { button.setDisabled(false); }
+        }));
+    }
+
     new Setting(parent)
       .setName("Finance folder")
-      .setDesc("Account entities, categorization rules, budgets, and dated snapshots. Transactions are written to daily notes.")
+      .setDesc("Accounts, transactions, holdings, rules, budgets, and dated snapshots.")
       .addText((text) => text.setValue(this.plugin.settings.financeFolder).onChange(async (value) => {
         this.plugin.settings.financeFolder = value.trim() || "Finances";
         await this.plugin.saveSettings();
@@ -179,7 +197,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       }));
 
-    new Setting(parent)
+    if (this.plugin.settings.recordMode === "atomic-line") new Setting(parent)
       .setName("Default transaction location")
       .setDesc("Daily notes are the TPS default. Individual accounts can override this from their dashboard card.")
       .addDropdown((dropdown) => dropdown

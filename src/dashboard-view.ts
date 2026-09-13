@@ -46,6 +46,7 @@ export interface DashboardModel {
 }
 
 interface FinancesViewPlugin {
+  settings?: {recordMode: string};
   getDashboardModel(): Promise<DashboardModel>;
   connectPlaid(): Promise<void>;
   syncAll(reason: string): Promise<void>;
@@ -214,6 +215,10 @@ export class TPSFinancesView extends ItemView {
       card.createEl("strong", { text: `${account.name}${account.mask ? ` •${account.mask}` : ""}` });
       card.createDiv({ cls: "tps-finances-account-balance", text: money(account.current || 0, account.currency) });
       card.createEl("span", { text: [account.type, account.subtype].filter(Boolean).join(" · ") });
+      if (this.plugin.settings?.recordMode === "atomic-note") {
+        card.createEl("small", {text:"Atomic notes"});
+        continue;
+      }
       const route = card.createEl("button", {
         cls: "tps-finances-account-route",
         attr: { type: "button", title: "Choose where this account's transactions are logged" },

@@ -2,6 +2,7 @@ import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon 
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
+import { AtomicFinanceStore } from "./atomic-finance-store";
 import { FinanceStore } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
 import { createLocalId } from "./identity";
@@ -73,14 +74,17 @@ export default class TPSFinancesPlugin extends Plugin {
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       const root = normalizePath(this.settings.financeFolder);
-      if (file.path.startsWith(`${root}/Rules/`) || file.path.startsWith(`${root}/Budgets/`) || file.path.startsWith(`${root}/Accounts/`)) void this.refreshDashboard();
+      if (file.path.startsWith(`${root}/Rules/`) || file.path.startsWith(`${root}/Budgets/`) || file.path.startsWith(`${root}/Accounts/`) || file.path.startsWith(`${root}/Transactions/`) || file.path.startsWith(`${root}/Holdings/`)) void this.refreshDashboard();
     }));
     (this as any).api = {
       openDashboard: () => this.openDashboard(),
       sync: (reason = "api") => this.syncAll(reason),
       getDashboardModel: () => this.getDashboardModel(),
       renderHomeSummary: (container: HTMLElement) => this.renderHomeSummary(container),
-      getTransactionsBasePath: () => normalizePath(`${this.settings.financeFolder}/Transactions.base`),
+      getTransactionsBasePath: () => {
+        const alternate=normalizePath(`${this.settings.financeFolder}/Transactions (Atomic notes).base`);
+        return this.settings.recordMode === "atomic-note" && this.app.vault.getAbstractFileByPath(alternate) ? alternate : normalizePath(`${this.settings.financeFolder}/Transactions.base`);
+      },
       getDailyNotePathForIsoDate: (isoDate: string) => this.getDailyNotePathForIsoDate(isoDate),
     };
     this.app.workspace.onLayoutReady(() => void this.prepareFinanceStorage());
@@ -452,6 +456,7 @@ export default class TPSFinancesPlugin extends Plugin {
       ? await gcmApi.openFileInLeaf(file, false, () => this.app.workspace.getLeaf(false), { revealLeaf: true, active: true, reuseLeafIfNoExisting: true })
       : this.app.workspace.getLeaf(false);
     if (!gcmApi?.openFileInLeaf) await leaf.openFile(file);
+    if (this.settings.recordMode === "atomic-note") return;
     const editor = (leaf.view as any)?.editor;
     if (editor) {
       editor.setCursor({ line: transaction.sourceLine, ch: 0 });
@@ -477,6 +482,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   private createStore(): FinanceStore {
+    if (this.settings.recordMode === "atomic-note") return new AtomicFinanceStore(this.app, normalizePath(this.settings.financeFolder));
     return new FinanceStore(
       this.app,
       normalizePath(this.settings.financeFolder),
@@ -506,16 +512,36 @@ export default class TPSFinancesPlugin extends Plugin {
     return this.ensureFinanceDailyNote(date);
   }
 
+  async setRecordMode(mode: "atomic-note" | "atomic-line"): Promise<void> {
+    if(this.syncing)throw new Error("Wait for the current sync to finish.");
+    if(mode==="atomic-line")await new AtomicFinanceStore(this.app,normalizePath(this.settings.financeFolder)).restoreLineBases();
+    this.settings.recordMode=mode;
+    await this.saveSettings();
+    await this.createStore().ensureStructure();
+    await this.refreshDashboard();
+  }
+
+  async migrateAtomicTransactions(): Promise<void> {
+    if (this.syncing) throw new Error("Wait for the current sync to finish.");
+    this.syncing = true;
+    try {
+      const result = await this.createStore().migrateLegacyTransactionLedgers();
+      new Notice(`Converted ${result.moved} transactions; ${result.skipped} need review.`);
+      await this.refreshDashboard();
+    } finally { this.syncing = false; }
+  }
+
   private async prepareFinanceStorage(): Promise<void> {
     await this.ensureFinanceStructure();
-    await this.migrateLegacyTransactions(this.createStore());
+    if (this.settings.recordMode !== "atomic-note") await this.migrateLegacyTransactions(this.createStore());
   }
 
   private async migrateLegacyTransactions(store: FinanceStore): Promise<void> {
     try {
       const result = await store.migrateLegacyTransactionLedgers();
+      if (this.settings.recordMode === "atomic-note" && result.skipped) throw new Error(`${result.skipped} legacy transactions need review before syncing atomic notes.`);
       if (result.moved || result.skipped) logger.flow("Storage", "daily-note-migration", result);
-      if (result.moved) new Notice(`Moved ${result.moved} finance transaction${result.moved === 1 ? "" : "s"} into daily notes.`);
+      if (result.moved) new Notice(`Migrated ${result.moved} finance transaction${result.moved === 1 ? "" : "s"}.`);
     } catch (error) {
       logger.failure("Storage", "daily-note-migration-failed", error);
       throw error;
@@ -669,9 +695,9 @@ export default class TPSFinancesPlugin extends Plugin {
         type: String(frontmatter.accountType || ""),
         subtype: String(frontmatter.accountSubtype || ""),
         currency: String(frontmatter.currency || balance?.currency || "USD"),
-        available: balance?.available ?? null,
-        current: balance?.balance ?? null,
-        limit: null,
+        available: this.settings.recordMode === "atomic-note" && "available" in frontmatter ? atomicNumber(frontmatter.available) : balance?.available ?? null,
+        current: this.settings.recordMode === "atomic-note" && "current" in frontmatter ? atomicNumber(frontmatter.current) : balance?.balance ?? null,
+        limit: this.settings.recordMode === "atomic-note" ? atomicNumber(frontmatter.limit) : null,
         path: file.path,
         transactionLogTarget: frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note" ? frontmatter.transactionLogTarget : "default",
         effectiveTransactionLogTarget: frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note"
@@ -685,6 +711,14 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[]): FinanceHolding[] {
+    if(this.settings.recordMode === "atomic-note") {
+      const notes=this.app.vault.getMarkdownFiles().filter(file=>file.path.startsWith(`${normalizePath(this.settings.financeFolder)}/Holdings/`))
+        .map(file=>this.app.metadataCache.getFileCache(file)?.frontmatter||{}).filter(fm=>fm.type==="holding");
+      if(notes.length) return notes.filter(fm=>fm.active===true).map(fm=>({
+        financeAccountId:String(fm.financeAccountId),securityId:String(fm.securityId),name:String(fm.name||""),ticker:String(fm.ticker||""),type:String(fm.holdingType||""),quantity:Number(fm.quantity)||0,price:Number(fm.price)||0,value:Number(fm.value)||0,costBasis:atomicNumber(fm.costBasis),currency:String(fm.currency||"USD"),asOf:String(fm.asOf||""),stale:fm.stale===true
+      }));
+    }
+
     if (!snapshot) return [];
     const pathToId = new Map<string, string>();
     for (const account of accounts) {
@@ -770,6 +804,7 @@ export default class TPSFinancesPlugin extends Plugin {
 function normalizeSettings(value: unknown): TPSFinancesSettings {
   const source = value && typeof value === "object" ? value as Partial<TPSFinancesSettings> : {};
   return {
+    recordMode: source.recordMode === "atomic-line" ? "atomic-line" : "atomic-note",
     financeFolder: normalizePath(String(source.financeFolder || DEFAULT_SETTINGS.financeFolder)).replace(/^\/+|\/+$/g, "") || DEFAULT_SETTINGS.financeFolder,
     plaidEnvironment: source.plaidEnvironment === "development" || source.plaidEnvironment === "production" ? source.plaidEnvironment : "sandbox",
     plaidClientIdSecret: String(source.plaidClientIdSecret || DEFAULT_SETTINGS.plaidClientIdSecret).trim() || DEFAULT_SETTINGS.plaidClientIdSecret,
@@ -886,4 +921,8 @@ function optionalInvestmentWarningSummary(warnings: OptionalInvestmentWarning[])
     ? "it will retry without advancing its history watermark"
     : "it will retry without treating the missing response as an authoritative empty result";
   return `Investments ${first.operation} for ${first.institution} is ${first.status} (${first.code}); ${retry}.${retained}${more}`;
+}
+
+function atomicNumber(value: unknown): number | null {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
 }

@@ -1,3 +1,27 @@
+# 1.0.0 — Atomic transaction notes
+
+Finances now defaults to **Atomic note** storage: each transaction, investment transaction, account, and current holding is a Markdown note. Standard Obsidian table Bases read their properties; GCM's retired TPS Table renderer is not required. This major version changes the default persisted record format. **Atomic line** remains selectable for existing ledger workflows; switching formats does not reverse a completed conversion.
+
+## Storage and synchronization
+
+Transaction notes live in `<Finance folder>/Transactions` and link to account notes under `Accounts`. Existing local finance IDs and Plaid connection/cursor state are retained; reconnection is not required. `tpsId` (or GCM's configured identity key) supplies the note identity. Transactions store date, title, account link, amount, currency, pending state and provider classification as frontmatter. User `categoryOverride`, tags, unrelated properties, and body text survive provider updates. Tags use ordinary Obsidian frontmatter tag values. Provider removals use Obsidian's configured trash behavior.
+
+Current balances live on account notes. Current holding notes live under `Holdings`; disappeared positions become inactive while preserving user content. Atomic mode creates no new line-based snapshot ledgers. Historical snapshot notes remain readable as a fallback until current position notes exist. Existing rule and budget notes remain supported. The dashboard uses a transient line adapter internally for its existing classification contract; atomic transactions are not saved as lines.
+
+New Transactions/Holdings Bases use core `table` views. Exact old generated Base definitions are upgraded; customized Bases are preserved, with separate `(Atomic notes)` views added where needed. No other plugin configuration is changed. Source mode remains actual Markdown/YAML, while reading and live preview use Obsidian's normal note/property UI.
+
+## Conversion and setup
+
+**Data & routing → Record format** selects Atomic note or Atomic line. Atomic note shows **Convert existing transactions**; Atomic line shows the existing default daily/account log location and per-account route controls. Other destinations remain **Plaid setup**, **Connections**, and **Rules & budgets**. No nested navigation or changes to route-state persistence were added. Buttons retain native keyboard access and existing responsive settings styles.
+
+Conversion recognizes owned finance ledger lines, saves and verifies the destination note, then replaces the exact original line with an ordinary local link. Source introductions, surrounding lines, and unfamiliar inline fields are preserved. `migrationSource` records the original line for safe interrupted-conversion recovery. A conflicting destination or changed migrated payload remains unresolved rather than deleting the source. Invalid owned entries block sync until reviewed. Conversion runs explicitly from settings and before sync; startup does not convert transaction lines. Duplicate note identities and occupied paths fail closed. Keep the finance identity properties intact.
+
+Plaid credentials and cursors remain in this device's SecretStorage. The free Plaid Trial uses the Production environment, subject to Plaid eligibility and limits. Connection/sync remains desktop-only, single-writer and user/API initiated; there is no background webhook service or periodic provider poll. Each other user supplies their own Plaid account. Mobile can use the synced atomic notes and core Bases without running the desktop Finances plugin. Physical iOS behavior and live Plaid authentication still require device/account testing; no live credentials were used during development.
+
+## Validation
+
+The suite covers both the existing ledger contract and atomic insertion/idempotency, posted corrections, local metadata/body preservation, trash failures, duplicate identities, path collisions, exact source replacement, interrupted migration, edited recovery destinations, invalid data, and holdings retirement. Actual test-vault storage/UI testing confirmed a transaction note, its account note, preserved categorization, and a working core Transactions Base with one result under GCM atomic-note architecture. Final versioned tests, standalone builds, reload checks and public release artifact hashes are recorded in the release notes.
+
 ## 0.5.11 — cleaner settings copy
 
 Removed generic settings introductions and repeated navigation/page descriptions. Existing destinations, default route, optional disclosures, control labels/options, commands/actions, conditional visibility, focus behavior, and narrow-screen layout remain unchanged. Useful guidance about consequences, ownership, credentials, and non-obvious inputs stays beside its setting; dynamic status/counts remain. This presentation patch changes no settings schema, defaults, note data, provider behavior, or automation.

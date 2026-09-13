@@ -16,7 +16,7 @@ type TransactionIndex = {
 export type TransactionTargetContext = { date: string; accountPath: string; line: string };
 
 export class FinanceStore {
-  private transactionIndex: TransactionIndex | null = null;
+  protected transactionIndex: TransactionIndex | null = null;
 
   constructor(
     private readonly app: App,
@@ -578,11 +578,11 @@ function accountsBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - kind == "account"\n    - file.path.startsWith("${root}/Accounts/")\nviews:\n  - type: table\n    name: Accounts\n    order:\n      - institution\n      - accountName\n      - accountType\n      - accountSubtype\n      - accountMask\n      - currency\n      - file.name\n    sort:\n      - property: institution\n        direction: ASC\n      - property: accountName\n        direction: ASC\n`;
 }
 
-function transactionsBaseBody(root: string): string {
+export function transactionsBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - file.ext == "md"\nviews:\n  - type: tps-table\n    name: Transactions\n    lineFilterKey: financeId\n    order:\n      - date\n      - account\n      - amount\n      - currency\n      - subtype\n      - pending\n      - providerCategory\n      - categoryOverride\n      - tags\n      - merchant\n    sort:\n      - property: date\n        direction: DESC\n`;
 }
 
-function holdingsBaseBody(root: string): string {
+export function holdingsBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - file.path.startsWith("${root}/Snapshots/")\nviews:\n  - type: tps-table\n    name: Holdings\n    lineFilterKey: securityId\n    order:\n      - account\n      - quantity\n      - price\n      - value\n      - costBasis\n      - currency\n      - asOf\n      - stale\n    sort:\n      - property: value\n        direction: DESC\n`;
 }
 

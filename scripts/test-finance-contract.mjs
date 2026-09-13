@@ -43,6 +43,8 @@ const financeStoreBuild = await build({
           "export class App {}",
           "export class TFile {}",
           "export const normalizePath = (value) => value;",
+          "export const parseYaml = value => JSON.parse(value);",
+          "export const stringifyYaml = value => JSON.stringify(value) + '\\n';",
         ].join("\n"),
       }));
     },
@@ -131,6 +133,8 @@ const mainActionBuild = await build({
             "export class WorkspaceLeaf {}",
             "export const Platform = { isDesktopApp: true };",
             "export const normalizePath = (value) => value;",
+          "export const parseYaml = value => JSON.parse(value);",
+          "export const stringifyYaml = value => JSON.stringify(value) + '\\n';",
             "export const requestUrl = async () => ({ status: 200, json: {} });",
             "export const setIcon = () => {};",
           ].join("\n"),

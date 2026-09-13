@@ -3,6 +3,7 @@ export type TransactionLogTarget = "daily-note" | "account-note";
 
 export interface TPSFinancesSettings {
   financeFolder: string;
+  recordMode: "atomic-note" | "atomic-line";
   plaidEnvironment: PlaidEnvironment;
   plaidClientIdSecret: string;
   plaidSecretSecret: string;
@@ -14,6 +15,7 @@ export interface TPSFinancesSettings {
 
 export const DEFAULT_SETTINGS: TPSFinancesSettings = {
   financeFolder: "Finances",
+  recordMode: "atomic-note",
   plaidEnvironment: "sandbox",
   plaidClientIdSecret: "tps-finances-plaid-client-id",
   plaidSecretSecret: "tps-finances-plaid-secret",

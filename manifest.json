@@ -1,9 +1,9 @@
 {
   "id": "tps-finances",
   "name": "TPS Finances",
-  "version": "0.5.11",
+  "version": "1.0.0",
   "minAppVersion": "1.12.0",
-  "description": "Contract-native account, transaction, and investment management for TPS.",
+  "description": "Accounts, transactions, and investments as atomic notes for TPS.",
   "author": "Zach Tisherman",
   "authorUrl": "https://github.com/StartAutomating",
   "isDesktopOnly": true
