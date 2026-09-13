@@ -1,4 +1,5 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { accountSummaries } from "./finance-summary";
 import type { FinanceAccount, FinanceHolding, PlaidSetupState } from "./types";
 
 export const TPS_FINANCES_VIEW_TYPE = "tps-finances";
@@ -188,22 +189,18 @@ export class TPSFinancesView extends ItemView {
   }
 
   private renderSummary(root: HTMLElement, model: DashboardModel): void {
-    const investmentAccountIds = new Set(model.holdings.map((holding) => holding.financeAccountId));
-    const cash = model.accounts
-      .filter((account) => !investmentAccountIds.has(account.financeAccountId) && account.current != null)
-      .reduce((total, account) => total + (account.current || 0), 0);
-    const investments = model.holdings.reduce((total, holding) => total + holding.value, 0);
     const now = new Date();
-    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const monthTransactions = model.transactions.filter((transaction) => transaction.date.startsWith(monthKey));
-    const spending = -monthTransactions.filter((transaction) => transaction.amount < 0 && isSpendingTransaction(transaction)).reduce((total, transaction) => total + transaction.amount, 0);
-    const income = monthTransactions.filter((transaction) => transaction.amount > 0 && transaction.type === "transaction" && transaction.subtype === "income").reduce((total, transaction) => total + transaction.amount, 0);
-    const grid = root.createDiv({ cls: "tps-finances-summary" });
-    metric(grid, "Net worth", cash + investments, "wallet-cards");
-    metric(grid, "Cash", cash, "banknote");
-    metric(grid, "Investments", investments, "chart-no-axes-combined");
-    metric(grid, "Spent this month", spending, "arrow-up-right");
-    metric(grid, "Income this month", income, "arrow-down-left");
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    for (const summary of accountSummaries(model.accounts, model.holdings)) {
+      const grid = root.createDiv({ cls: "tps-finances-summary" });
+      metric(grid, "Net worth", summary.netWorth, "wallet-cards", summary.currency);
+      metric(grid, "Cash", summary.cash, "banknote", summary.currency);
+      metric(grid, "Investments", summary.investments, "chart-no-axes-combined", summary.currency);
+      metric(grid, "Debt", summary.debt, "credit-card", summary.currency);
+      const transactions = model.transactions.filter(t => t.currency === summary.currency && t.date.startsWith(month));
+      metric(grid, "Spent this month", -transactions.filter(t => isSpendingTransaction(t)).reduce((n,t) => n+t.amount,0), "arrow-up-right", summary.currency);
+      metric(grid, "Income this month", transactions.filter(t => t.amount > 0 && t.type === "transaction" && t.subtype === "income").reduce((n,t) => n+t.amount,0), "arrow-down-left", summary.currency);
+    }
   }
 
   private renderAccounts(root: HTMLElement, accounts: FinanceAccount[]): void {
@@ -311,12 +308,12 @@ function actionButton(iconName: string, label: string, action: () => void, prima
   return button;
 }
 
-function metric(parent: HTMLElement, label: string, value: number, iconName: string): void {
+function metric(parent: HTMLElement, label: string, value: number, iconName: string, currency = "USD"): void {
   const card = parent.createDiv({ cls: "tps-finances-metric" });
   const icon = card.createDiv({ cls: "tps-finances-metric-icon" });
   setIcon(icon, iconName);
   card.createEl("small", { text: label });
-  card.createEl("strong", { text: money(value, "USD") });
+  card.createEl("strong", { text: money(value, currency) });
 }
 
 function sectionEl(parent: HTMLElement, title: string, iconName: string): HTMLElement {
@@ -347,5 +344,5 @@ function humanCategory(value: string): string {
 }
 
 function isSpendingTransaction(transaction: DashboardTransaction): boolean {
-  return transaction.type === "transaction" && ["purchase", "payment", "fee", "cash-advance"].includes(transaction.subtype);
+  return transaction.type === "transaction" && ["purchase", "payment", "fee", "cash-advance", "refund"].includes(transaction.subtype);
 }

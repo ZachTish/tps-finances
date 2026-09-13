@@ -4,7 +4,7 @@ import type { PlaidLinkResult } from "./types";
 
 const LINK_TIMEOUT_MS = 15 * 60 * 1000;
 
-export async function openLocalPlaidLink(linkToken: string): Promise<PlaidLinkResult> {
+export async function openLocalPlaidLink(linkToken: string, updateMode = false): Promise<PlaidLinkResult> {
   const callbackKey = randomKey();
   return new Promise<PlaidLinkResult>((resolve, reject) => {
     let settled = false;
@@ -19,7 +19,7 @@ export async function openLocalPlaidLink(linkToken: string): Promise<PlaidLinkRe
     };
 
     const server = createServer((request, response) => {
-      void handleRequest(request, response, linkToken, callbackKey, finish);
+      void handleRequest(request, response, linkToken, callbackKey, finish, updateMode);
     });
     const timeout = window.setTimeout(() => finish(undefined, new Error("Plaid Link timed out.")), LINK_TIMEOUT_MS);
 
@@ -41,6 +41,7 @@ async function handleRequest(
   linkToken: string,
   callbackKey: string,
   finish: (result?: PlaidLinkResult, error?: Error) => void,
+  updateMode = false,
 ): Promise<void> {
   if (request.method === "GET" && request.url === "/") {
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
@@ -52,7 +53,7 @@ async function handleRequest(
     try {
       const payload = JSON.parse(await readBody(request)) as Record<string, unknown>;
       const publicToken = String(payload.publicToken || "");
-      if (!publicToken) throw new Error("Plaid Link did not return a public token.");
+      if (!publicToken && !updateMode) throw new Error("Plaid Link did not return a public token.");
       response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Account connected. You can close this tab and return to Obsidian.");
       finish({ publicToken, institutionName: String(payload.institutionName || "Financial institution") });

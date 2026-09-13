@@ -58,6 +58,14 @@ export class PlaidClient {
     return linkToken;
   }
 
+  async createUpdateLinkToken(userId: string, accessToken: string, redirectUri: string): Promise<string> {
+    const body: Record<string, unknown> = {client_name:"TPS Finances",country_codes:["US"],language:"en",user:{client_user_id:userId},access_token:accessToken};
+    if(redirectUri.trim()) body.redirect_uri=redirectUri.trim();
+    const response=await this.post("/link/token/create",body);
+    if(!response.link_token) throw new Error("Plaid did not return an update Link token.");
+    return String(response.link_token);
+  }
+
   async exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }> {
     const response = await this.post("/item/public_token/exchange", { public_token: publicToken });
     const accessToken = String(response.access_token || "");
@@ -89,6 +97,7 @@ export class PlaidClient {
       const added: FinanceTransaction[] = [];
       const modified: FinanceTransaction[] = [];
       const removedProviderIds: string[] = [];
+      const replacedPendingIds = new Set<string>();
 
       for (let page = 0; page < MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT; page += 1) {
         let response: any;
@@ -142,6 +151,19 @@ export class PlaidClient {
           throw new Error("Plaid transaction sync returned changes without advancing its terminal next_cursor.");
         }
 
+        for (const transaction of [...pageAdded, ...pageModified]) {
+          const pendingId = transaction.pending_transaction_id;
+          if (transaction.pending === false && typeof pendingId === "string" && pendingId) {
+            const pendingKey = providerIdentityKey("transaction", pendingId);
+            const postedKey = providerIdentityKey("transaction", transaction.transaction_id);
+            const pendingLocal = state.providerIdentityMap[pendingKey] || stagedProviderIdentityMap[pendingKey];
+            const postedLocal = state.providerIdentityMap[postedKey] || stagedProviderIdentityMap[postedKey];
+            if (pendingLocal && (!postedLocal || postedLocal === pendingLocal)) {
+              stagedProviderIdentityMap[postedKey] = pendingLocal;
+              replacedPendingIds.add(pendingId);
+            }
+          }
+        }
         added.push(...pageAdded.map((transaction) => normalizeTransaction(transaction, resolveTransactionIdentity)));
         modified.push(...pageModified.map((transaction) => normalizeTransaction(transaction, resolveTransactionIdentity)));
         removedProviderIds.push(...pageRemoved.map((removed) => removed.transaction_id as string));
@@ -149,7 +171,7 @@ export class PlaidClient {
 
         if (!response.has_more) {
           Object.assign(state.providerIdentityMap, stagedProviderIdentityMap);
-          return { added, modified, removedProviderIds, nextCursor: terminalCursor };
+          return { added, modified, removedProviderIds: removedProviderIds.filter(id => !replacedPendingIds.has(id)), nextCursor: terminalCursor };
         }
         seenCursors.add(nextCursor);
         cursor = nextCursor;
@@ -317,6 +339,7 @@ function ordinaryTransactionSubtype(transaction: any): string {
   if (primary === "income") return "income";
   if (primary === "transfer_in") return "transfer-in";
   if (primary === "transfer_out") return "transfer-out";
+  if (detailed === "loan_payments_credit_card_payment") return "transfer-out";
   if (primary === "loan_payments") return "payment";
   if (primary === "bank_fees") return "fee";
   if (primary === "cash_advance") return "cash-advance";
@@ -395,7 +418,7 @@ function optionalPlaidFailure<T>(operation: "holdings" | "transactions", error: 
 function normalizeCurrentBalance(type: string, value: unknown): number | null {
   const current = nullableNumber(value);
   if (current == null) return null;
-  return isLiabilityType(type) ? -Math.abs(current) : current;
+  return isLiabilityType(type) ? -current : current;
 }
 
 function isLiabilityType(type: string): boolean {

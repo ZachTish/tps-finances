@@ -1024,9 +1024,9 @@ test("monthly budget aggregation is equivalent across boundaries, categories, an
   const legacyBudgetProgress = budgets.map((budget) => ({
     ...budget,
     spent: -transactions.filter((item) => item.date.startsWith(month)
-      && item.amount < 0
+      && (item.amount < 0 || item.amount > 0)
       && item.type === "transaction"
-      && ["purchase", "payment", "fee", "cash-advance"].includes(item.subtype)
+      && ["purchase", "payment", "fee", "cash-advance", "refund"].includes(item.subtype)
       && normalizeCategory(item.category) === normalizeCategory(budget.category))
       .reduce((sum, item) => sum + item.amount, 0),
   }));
@@ -1035,8 +1035,8 @@ test("monthly budget aggregation is equivalent across boundaries, categories, an
 
   assert.deepEqual(aggregated, legacyBudgetProgress);
   assert.deepEqual(aggregated.map(({ id }) => id), budgets.map(({ id }) => id), "budget order must remain unchanged");
-  assert.equal(aggregated[0].spent, 24);
-  assert.equal(aggregated[1].spent, 24, "duplicate normalized categories must receive the same total");
+  assert.equal(aggregated[0].spent, -1);
+  assert.equal(aggregated[1].spent, -1, "duplicate normalized categories must receive the same total");
   assert.equal(aggregated[2].spent, 10);
   assert.equal(aggregated[3].spent, 10, "blank normalized categories retain their existing uncategorized behavior");
   assert.equal(aggregated[4].spent, 11);
@@ -1807,7 +1807,7 @@ test("Plaid sync handles cursor patches and investment products", () => {
   assert.match(client, /offset: page \* 500/);
   assert.match(client, /total_investment_transactions/);
   assert.match(client, /amount: -numberOrZero\(transaction\.amount\)/);
-  assert.match(client, /isLiabilityType\(type\) \? -Math\.abs\(current\) : current/);
+  assert.match(client, /isLiabilityType\(type\) \? -current : current/);
   assert.match(client, /PRODUCT_NOT_READY/);
   assert.match(client, /"Plaid-Version"/);
   assert.match(types, /lastInvestmentTransactionSyncAt: string/);
@@ -2342,3 +2342,63 @@ test("disconnect and logging behavior protect financial integrations", () => {
 });
 
 await import("./test-transaction-index-batching.mjs");
+
+test('liability normalization preserves overpaid credit balances', async () => {
+  globalThis.__tpsPlaidRequestUrl = async () => ({status:200,json:{accounts:[
+    {account_id:'credit-positive',type:'credit',balances:{current:50,iso_currency_code:'USD'}},
+    {account_id:'credit-overpaid',type:'credit',balances:{current:-25,iso_currency_code:'USD'}},
+    {account_id:'loan',type:'loan',balances:{current:100,iso_currency_code:'USD'}},
+  ]}});
+  const client = new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+  const accounts = await client.getAccounts({localItemId:'item',accessToken:'fake',institutionName:'Test'},{providerIdentityMap:{}});
+  assert.deepEqual(accounts.map(a=>a.current),[-50,25,-100]);
+});
+
+test('summary separates cash, debt, and currencies and uses authoritative investment balance', async () => {
+ const result=await build({entryPoints:[fileURLToPath(new URL('../src/finance-summary.ts',import.meta.url))],bundle:true,write:false,format:'esm',platform:'node'});
+ const {accountSummaries}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+ const accounts=[{financeAccountId:'cash',type:'depository',current:1000,currency:'USD'}, {financeAccountId:'card',type:'credit',current:-200,currency:'USD'}, {financeAccountId:'invest',type:'investment',current:500,currency:'USD'}, {financeAccountId:'eur',type:'depository',current:100,currency:'EUR'}];
+ assert.deepEqual(accountSummaries(accounts,[{financeAccountId:'invest',value:450,currency:'USD'}]),[{currency:'USD',netWorth:1300,cash:1000,investments:500,debt:200},{currency:'EUR',netWorth:100,cash:100,investments:0,debt:0}]);
+ assert.equal(accountSummaries([{...accounts[2],current:null}],[{financeAccountId:'invest',value:450,currency:'USD'}])[0].investments,450);
+});
+
+test('update Link retains existing Item and omits new-connection products',async()=>{
+ let body;globalThis.__tpsPlaidRequestUrl=async options=>{body=JSON.parse(options.body);return {status:200,json:{link_token:'update-test'}}};
+ const client=new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+ assert.equal(await client.createUpdateLinkToken('user','existing-access',''),'update-test');
+ assert.equal(body.access_token,'existing-access');assert.equal(body.products,undefined);assert.equal(body.transactions,undefined);
+ assert.match(main,/openLocalPlaidLink\(token,true\)/);
+ const reconnect=main.slice(main.indexOf('async reconnectItem'),main.indexOf('async disconnectItem'));
+ assert.doesNotMatch(reconnect,/exchangePublicToken|items\.push|cursor\s*=/);
+});
+
+test('posted replacement retains pending identity and avoids deleting local classifications',async()=>{
+ globalThis.__tpsPlaidRequestUrl=async()=>({status:200,json:{added:[{transaction_id:'posted',pending_transaction_id:'pending',account_id:'account',pending:false,date:'2026-09-13',amount:12,name:'Purchase'}],modified:[],removed:[{transaction_id:'pending',account_id:'account'}],has_more:false,next_cursor:'next'}});
+ const state={providerIdentityMap:{'transaction:pending':'local-existing','account:account':'local-account'}};
+ const client=new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+ const patch=await client.syncTransactions({accessToken:'fake',cursor:'previous'},state);
+ assert.equal(patch.added[0].financeId,'local-existing');assert.deepEqual(patch.removedProviderIds,[]);assert.equal(state.providerIdentityMap['transaction:posted'],'local-existing');
+});
+
+test('sync owns dashboard refresh rather than rescanning after every imported note',()=>{
+ const handler=main.slice(main.indexOf('this.app.metadataCache.on("changed"'),main.indexOf('(this as any).api'));
+ assert.match(handler,/if \(this\.syncing\) return/);
+ assert.ok(handler.indexOf('if (this.syncing) return')<handler.indexOf('this.refreshDashboard()'));
+});
+
+test('refunds reduce category spending while transfers are excluded',()=>{
+ const transactions=[{date:'2026-09-13',amount:-100,type:'transaction',subtype:'purchase',category:'food'},{date:'2026-09-13',amount:20,type:'transaction',subtype:'refund',category:'food'},{date:'2026-09-13',amount:-100,type:'transaction',subtype:'transfer-out',category:'food'}];
+ assert.equal(classification.calculateMonthlyBudgetProgress([{category:'food',monthlyLimit:100}],transactions,'2026-09')[0].spent,80);
+});
+
+test('USD budgets do not add foreign-currency spending',()=>{
+ const rows=[{date:'2026-09-13',amount:-10,type:'transaction',subtype:'purchase',category:'food',currency:'USD'},{date:'2026-09-13',amount:-50,type:'transaction',subtype:'purchase',category:'food',currency:'EUR'}];
+ assert.equal(classification.calculateMonthlyBudgetProgress([{category:'food',monthlyLimit:100}],rows,'2026-09')[0].spent,10);
+});
+
+test('credit card repayments are transfers rather than a second purchase',async()=>{
+ globalThis.__tpsPlaidRequestUrl=async()=>({status:200,json:{added:[{transaction_id:'payment',account_id:'account',pending:false,date:'2026-09-13',amount:100,name:'Card payment',personal_finance_category:{primary:'LOAN_PAYMENTS',detailed:'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT'}}],modified:[],removed:[],has_more:false,next_cursor:'next'}});
+ const client=new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+ const patch=await client.syncTransactions({accessToken:'fake',cursor:''},{providerIdentityMap:{}});
+ assert.equal(patch.added[0].subtype,'transfer-out');
+});

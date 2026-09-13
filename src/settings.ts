@@ -242,6 +242,10 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       new Setting(parent)
         .setName(item.institutionName)
         .setDesc(`${item.environment} · ${item.lastSyncAt ? `Last synced ${new Date(item.lastSyncAt).toLocaleString()}` : "Not synced yet"}`)
+        .addButton((button) => button.setButtonText("Reconnect").onClick(async () => {
+          await this.plugin.runReconnectItem(item.localItemId);
+          this.renderSettings(true);
+        }))
         .addButton((button) => button.setButtonText("Disconnect").setWarning().onClick(() => {
           new DisconnectItemModal(this.app, item.institutionName, async () => {
             await this.plugin.disconnectItem(item.localItemId);

@@ -33,3 +33,17 @@ test('holdings have individual notes and disappeared holdings become inactive',a
 test('edited destination after interrupted migration prevents source retirement',async()=>{const h=harness();await legacy(h);h.failSource();await assert.rejects(h.store.migrateLegacyTransactionLedgers());h.restoreSource();await h.app.fileManager.processFrontMatter(h.nodes.get('Finances/Transactions/old-1.md'),fm=>{fm.amount=-100;});assert.equal((await h.store.migrateLegacyTransactionLedgers()).skipped,1);assert.match(h.text.get('Day.md'),/financeId:: old-1/);});
 
 test('migration refreshes legacy records created after an earlier dashboard read',async()=>{const h=harness();await h.store.readTransactionRecords();await legacy(h);assert.equal((await h.store.migrateLegacyTransactionLedgers()).moved,1);});
+
+test('unchanged provider revisions do not rewrite transaction notes',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ let writes=0;const original=h.app.fileManager.processFrontMatter;h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return original(...args)};
+ await h.store.applyTransactions([tx],[],[],state,accounts);assert.equal(writes,0);
+ await h.store.applyTransactions([],[{...tx,amount:-90}],[],state,accounts);assert.equal(writes,1);assert.equal(h.fm(path).amount,-90);
+});
+
+test('atomic dashboard excludes records owned by a different finance collection',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ const other=JSON.parse(h.text.get(path).match(/^---\n([\s\S]*?)\n---/)[1]);other.financeId='elsewhere';other.account='[[Other/Accounts/Checking]]';
+ await h.app.vault.create('Other/Transactions/elsewhere.md','---\n'+JSON.stringify(other)+'\n---\n');
+ assert.equal((await h.store.readTransactionRecords()).length,1);
+});

@@ -21,6 +21,7 @@ export interface ClassificationResult {
 export type PreparedTransactionClassifier = (transaction: ClassifiableTransaction) => ClassificationResult;
 
 export interface BudgetSpendingTransaction {
+  currency?: string;
   date: string;
   amount: number;
   category: string;
@@ -28,7 +29,7 @@ export interface BudgetSpendingTransaction {
   type: "transaction" | "investmentTransaction";
 }
 
-const SPENDING_TRANSACTION_SUBTYPES = ["purchase", "payment", "fee", "cash-advance"];
+const SPENDING_TRANSACTION_SUBTYPES = ["purchase", "payment", "fee", "cash-advance", "refund"];
 
 export function calculateMonthlyBudgetProgress<T extends FinanceBudget>(
   budgets: readonly T[],
@@ -39,8 +40,9 @@ export function calculateMonthlyBudgetProgress<T extends FinanceBudget>(
 
   const spendingByCategory = new Map<string, number>();
   for (const transaction of transactions) {
-    if (!transaction.date.startsWith(month)
-      || !(transaction.amount < 0)
+    if ((transaction.currency && transaction.currency !== "USD")
+      || !transaction.date.startsWith(month)
+      || !(transaction.amount < 0 || transaction.amount > 0)
       || transaction.type !== "transaction"
       || !SPENDING_TRANSACTION_SUBTYPES.includes(transaction.subtype)) continue;
     const category = normalizedBudgetCategory(transaction.category);

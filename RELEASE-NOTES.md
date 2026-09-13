@@ -1,21 +1,30 @@
-# 1.0.0
+# TPS Finances 1.1.0
 
-Each transaction, account, and current holding can now be an atomic Markdown note with ordinary properties and core Bases views. Atomic note is the default; Atomic line remains available. This major release changes the default storage format.
+Tested in Obsidian Plugin Test Vault and ready for the user's BRAT pull. This release is not installed in production. Minimum Obsidian: 1.12.0; desktop-only.
 
-- Preserve existing Plaid connections, cursors and finance identities; no bank reconnection is needed.
-- Preserve user note bodies, unrelated properties, categories and tags during transaction updates; provider removals use configured trash behavior.
-- Convert owned ledger lines by saving/verifying their notes before replacing exact source lines with local links. Interrupted work can resume; ambiguous records stay in place and block sync for review.
-- Balances and holdings live on notes; atomic mode creates no new line snapshots. Disappeared holdings become inactive.
-- Replace exact old generated transaction/holding Bases with core tables; customized Bases remain intact and receive separate atomic views.
+## Changes
 
-Known limits: bank linking/sync remains desktop-only and manual/API-triggered. Mobile can use synced notes and core Bases; physical iOS and real Plaid authentication were not tested. Existing ledger readers remain available until conversion. There is no automatic reverse conversion to lines. The recovery property migrationSource preserves the original migrated line. Protect identity fields and avoid reconnecting accounts unnecessarily on Plaid's free plan.
+- Reconnect repairs expired Plaid authorization through update mode while retaining the existing Item, access token, identities, and cursor.
+- Cash, investments, debt, and net worth are calculated separately per currency. Account balances take precedence over holdings. Overpaid credit balances retain the correct sign.
+- Refunds reduce spending; identified credit-card repayments do not count purchases twice. USD budgets exclude foreign currencies.
+- Matched pending-to-posted transitions preserve the local note, category, tags, and body.
+- Unchanged provider transaction revisions skip writes, and per-note metadata events do not repeatedly refresh the dashboard during sync.
+- Atomic dashboards exclude unrelated finance collections while retaining moved records linked to their own accounts.
 
-Validation: 81 tests passed. Actual test-vault QA verified duplicate prevention, posted correction, preserved classifications, conversion of an existing line into a linked atomic note, two rows in the core Transactions Base, a 500 account balance and 100 holding value from notes. No new line snapshots were created. All four settings routes were inspected. Separate final production-mode builds deployed to the isolated test vault; affected plugins were reloaded. No live bank data or credentials were used.
+## Validation
 
-Minimum Obsidian: 1.12.0. Tested in the test vault and ready for BRAT; publication alone does not install it in production.
+91 tests passed with no skips/failures; TypeScript and the mandatory separate production build passed. The build deployed only to the isolated test vault. Reload preserved settings and connections. All four settings routes were inventoried; the dashboard and budget creation modal were exercised.
+
+Actual Safari Sandbox Link imported 14 accounts, 394 bank transactions, 1,169 investment transactions, and 13 holdings. All account balances and all transaction amounts/dates matched independent API reads. A one-Item repeat sync took 4.7 seconds without duplicates. Forced login expiration preserved the checkpoint and last success, then the actual Safari Reconnect flow repaired the same Item.
+
+A second dynamic Sandbox Item exercised pending-to-posted updates, retaining an annotated note's identity, category, tags, and body. A two-Item repeat sync retained 16 accounts, 1,694 unique transactions, and 13 holdings in 8.7 seconds. The UI-created $100 budget showed $39.35, matching the categorized record.
+
+## Limits
+
+Sandbox does not prove real-bank OAuth behavior or physical mobile compatibility. Connection/sync remains desktop-only and user-initiated. Category budgets are USD-only; no exchange-rate conversion, double-entry reconciliation, tax filing, or money movement is implemented. The original two-year import on 1.0.0 took about 13 minutes in the iCloud test vault; repeat-sync timings are observations, not first-import guarantees. The dynamic test institution has no investment accounts and correctly reports optional Investments unavailable. Existing user settings and credentials remain unchanged; two Sandbox test connections remain for inspection.
 
 ## SHA-256
 
-- `main.js`: `dd63c72dd6bb7fe7cb18daefe4f829df39c744170bda363760d5dfb1095c5772`
-- `manifest.json`: `5b19088f42839c96069dcafc745ba212180d7021cc6a529b0d169ff4bd33b837`
-- `styles.css`: `2f1e226e1e001dca3f42af78827e0770ca19ad81e304e4baba44717d9a27a6e0`
+- main.js: `b77363aad54d4526fa8abc2a3c26ab136c28a358db043916305f750320b2af98`
+- manifest.json: `f42a7cd0c724246cec4c809d88473c59d11da1997bf8b80aaf11716bd594f3b3`
+- styles.css: `2f1e226e1e001dca3f42af78827e0770ca19ad81e304e4baba44717d9a27a6e0`

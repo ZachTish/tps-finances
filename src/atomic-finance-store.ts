@@ -66,6 +66,8 @@ export class AtomicFinanceStore extends FinanceStore {
       // Metadata narrows candidates; direct reads below avoid stale values after mutations.
       if (!file.path.startsWith(`${this.folder}/Transactions/`) && !this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId) continue;
       const fm = await this.fields(file);
+      const accountPath = String(fm.account || "").replace(/^\[\[|\]\]$/g, "");
+      if (!file.path.startsWith(`${this.folder}/Transactions/`) && !accountPath.startsWith(`${this.folder}/Accounts/`)) continue;
       if (!fm.financeId || !["transaction", "investmentTransaction"].includes(fm.type)) continue;
       const id = String(fm.financeId);
       if (result.has(id)) throw new Error(`Duplicate atomic transaction identity: ${id}. Resolve the duplicate notes before syncing.`);
@@ -79,6 +81,9 @@ export class AtomicFinanceStore extends FinanceStore {
     let file = index.get(id);
     if (file && this.vaultApp.vault.getAbstractFileByPath(file.path) !== file) throw new Error("Transaction moved during sync; retry.");
     if (file) {
+      const before = await this.fields(file);
+      const {categoryOverride: ignoredCategory, tags: ignoredTags, ...providerFields} = fm;
+      if (Object.keys(providerFields).every(key => JSON.stringify(before[key]) === JSON.stringify(providerFields[key]))) return file;
       await this.vaultApp.fileManager.processFrontMatter(file, current => {
         if (String(current.financeId) !== id) throw new Error("Transaction identity changed during sync.");
         const { categoryOverride, tags, ...providerFields } = fm;
@@ -132,7 +137,8 @@ export class AtomicFinanceStore extends FinanceStore {
     // Until explicit migration, old lines remain visible. A note always wins by stable ID.
     this.transactionIndex = null;
     for (const record of await super.readTransactionRecords()) {
-      if (!index.has(field(record.line,"financeId"))) records.push(record);
+      const accountPath=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
+      if (accountPath.startsWith(`${this.folder}/Accounts/`) && !index.has(field(record.line,"financeId"))) records.push(record);
     }
     return records;
   }

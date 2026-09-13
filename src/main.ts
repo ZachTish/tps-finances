@@ -73,6 +73,7 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "add-monthly-budget", name: "Add monthly budget", callback: () => this.addMonthlyBudget() });
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
+      if (this.syncing) return; // Sync owns the final dashboard refresh.
       const root = normalizePath(this.settings.financeFolder);
       if (file.path.startsWith(`${root}/Rules/`) || file.path.startsWith(`${root}/Budgets/`) || file.path.startsWith(`${root}/Accounts/`) || file.path.startsWith(`${root}/Transactions/`) || file.path.startsWith(`${root}/Holdings/`)) void this.refreshDashboard();
     }));
@@ -193,6 +194,21 @@ export default class TPSFinancesPlugin extends Plugin {
       logger.failure("Connect", "failed", error, { environment: this.settings.plaidEnvironment });
       throw error;
     }
+  }
+
+  async reconnectItem(localItemId: string): Promise<void> {
+    if(this.syncing) throw new Error("Wait for the current sync to finish.");
+    const item=this.deviceState.items.find(i=>i.localItemId===localItemId);
+    if(!item) throw new Error("Connection no longer exists.");
+    const client=new PlaidClient(item.environment,this.getPlaidCredentials(item.plaidSecretName,item.plaidClientIdSecretName||this.settings.plaidClientIdSecret));
+    const token=await client.createUpdateLinkToken(this.deviceState.plaidUserId,item.accessToken,this.settings.oauthRedirectUri);
+    await openLocalPlaidLink(token,true);
+    // Update mode retains the existing Item, access token, identities and cursor.
+    await this.syncAll("reconnect");
+  }
+
+  runReconnectItem(localItemId: string): Promise<void> {
+    return this.runUserAction("Reconnect", "settings", () => this.reconnectItem(localItemId));
   }
 
   async disconnectItem(localItemId: string): Promise<void> {
@@ -847,7 +863,7 @@ function parseDashboardTransaction(line: string, sourcePath: string, sourceLine:
     tags: normalizeTags(field(line, "tags").split(",")),
     manualTags: normalizeTags(field(line, "tags").split(",")),
     ruleId: "",
-    subtype: field(line, "subtype"),
+    subtype: field(line, "providerCategoryDetail").toLowerCase() === "loan_payments_credit_card_payment" ? "transfer-out" : field(line, "subtype"),
     type: field(line, "type") === "investmentTransaction" ? "investmentTransaction" : "transaction",
     sourcePath,
     sourceLine,
