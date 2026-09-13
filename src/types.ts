@@ -59,6 +59,9 @@ export interface FinanceAccount {
   current: number | null;
   limit: number | null;
   path?: string;
+  manual?: boolean;
+  openingBalance?: number;
+  valuationDate?: string;
   transactionLogTarget?: TransactionLogTarget | "default";
   effectiveTransactionLogTarget?: TransactionLogTarget;
 }

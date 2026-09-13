@@ -6,6 +6,8 @@ export const TPS_FINANCES_VIEW_TYPE = "tps-finances";
 
 export interface DashboardTransaction {
   financeId: string;
+  manual?: boolean;
+  transferAccount?: string;
   date: string;
   name: string;
   account: string;
@@ -53,6 +55,9 @@ interface FinancesViewPlugin {
   syncAll(reason: string): Promise<void>;
   openTransactionSource(transaction: DashboardTransaction): Promise<void>;
   editTransactionClassification(transaction: DashboardTransaction): void;
+  addManualAccount(kind: "cash" | "asset"): void;
+  addCashTransaction(): Promise<void>;
+  updateAssetValue(account: FinanceAccount): void;
   addCategorizationRule(): void;
   addMonthlyBudget(): void;
   openFinanceBase(name: "Rules" | "Budgets"): Promise<void>;
@@ -149,6 +154,15 @@ export class TPSFinancesView extends ItemView {
     title.createEl("h1", { text: "Finances" });
     title.createEl("small", { text: model.lastSyncAt ? `Updated ${friendlyTime(model.lastSyncAt)}` : "Not synced yet" });
     const actions = header.createDiv({ cls: "tps-finances-actions" });
+    const add = actionButton("plus", "Add", () => {
+      const menu = new Menu();
+      menu.addItem(item => item.setTitle("Cash account").setIcon("wallet").onClick(() => this.plugin.addManualAccount("cash")));
+      menu.addItem(item => item.setTitle("Cash transaction").setIcon("receipt-text").onClick(() => void this.runAction(() => this.plugin.addCashTransaction())));
+      menu.addItem(item => item.setTitle("Resale asset").setIcon("house").onClick(() => this.plugin.addManualAccount("asset")));
+      const rect = add.getBoundingClientRect();
+      menu.showAtPosition({x: rect.left, y: rect.bottom});
+    });
+    actions.appendChild(add);
     actions.appendChild(actionButton("wand-sparkles", "Rule", () => this.plugin.addCategorizationRule()));
     actions.appendChild(actionButton("gauge", "Budget", () => this.plugin.addMonthlyBudget()));
     actions.appendChild(actionButton("link", "Connect", () => void this.runAction(() => this.plugin.connectPlaid())));
@@ -178,7 +192,7 @@ export class TPSFinancesView extends ItemView {
     const welcome = root.createDiv({ cls: "tps-finances-welcome" });
     const icon = welcome.createDiv({ cls: "tps-finances-welcome-icon" });
     setIcon(icon, "landmark");
-    welcome.createEl("h2", { text: "Connect your financial accounts" });
+    welcome.createEl("h2", { text: "Add cash or assets, or connect an institution" });
     const detail = setupState === "conflicting-credentials"
       ? "Plaid client ID and Plaid secret currently use the same Obsidian secret. Select two different secrets in TPS Finances settings before connecting."
       : setupState === "ready"
@@ -196,6 +210,7 @@ export class TPSFinancesView extends ItemView {
       metric(grid, "Net worth", summary.netWorth, "wallet-cards", summary.currency);
       metric(grid, "Cash", summary.cash, "banknote", summary.currency);
       metric(grid, "Investments", summary.investments, "chart-no-axes-combined", summary.currency);
+      if (summary.assets) metric(grid, "Resale assets", summary.assets, "house", summary.currency);
       metric(grid, "Debt", summary.debt, "credit-card", summary.currency);
       const transactions = model.transactions.filter(t => t.currency === summary.currency && t.date.startsWith(month));
       metric(grid, "Spent this month", -transactions.filter(t => isSpendingTransaction(t)).reduce((n,t) => n+t.amount,0), "arrow-up-right", summary.currency);
@@ -212,6 +227,12 @@ export class TPSFinancesView extends ItemView {
       card.createEl("strong", { text: `${account.name}${account.mask ? ` •${account.mask}` : ""}` });
       card.createDiv({ cls: "tps-finances-account-balance", text: money(account.current || 0, account.currency) });
       card.createEl("span", { text: [account.type, account.subtype].filter(Boolean).join(" · ") });
+      if (account.manual) {
+        card.createEl("small", {text: account.type === "other" ? `Valued ${account.valuationDate || "—"}` : "Opening balance + cash transactions"});
+        card.appendChild(actionButton("file", "Open note", () => { if (account.path) void this.app.workspace.openLinkText(account.path, ""); }));
+        if (account.type === "other") card.appendChild(actionButton("pencil", "Update value", () => this.plugin.updateAssetValue(account)));
+        continue;
+      }
       if (this.plugin.settings?.recordMode === "atomic-note") {
         card.createEl("small", {text:"Atomic notes"});
         continue;
@@ -300,6 +321,9 @@ export class TPSFinancesView extends ItemView {
 
 function actionButton(iconName: string, label: string, action: () => void, primary = false): HTMLButtonElement {
   const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute("aria-label", label);
+  button.title = label;
   button.className = primary ? "tps-finances-button is-primary" : "tps-finances-button";
   const icon = document.createElement("span");
   setIcon(icon, iconName);

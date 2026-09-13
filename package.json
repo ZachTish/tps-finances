@@ -1,11 +1,11 @@
 {
   "name": "tps-finances",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Accounts, transactions, and investments as atomic notes for TPS.",
   "main": "main.js",
   "scripts": {
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node --test scripts/test-finance-contract.mjs scripts/test-atomic-finance.mjs && npm run build"
+    "test": "node --test scripts/test-finance-contract.mjs scripts/test-atomic-finance.mjs scripts/test-manual-finance.mjs && npm run build"
   },
   "license": "MIT",
   "devDependencies": {

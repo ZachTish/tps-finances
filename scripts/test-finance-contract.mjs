@@ -185,6 +185,7 @@ class DashboardNode {
   addClass() {}
   addEventListener() {}
   setAttr() {}
+  setAttribute() {}
 
   setText(value) {
     this.text = String(value);
@@ -770,6 +771,7 @@ test("dashboard action wrapper is limited to self-refreshing mutations", () => {
     .map((match) => match[1])
     .sort();
   assert.deepEqual(actionTargets, [
+    "addCashTransaction",
     "connectPlaid",
     "connectPlaid",
     "setAccountTransactionLogTarget",
@@ -2358,7 +2360,7 @@ test('summary separates cash, debt, and currencies and uses authoritative invest
  const result=await build({entryPoints:[fileURLToPath(new URL('../src/finance-summary.ts',import.meta.url))],bundle:true,write:false,format:'esm',platform:'node'});
  const {accountSummaries}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
  const accounts=[{financeAccountId:'cash',type:'depository',current:1000,currency:'USD'}, {financeAccountId:'card',type:'credit',current:-200,currency:'USD'}, {financeAccountId:'invest',type:'investment',current:500,currency:'USD'}, {financeAccountId:'eur',type:'depository',current:100,currency:'EUR'}];
- assert.deepEqual(accountSummaries(accounts,[{financeAccountId:'invest',value:450,currency:'USD'}]),[{currency:'USD',netWorth:1300,cash:1000,investments:500,debt:200},{currency:'EUR',netWorth:100,cash:100,investments:0,debt:0}]);
+ assert.deepEqual(accountSummaries(accounts,[{financeAccountId:'invest',value:450,currency:'USD'}]),[{currency:'USD',netWorth:1300,cash:1000,investments:500,debt:200,assets:0},{currency:'EUR',netWorth:100,cash:100,investments:0,debt:0,assets:0}]);
  assert.equal(accountSummaries([{...accounts[2],current:null}],[{financeAccountId:'invest',value:450,currency:'USD'}])[0].investments,450);
 });
 

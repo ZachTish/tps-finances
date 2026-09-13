@@ -5,6 +5,8 @@ import { normalizeDeviceItems } from "./device-state";
 import { AtomicFinanceStore } from "./atomic-finance-store";
 import { FinanceStore } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
+import { ManualFinanceStore, applyManualCashBalances } from "./manual-finance";
+import { ManualAccountModal, CashTransactionModal, AssetValueModal } from "./finance-modals";
 import { createLocalId } from "./identity";
 import { applyInvestmentTransactionResult, holdingsForSnapshot, investmentDateRange } from "./investment-sync";
 import * as logger from "./logger";
@@ -71,11 +73,21 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "sync-finances", name: "Sync accounts and transactions", callback: () => this.runSync("command") });
     this.addCommand({ id: "add-categorization-rule", name: "Add categorization rule", callback: () => this.addCategorizationRule() });
     this.addCommand({ id: "add-monthly-budget", name: "Add monthly budget", callback: () => this.addMonthlyBudget() });
+    this.addCommand({ id: "add-cash-account", name: "Add cash account", callback: () => this.addManualAccount("cash") });
+    this.addCommand({ id: "add-resale-asset", name: "Add resale asset", callback: () => this.addManualAccount("asset") });
+    this.addCommand({ id: "add-cash-transaction", name: "Log cash transaction", callback: () => void this.runUserAction("Cash", "command", () => this.addCashTransaction()) });
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       if (this.syncing) return; // Sync owns the final dashboard refresh.
       const root = normalizePath(this.settings.financeFolder);
       if (file.path.startsWith(`${root}/Rules/`) || file.path.startsWith(`${root}/Budgets/`) || file.path.startsWith(`${root}/Accounts/`) || file.path.startsWith(`${root}/Transactions/`) || file.path.startsWith(`${root}/Holdings/`)) void this.refreshDashboard();
+    }));
+    this.registerEvent(this.app.vault.on("delete", file => {
+      if (!this.syncing && file.path.startsWith(`${normalizePath(this.settings.financeFolder)}/`)) void this.refreshDashboard();
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      const root = `${normalizePath(this.settings.financeFolder)}/`;
+      if (!this.syncing && (file.path.startsWith(root) || oldPath.startsWith(root))) void this.refreshDashboard();
     }));
     (this as any).api = {
       openDashboard: () => this.openDashboard(),
@@ -362,7 +374,10 @@ export default class TPSFinancesPlugin extends Plugin {
     const accounts = this.readAccountsFromVault(snapshot, accountLabels);
     const holdings = this.parseSnapshotHoldings(snapshot, accounts);
     const store = this.createStore();
-    const transactionRecords = await store.readTransactionRecords();
+    // Manual records are always atomic notes, also when provider logging uses atomic lines.
+    const transactionStore = accounts.some(account => account.manual) && this.settings.recordMode === "atomic-line"
+      ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : store;
+    const transactionRecords = await transactionStore.readTransactionRecords();
     const rules = store.readRules();
     const classifyForDashboard = prepareTransactionClassifier(rules);
     const transactions = transactionRecords.map((record) => parseDashboardTransaction(record.line, record.path, record.lineNumber)).filter((value): value is DashboardTransaction => value !== null)
@@ -372,6 +387,7 @@ export default class TPSFinancesPlugin extends Plugin {
         const classification = classifyForDashboard(resolved);
         return { ...resolved, category: classification.category, tags: classification.tags, categorySource: classification.source, ruleId: classification.ruleId };
       }).sort((left, right) => right.date.localeCompare(left.date));
+    applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
     const budgets = calculateMonthlyBudgetProgress(store.readBudgets(), transactions, month);
     const lastSyncAt = this.deviceState.items.map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
@@ -384,6 +400,37 @@ export default class TPSFinancesPlugin extends Plugin {
       connectedItems: this.deviceState.items.length,
       plaidSetupState: this.getPlaidSetupStatus().state,
     };
+  }
+
+  addManualAccount(kind: "cash" | "asset"): void {
+    new ManualAccountModal(this.app, kind, async input => {
+      const file = await new ManualFinanceStore(this.app, this.settings.financeFolder).createAccount(input);
+      logger.flow("Manual", "account-created", {kind});
+      await this.app.workspace.getLeaf("tab").openFile(file);
+      await this.refreshDashboard();
+    }).open();
+  }
+
+  async addCashTransaction(): Promise<void> {
+    const model = await this.getDashboardModel();
+    if (!model.accounts.some(a => a.manual && a.type === "depository" && a.subtype === "cash")) {
+      new Notice("Create a cash account first using Add → Cash account.");
+      return;
+    }
+    new CashTransactionModal(this.app, model.accounts, async input => {
+      await new ManualFinanceStore(this.app, this.settings.financeFolder).createCashEntry(input);
+      logger.flow("Manual", "cash-entry-created", {kind: input.kind});
+      new Notice("Cash transaction recorded.");
+      await this.refreshDashboard();
+    }).open();
+  }
+
+  updateAssetValue(account: FinanceAccount): void {
+    new AssetValueModal(this.app, account, async (value, date) => {
+      await new ManualFinanceStore(this.app, this.settings.financeFolder).updateValue(account.path || "", value, date);
+      logger.flow("Manual", "asset-value-updated");
+      await this.refreshDashboard();
+    }).open();
   }
 
   addCategorizationRule(): void {
@@ -410,7 +457,8 @@ export default class TPSFinancesPlugin extends Plugin {
 
   editTransactionClassification(transaction: DashboardTransaction): void {
     new TransactionClassificationModal(this.app, transaction, async (category, tags) => {
-      const updated = await this.createStore().updateTransactionMetadata(transaction.financeId, category, tags);
+      const store = transaction.manual ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : this.createStore();
+      const updated = await store.updateTransactionMetadata(transaction.financeId, category, tags);
       if (!updated) throw new Error("The transaction could not be found in its daily note.");
       logger.flow("Classification", "transaction-updated", { source: category ? "manual" : "automatic", tagCount: tags.length });
       new Notice(category || tags.length ? "Transaction classification saved." : "Transaction returned to automatic classification.");
@@ -712,8 +760,11 @@ export default class TPSFinancesPlugin extends Plugin {
         subtype: String(frontmatter.accountSubtype || ""),
         currency: String(frontmatter.currency || balance?.currency || "USD"),
         available: this.settings.recordMode === "atomic-note" && "available" in frontmatter ? atomicNumber(frontmatter.available) : balance?.available ?? null,
-        current: this.settings.recordMode === "atomic-note" && "current" in frontmatter ? atomicNumber(frontmatter.current) : balance?.balance ?? null,
+        current: (this.settings.recordMode === "atomic-note" || frontmatter.financeSource === "manual") && "current" in frontmatter ? atomicNumber(frontmatter.current) : balance?.balance ?? null,
         limit: this.settings.recordMode === "atomic-note" ? atomicNumber(frontmatter.limit) : null,
+        manual: frontmatter.financeSource === "manual",
+        openingBalance: "openingBalance" in frontmatter ? Number(frontmatter.openingBalance) : undefined,
+        valuationDate: String(frontmatter.valuationDate || ""),
         path: file.path,
         transactionLogTarget: frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note" ? frontmatter.transactionLogTarget : "default",
         effectiveTransactionLogTarget: frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note"
@@ -847,6 +898,8 @@ function parseDashboardTransaction(line: string, sourcePath: string, sourceLine:
   const accountPath = wikilinkTarget(field(line, "account"));
   return {
     financeId,
+    manual: field(line, "financeSource") === "manual",
+    transferAccount: field(line, "transferAccount"),
     date,
     name: line.replace(/^-\s*/, "").split(" [type::")[0].trim(),
     account: accountPath.split("/").at(-1) || "",

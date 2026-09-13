@@ -1,30 +1,27 @@
-# TPS Finances 1.1.0
+# TPS Finances 1.2.0
 
-Tested in Obsidian Plugin Test Vault and ready for the user's BRAT pull. This release is not installed in production. Minimum Obsidian: 1.12.0; desktop-only.
+Tested in Obsidian Plugin Test Vault and ready for the user's BRAT pull. Minimum Obsidian: 1.12.0; desktop-only. Production was not accessed or updated.
 
 ## Changes
 
-- Reconnect repairs expired Plaid authorization through update mode while retaining the existing Item, access token, identities, and cursor.
-- Cash, investments, debt, and net worth are calculated separately per currency. Account balances take precedence over holdings. Overpaid credit balances retain the correct sign.
-- Refunds reduce spending; identified credit-card repayments do not count purchases twice. USD budgets exclude foreign currencies.
-- Matched pending-to-posted transitions preserve the local note, category, tags, and body.
-- Unchanged provider transaction revisions skip writes, and per-note metadata events do not repeatedly refresh the dashboard during sync.
-- Atomic dashboards exclude unrelated finance collections while retaining moved records linked to their own accounts.
+- Add cash accounts and log cash expenses, income, and transfers without Plaid. These are atomic notes in either record mode.
+- Cash balances derive from opening balances and signed transactions. Editing or trashing records recalculates both cash-transfer legs; Plaid balances stay provider-owned.
+- Track houses, cars, computers, and other resale assets with manually entered values and valuation dates. Update value from the account card, and optionally link existing purchase and loan notes.
+- Resale assets contribute once to net worth, separately from cash/investments. Valuation edits do not create income or subtract linked debt twice.
+- Preserve existing settings and actions; add three commands and an Add menu. The header wraps in narrow panes and buttons have accessible names and visible keyboard focus.
 
 ## Validation
 
-91 tests passed with no skips/failures; TypeScript and the mandatory separate production build passed. The build deployed only to the isolated test vault. Reload preserved settings and connections. All four settings routes were inventoried; the dashboard and budget creation modal were exercised.
+103 tests passed, followed by the mandatory separate production-mode build and test-vault deployment. Reload verified version 1.2.0, all eight commands, unchanged settings and connections, and the original 16 Sandbox accounts, 1,694 transactions, and 13 holdings.
 
-Actual Safari Sandbox Link imported 14 accounts, 394 bank transactions, 1,169 investment transactions, and 13 holdings. All account balances and all transaction amounts/dates matched independent API reads. A one-Item repeat sync took 4.7 seconds without duplicates. Forced login expiration preserved the checkpoint and last success, then the actual Safari Reconnect flow repaired the same Item.
-
-A second dynamic Sandbox Item exercised pending-to-posted updates, retaining an annotated note's identity, category, tags, and body. A two-Item repeat sync retained 16 accounts, 1,694 unique transactions, and 13 holdings in 8.7 seconds. The UI-created $100 budget showed $39.35, matching the categorized record.
+Actual UI creation recorded a $100 wallet and a $12.50 tagged cash expense, created a $900 computer, and updated its value to $800. Runtime tests verified expense edits ($75 remaining), a $20 cash-to-cash transfer ($55/$220), deletion restoring $75/$200, and Atomic line compatibility. Final reloaded UI showed the restored $87.50 wallet, $200 safe, and $800 computer. Add menu, conditional transfer fields, keyboard invocation, and narrow-pane layout were inspected. Temporary settings were restored and synthetic fixtures archived. No new provider calls or credentials were needed for these local features.
 
 ## Limits
 
-Sandbox does not prove real-bank OAuth behavior or physical mobile compatibility. Connection/sync remains desktop-only and user-initiated. Category budgets are USD-only; no exchange-rate conversion, double-entry reconciliation, tax filing, or money movement is implemented. The original two-year import on 1.0.0 took about 13 minutes in the iCloud test vault; repeat-sync timings are observations, not first-import guarantees. The dynamic test institution has no investment accounts and correctly reports optional Investments unavailable. Existing user settings and credentials remain unchanged; two Sandbox test connections remain for inspection.
+Values are manual; there is no automatic appraisal, depreciation, valuation history, or exchange-rate conversion. Cash account notes store the opening balance; their current balance is calculated in the dashboard rather than persisted as a stale property. Purchase/loan/bank-transaction links are references, not automatic matching or reclassification. Record each cash transfer once. Existing category budgets remain USD-only. This release does not add a mobile plugin runtime or perform money movements.
 
 ## SHA-256
 
-- main.js: `b77363aad54d4526fa8abc2a3c26ab136c28a358db043916305f750320b2af98`
-- manifest.json: `f42a7cd0c724246cec4c809d88473c59d11da1997bf8b80aaf11716bd594f3b3`
-- styles.css: `2f1e226e1e001dca3f42af78827e0770ca19ad81e304e4baba44717d9a27a6e0`
+- `main.js`: `1f8908e7d757d449b36b7fcc2a4a5cd5d72a5028edf520e87f11844049cb43e2`
+- `manifest.json`: `0f1f1cda9a6b8be0dd6add6b0179a84ba6a5ee398c37fede97bd08cc63c61c5d`
+- `styles.css`: `8e27996858499ba41d9c6c62cc89c4d05cde2f2605577edacc73d3140809ad4c`
