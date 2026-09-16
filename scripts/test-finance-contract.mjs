@@ -802,7 +802,7 @@ test("Connect owns exactly one refresh through normal and already-running Sync p
       items: [],
       providerIdentityMap: {},
     };
-    plugin.getPlaidCredentials = () => ({ clientId: "client-id", secret: "environment-secret" });
+    plugin.controllerPlaid = () => ({ version: 1, getConfiguration: () => plugin.settings, request: async () => { throw new Error("Unexpected transport call"); } });
     let saves = 0;
     let refreshes = 0;
     plugin.saveDeviceState = () => {
@@ -847,10 +847,6 @@ test("finance settings use a shallow routed hub with complete controls and actio
   }
   for (const control of [
     "Finance folder",
-    "Plaid environment",
-    "Plaid client ID",
-    "Plaid secret",
-    "OAuth redirect URI",
     "Transaction history",
     "Default transaction location",
     "Debug logging",
@@ -866,8 +862,6 @@ test("finance settings use a shallow routed hub with complete controls and actio
   assert.match(settings, /pageHeading\.focus\(\{ preventScroll: true \}\)/);
   assert.match(settings, /pageHeading\.scrollIntoView\(\{ block: "start" \}\)/);
   assert.match(settings, /activeRouteButton\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
-  assert.match(settings, /this\.renderSettings\(false, "Plaid client ID"\)/);
-  assert.match(settings, /this\.renderSettings\(false, "Plaid secret"\)/);
   assert.match(settings, /await this\.plugin\.runConnectPlaid\("settings"\);\s*this\.renderSettings\(true\)/);
   assert.match(settings, /await this\.plugin\.runSync\("settings"\);\s*this\.renderSettings\(true\)/);
   assert.match(main, /runConnectPlaid\(source: "command" \| "settings"\): Promise<void>/);
@@ -1811,7 +1805,7 @@ test("Plaid sync handles cursor patches and investment products", () => {
   assert.match(client, /amount: -numberOrZero\(transaction\.amount\)/);
   assert.match(client, /isLiabilityType\(type\) \? -current : current/);
   assert.match(client, /PRODUCT_NOT_READY/);
-  assert.match(client, /"Plaid-Version"/);
+  assert.doesNotMatch(client, /requestUrl|PLAID-SECRET/);
   assert.match(types, /lastInvestmentTransactionSyncAt: string/);
   assert.match(investmentSyncSource, /lastSuccessfulSyncAt/);
 });
@@ -1869,7 +1863,7 @@ test("Plaid transport pins the API contract and reports safe structured provider
     captured = options;
     return { status: 200, json: { link_token: "link-test" } };
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   assert.equal(await plaid.createLinkToken("user-test", 1000, ""), "link-test");
   assert.equal(captured.url, "https://sandbox.plaid.com/link/token/create");
   assert.equal(captured.headers["Plaid-Version"], "2020-09-14");
@@ -1895,7 +1889,7 @@ test("optional Investments failures do not block core account and transaction sy
     status: 400,
     json: { error_code: "PRODUCT_NOT_ENABLED", error_message: "Investments is unavailable." },
   });
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const item = { accessToken: "access-test" };
   const state = { providerIdentityMap: {} };
   assert.deepEqual(await plaid.getHoldings(item, state), { status: "unavailable", code: "PRODUCT_NOT_ENABLED", requestId: "" });
@@ -1995,7 +1989,7 @@ test("transaction sync discards a mutated partial page and restarts from the dur
       hasMore: false,
     });
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const item = { accessToken: "access-test", cursor: "durable" };
   const state = { providerIdentityMap: { "account:account": "finance-account-existing" } };
   const patch = await plaid.syncTransactions(item, state);
@@ -2039,7 +2033,7 @@ test("transaction sync bounds repeated mutation recovery and leaves failed attem
       },
     };
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const item = { accessToken: "access-test", cursor: "durable" };
   const state = { providerIdentityMap: { existing: "identity" } };
   await assert.rejects(
@@ -2069,7 +2063,7 @@ test("transaction sync restarts only for the structured Plaid mutation code", as
       },
     };
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const state = { providerIdentityMap: {} };
   await assert.rejects(
     () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state),
@@ -2088,7 +2082,7 @@ test("transaction sync does not invent a recovery when mutation is returned on t
       json: { error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION", error_message: "No active page sequence." },
     };
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   await assert.rejects(
     () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, { providerIdentityMap: {} }),
     (error) => error instanceof plaidClientModule.PlaidApiError
@@ -2198,7 +2192,7 @@ test("transaction sync rejects malformed and non-progressing cursor responses wi
   for (const scenario of cases) {
     let call = 0;
     globalThis.__tpsPlaidRequestUrl = async () => scenario.responses[call++];
-    const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+    const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
     const state = { providerIdentityMap: {} };
     await assert.rejects(
       () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state),
@@ -2222,7 +2216,7 @@ test("transaction sync accepts supported empty and stationary terminal no-op cur
       requestCursor = JSON.parse(options.body).cursor;
       return plaidSyncResponse({ nextCursor: scenario.nextCursor, hasMore: false });
     };
-    const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+    const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
     const state = { providerIdentityMap: {} };
     const patch = await plaid.syncTransactions({ accessToken: "access-test", cursor: scenario.cursor }, state);
     assert.equal(requestCursor, scenario.cursor || undefined);
@@ -2248,7 +2242,7 @@ test("transaction sync stages only new identities without enumerating durable hi
     nextCursor: "complete",
     hasMore: false,
   });
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const state = { providerIdentityMap: guardedIdentities };
   const patch = await plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state);
   assert.equal(patch.added[0].financeId, "finance-transaction-existing");
@@ -2269,7 +2263,7 @@ test("transaction sync commits identity mappings only after terminal normalizati
     nextCursor: "complete",
     hasMore: false,
   });
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const state = { providerIdentityMap: { existing: "identity" } };
   await assert.rejects(
     () => plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state),
@@ -2288,7 +2282,7 @@ test("transaction sync enforces the 100-page attempt limit without committing pa
       hasMore: true,
     });
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const item = { accessToken: "access-test", cursor: "durable" };
   const state = { providerIdentityMap: {} };
   await assert.rejects(() => plaid.syncTransactions(item, state), /exceeded 100 pages/);
@@ -2308,7 +2302,7 @@ test("transaction sync accepts a terminal 100th page and retains all buffered pa
         : [];
     return plaidSyncResponse({ added, nextCursor: `cursor-${call}`, hasMore: call < 100 });
   };
-  const plaid = new plaidClientModule.PlaidClient("sandbox", { clientId: "client-test", secret: "secret-test" });
+  const plaid = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url: "https://sandbox.plaid.com"+path, method:"POST", headers:{"Content-Type":"application/json", "PLAID-CLIENT-ID":"client-test", "PLAID-SECRET":"secret-test", "Plaid-Version":"2020-09-14"}, body:JSON.stringify(body), throw:false}));
   const state = { providerIdentityMap: { "account:account": "finance-account-existing" } };
   const patch = await plaid.syncTransactions({ accessToken: "access-test", cursor: "durable" }, state);
   assert.equal(call, 100);
@@ -2327,7 +2321,7 @@ test("disconnect and logging behavior protect financial integrations", () => {
   assert.match(readme, /subscription charges/);
   assert.match(main, /logger\.flow\("Sync", "item:done"/);
   assert.doesNotMatch(main, /logger\.[a-z]+\([^\n]*(accessToken|providerItemId)/);
-  assert.match(main, /new PlaidClient\(item\.environment, this\.getPlaidCredentials\(item\.plaidSecretName, item\.plaidClientIdSecretName \|\| this\.settings\.plaidClientIdSecret\)\)/);
+  assert.match(main, /this\.createPlaidClient\(item\.environment, item\.plaidSecretName, item\.plaidClientIdSecretName\)/);
   assert.match(main, /if \(!failures\.length && \(allAccounts\.length \|\| allHoldings\.length\)\)/);
   assert.match(main, /gcmApi\.frontmatter\.process\(file, mutator\)/);
   assert.match(main, /externalActions\.register/);
@@ -2351,7 +2345,7 @@ test('liability normalization preserves overpaid credit balances', async () => {
     {account_id:'credit-overpaid',type:'credit',balances:{current:-25,iso_currency_code:'USD'}},
     {account_id:'loan',type:'loan',balances:{current:100,iso_currency_code:'USD'}},
   ]}});
-  const client = new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+  const client = new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url:"https://sandbox.plaid.com"+path,body:JSON.stringify(body)}));
   const accounts = await client.getAccounts({localItemId:'item',accessToken:'fake',institutionName:'Test'},{providerIdentityMap:{}});
   assert.deepEqual(accounts.map(a=>a.current),[-50,25,-100]);
 });
@@ -2366,7 +2360,7 @@ test('summary separates cash, debt, and currencies and uses authoritative invest
 
 test('update Link retains existing Item and omits new-connection products',async()=>{
  let body;globalThis.__tpsPlaidRequestUrl=async options=>{body=JSON.parse(options.body);return {status:200,json:{link_token:'update-test'}}};
- const client=new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+ const client=new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url:"https://sandbox.plaid.com"+path,body:JSON.stringify(body)}));
  assert.equal(await client.createUpdateLinkToken('user','existing-access',''),'update-test');
  assert.equal(body.access_token,'existing-access');assert.equal(body.products,undefined);assert.equal(body.transactions,undefined);
  assert.match(main,/openLocalPlaidLink\(token,true\)/);
@@ -2377,7 +2371,7 @@ test('update Link retains existing Item and omits new-connection products',async
 test('posted replacement retains pending identity and avoids deleting local classifications',async()=>{
  globalThis.__tpsPlaidRequestUrl=async()=>({status:200,json:{added:[{transaction_id:'posted',pending_transaction_id:'pending',account_id:'account',pending:false,date:'2026-09-13',amount:12,name:'Purchase'}],modified:[],removed:[{transaction_id:'pending',account_id:'account'}],has_more:false,next_cursor:'next'}});
  const state={providerIdentityMap:{'transaction:pending':'local-existing','account:account':'local-account'}};
- const client=new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+ const client=new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url:"https://sandbox.plaid.com"+path,body:JSON.stringify(body)}));
  const patch=await client.syncTransactions({accessToken:'fake',cursor:'previous'},state);
  assert.equal(patch.added[0].financeId,'local-existing');assert.deepEqual(patch.removedProviderIds,[]);assert.equal(state.providerIdentityMap['transaction:posted'],'local-existing');
 });
@@ -2400,7 +2394,46 @@ test('USD budgets do not add foreign-currency spending',()=>{
 
 test('credit card repayments are transfers rather than a second purchase',async()=>{
  globalThis.__tpsPlaidRequestUrl=async()=>({status:200,json:{added:[{transaction_id:'payment',account_id:'account',pending:false,date:'2026-09-13',amount:100,name:'Card payment',personal_finance_category:{primary:'LOAN_PAYMENTS',detailed:'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT'}}],modified:[],removed:[],has_more:false,next_cursor:'next'}});
- const client=new plaidClientModule.PlaidClient('sandbox',{clientId:'test',secret:'test'});
+ const client=new plaidClientModule.PlaidClient((path, body) => globalThis.__tpsPlaidRequestUrl({url:"https://sandbox.plaid.com"+path,body:JSON.stringify(body)}));
  const patch=await client.syncTransactions({accessToken:'fake',cursor:''},{providerIdentityMap:{}});
  assert.equal(patch.added[0].subtype,'transfer-out');
+});
+
+test("Plaid requests fail closed without Controller while manual finance remains available", () => {
+ const plugin = new mainActionModule.default({plugins:{plugins:{}}});
+ assert.throws(() => plugin.createPlaidClient('sandbox'), /Enable or update TPS Controller/);
+ assert.equal(plugin.getPlaidSetupStatus().state, 'missing-credentials');
+ assert.match(settings, /Open Controller settings/);
+});
+test("Plaid normalization delegates the transport when supplied", async () => {
+ let seen;
+ const client = new plaidClientModule.PlaidClient(async(path,body) => {seen={path,body};return {status:200,json:{link_token:'token'}};});
+ assert.equal(await client.createLinkToken('user',30,''),'token');
+ assert.equal(seen.path,'/link/token/create'); assert.equal(seen.body.user.client_user_id,'user');
+});
+
+
+test("connecting retains the environment and secret references used for Link", async () => {
+  const plugin = new mainActionModule.default({});
+  const initial = { plaidEnvironment: "sandbox", plaidClientIdSecret: "client-original", plaidSecretSecret: "secret-original", oauthRedirectUri: "", transactionHistoryDays: 30 };
+  plugin.settings = { ...initial };
+  plugin.getPlaidConfiguration = () => ({ ...plugin.settings });
+  plugin.deviceState = { plaidUserId: "test-user", items: [], providerIdentityMap: {} };
+  plugin.createPlaidClient = (environment, secret, client) => {
+    assert.deepEqual([environment, secret, client], ["sandbox", "secret-original", "client-original"]);
+    return {
+      createLinkToken: async () => {
+        plugin.settings = { ...initial, plaidEnvironment: "production", plaidSecretSecret: "secret-new" };
+        return "test-link-token";
+      },
+      exchangePublicToken: async () => ({ itemId: "test-item", accessToken: "test-access" }),
+    };
+  };
+  plugin.saveDeviceState = () => {};
+  plugin.syncAll = async () => {};
+  globalThis.__tpsConnectNotices = [];
+  await plugin.connectPlaid();
+  assert.equal(plugin.deviceState.items[0].environment, "sandbox");
+  assert.equal(plugin.deviceState.items[0].plaidSecretName, "secret-original");
+  assert.equal(plugin.deviceState.items[0].plaidClientIdSecretName, "client-original");
 });

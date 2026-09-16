@@ -1,4 +1,3 @@
-import { requestUrl } from "obsidian";
 import { createLocalId, providerIdentityKey } from "./identity";
 import * as logger from "./logger";
 import type {
@@ -13,12 +12,6 @@ import type {
   TransactionSyncPatch,
 } from "./types";
 
-const PLAID_HOSTS: Record<PlaidEnvironment, string> = {
-  sandbox: "https://sandbox.plaid.com",
-  development: "https://development.plaid.com",
-  production: "https://production.plaid.com",
-};
-const PLAID_API_VERSION = "2020-09-14";
 const MAX_TRANSACTION_SYNC_PAGES_PER_ATTEMPT = 100;
 const MAX_TRANSACTION_SYNC_MUTATION_RESTARTS = 2;
 const TRANSACTION_SYNC_MUTATION_CODE = "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION";
@@ -37,8 +30,7 @@ export class PlaidApiError extends Error {
 
 export class PlaidClient {
   constructor(
-    private readonly environment: PlaidEnvironment,
-    private readonly credentials: PlaidCredentials,
+    private readonly transport: (path: string, body: Record<string, unknown>) => Promise<{status: number; json: any}>,
   ) {}
 
   async createLinkToken(userId: string, daysRequested: number, redirectUri: string): Promise<string> {
@@ -217,18 +209,7 @@ export class PlaidClient {
   }
 
   private async post(path: string, body: Record<string, unknown>): Promise<any> {
-    const response = await requestUrl({
-      url: `${PLAID_HOSTS[this.environment]}${path}`,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "PLAID-CLIENT-ID": this.credentials.clientId,
-        "PLAID-SECRET": this.credentials.secret,
-        "Plaid-Version": PLAID_API_VERSION,
-      },
-      body: JSON.stringify(body),
-      throw: false,
-    });
+    const response = await this.transport(path, body);
     const payload = response.json || {};
     if (response.status < 200 || response.status >= 300) {
       const code = String(payload.error_code || `HTTP_${response.status}`);

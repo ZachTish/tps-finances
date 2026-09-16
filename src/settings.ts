@@ -105,59 +105,13 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
   }
 
   private renderPlaidSettings(parent: HTMLElement): void {
-    new Setting(parent)
-      .setName("Plaid environment")
-      .setDesc("Start in Sandbox. Production uses real financial data and may incur Plaid subscription charges.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("sandbox", "Sandbox")
-        .addOption("development", "Development")
-        .addOption("production", "Production")
-        .setValue(this.plugin.settings.plaidEnvironment)
-        .onChange(async (value) => {
-          this.plugin.settings.plaidEnvironment = value as PlaidEnvironment;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(parent)
-      .setName("Plaid client ID")
-      .setDesc("Select or create a device-local Obsidian secret containing the Plaid client ID.")
-      .addComponent((element) => new SecretComponent(this.app, element)
-        .setValue(this.plugin.settings.plaidClientIdSecret)
-        .onChange(async (value) => {
-          this.plugin.settings.plaidClientIdSecret = value;
-          await this.plugin.saveSettings();
-          this.renderSettings(false, "Plaid client ID");
-        }));
-
-    new Setting(parent)
-      .setName("Plaid secret")
-      .setDesc("Select or create a device-local Obsidian secret for the active Plaid environment.")
-      .addComponent((element) => new SecretComponent(this.app, element)
-        .setValue(this.plugin.settings.plaidSecretSecret)
-        .onChange(async (value) => {
-          this.plugin.settings.plaidSecretSecret = value;
-          await this.plugin.saveSettings();
-          this.renderSettings(false, "Plaid secret");
-        }));
-
-    const plaidSetup = this.plugin.getPlaidSetupStatus();
-    const setupDescription = plaidSetup.state === "conflicting-credentials"
-      ? "Needs attention: the client ID and environment secret currently resolve to the same secret. Select or create two different Obsidian secrets above."
-      : plaidSetup.state === "missing-credentials"
-        ? `Missing ${[!plaidSetup.clientIdConfigured ? "client ID" : "", !plaidSetup.secretConfigured ? "environment secret" : ""].filter(Boolean).join(" and ")}. Populate both secret selections before connecting.`
-        : plaidSetup.connectedItems
-          ? `Credentials are configured and ${plaidSetup.connectedItems} Plaid institution${plaidSetup.connectedItems === 1 ? " is" : "s are"} connected on this device.`
-          : "Credentials are configured. Connect an institution to begin syncing finance data.";
-    new Setting(parent)
-      .setName("Plaid setup status")
-      .setDesc(setupDescription);
-
-    new Setting(parent)
-      .setName("OAuth redirect URI")
-      .setDesc("Optional HTTPS redirect URI registered in Plaid. Desktop popup OAuth can work without it; configure this when an institution requires it.")
-      .addText((text) => text.setPlaceholder("https://…").setValue(this.plugin.settings.oauthRedirectUri).onChange(async (value) => {
-        this.plugin.settings.oauthRedirectUri = value.trim();
-        await this.plugin.saveSettings();
+    new Setting(parent).setName("Plaid connection · This device")
+      .setDesc("TPS Controller owns the environment, credentials, and Plaid requests. Manage your institutions here under Connections.")
+      .addButton(button => button.setButtonText("Open Controller settings").onClick(() => {
+        const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
+        if (typeof controller?.openPlaidSettings === "function") { controller.openPlaidSettings(); return; }
+        const settings = (this.app as any).setting;
+        settings?.open(); settings?.openTabById("tps-controller");
       }));
   }
 

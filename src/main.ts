@@ -11,7 +11,6 @@ import { createLocalId } from "./identity";
 import { applyInvestmentTransactionResult, holdingsForSnapshot, investmentDateRange } from "./investment-sync";
 import * as logger from "./logger";
 import { PlaidClient } from "./plaid-client";
-import { inspectPlaidCredentials, readPlaidCredentials } from "./plaid-credentials";
 import { openLocalPlaidLink } from "./plaid-link";
 import { TPSFinancesSettingTab } from "./settings";
 import { CoalescedSnapshotWriter, reconcilePersistedSnapshot } from "./settings-persistence";
@@ -21,7 +20,6 @@ import {
   DeviceState,
   FinanceAccount,
   FinanceHolding,
-  PlaidCredentials,
   PlaidSetupStatus,
   TPSFinancesSettings,
   TransactionLogTarget,
@@ -102,7 +100,7 @@ export default class TPSFinancesPlugin extends Plugin {
     };
     this.app.workspace.onLayoutReady(() => void this.prepareFinanceStorage());
     logger.flow("Lifecycle", "load", {
-      environment: this.settings.plaidEnvironment,
+      environment: this.getPlaidConfiguration().plaidEnvironment,
       connectedItems: this.deviceState.items.length,
       financeFolder: this.settings.financeFolder,
     });
@@ -149,12 +147,11 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   getPlaidSetupStatus(): PlaidSetupStatus {
-    return inspectPlaidCredentials(
-      this.settings.plaidClientIdSecret,
-      this.settings.plaidSecretSecret,
-      (name) => this.app.secretStorage.getSecret(name),
-      this.deviceState.items.length,
-    );
+    const provider = this.controllerPlaid(false);
+    if (!provider) return { state: "missing-credentials", clientIdConfigured: false, secretConfigured: false, connectedItems: this.deviceState.items.length };
+    provider.getConfiguration(this.settings);
+    return { ...provider.inspect(), connectedItems: this.deviceState.items.length };
+
   }
 
   runConnectPlaid(source: "command" | "settings"): Promise<void> {
@@ -177,10 +174,10 @@ export default class TPSFinancesPlugin extends Plugin {
   async connectPlaid(): Promise<void> {
     if (!Platform.isDesktopApp) throw new Error("TPS Finances Plaid authentication currently requires the desktop app.");
     try {
-      const credentials = this.getPlaidCredentials();
-      const client = new PlaidClient(this.settings.plaidEnvironment, credentials);
-      logger.flow("Connect", "start", { environment: this.settings.plaidEnvironment, credentialStatus: "ready" });
-      const linkToken = await client.createLinkToken(this.deviceState.plaidUserId, this.settings.transactionHistoryDays, this.settings.oauthRedirectUri);
+      const config = this.getPlaidConfiguration();
+      const client = this.createPlaidClient(config.plaidEnvironment, config.plaidSecretSecret, config.plaidClientIdSecret);
+      logger.flow("Connect", "start", { environment: config.plaidEnvironment, credentialStatus: "ready" });
+      const linkToken = await client.createLinkToken(this.deviceState.plaidUserId, this.settings.transactionHistoryDays, config.oauthRedirectUri);
       const result = await openLocalPlaidLink(linkToken);
       const exchange = await client.exchangePublicToken(result.publicToken);
       const item: DeviceItemState = {
@@ -191,9 +188,9 @@ export default class TPSFinancesPlugin extends Plugin {
         cursor: "",
         lastSyncAt: "",
         lastInvestmentTransactionSyncAt: "",
-        environment: this.settings.plaidEnvironment,
-        plaidClientIdSecretName: this.settings.plaidClientIdSecret,
-        plaidSecretName: this.settings.plaidSecretSecret,
+        environment: config.plaidEnvironment,
+        plaidClientIdSecretName: config.plaidClientIdSecret,
+        plaidSecretName: config.plaidSecretSecret,
       };
       this.deviceState.items.push(item);
       this.saveDeviceState();
@@ -203,7 +200,7 @@ export default class TPSFinancesPlugin extends Plugin {
       await this.syncAll("connect");
       if (syncWasAlreadyRunning) await this.refreshDashboard();
     } catch (error) {
-      logger.failure("Connect", "failed", error, { environment: this.settings.plaidEnvironment });
+      logger.failure("Connect", "failed", error, { environment: this.getPlaidConfiguration().plaidEnvironment });
       throw error;
     }
   }
@@ -212,8 +209,8 @@ export default class TPSFinancesPlugin extends Plugin {
     if(this.syncing) throw new Error("Wait for the current sync to finish.");
     const item=this.deviceState.items.find(i=>i.localItemId===localItemId);
     if(!item) throw new Error("Connection no longer exists.");
-    const client=new PlaidClient(item.environment,this.getPlaidCredentials(item.plaidSecretName,item.plaidClientIdSecretName||this.settings.plaidClientIdSecret));
-    const token=await client.createUpdateLinkToken(this.deviceState.plaidUserId,item.accessToken,this.settings.oauthRedirectUri);
+    const client=this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
+    const token=await client.createUpdateLinkToken(this.deviceState.plaidUserId,item.accessToken,this.getPlaidConfiguration().oauthRedirectUri);
     await openLocalPlaidLink(token,true);
     // Update mode retains the existing Item, access token, identities and cursor.
     await this.syncAll("reconnect");
@@ -226,7 +223,7 @@ export default class TPSFinancesPlugin extends Plugin {
   async disconnectItem(localItemId: string): Promise<void> {
     const item = this.deviceState.items.find((candidate) => candidate.localItemId === localItemId);
     if (!item) return;
-    const client = new PlaidClient(item.environment, this.getPlaidCredentials(item.plaidSecretName, item.plaidClientIdSecretName || this.settings.plaidClientIdSecret));
+    const client = this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
     logger.flow("Disconnect", "start", { institution: item.institutionName });
     try {
       await client.removeItem(item.accessToken);
@@ -267,7 +264,7 @@ export default class TPSFinancesPlugin extends Plugin {
       const previousHoldings = this.parseSnapshotHoldings(previousSnapshot, previousAccounts);
       for (const item of this.deviceState.items) {
         try {
-          const client = new PlaidClient(item.environment, this.getPlaidCredentials(item.plaidSecretName, item.plaidClientIdSecretName || this.settings.plaidClientIdSecret));
+          const client = this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
           const accounts = await client.getAccounts(item, this.deviceState);
           const accountPaths = await store.upsertAccounts(accounts);
           const patch = await client.syncTransactions(item, this.deviceState);
@@ -481,10 +478,10 @@ export default class TPSFinancesPlugin extends Plugin {
     container.addClass("tps-finances-home-summary");
     if (!model.connectedItems && !model.accounts.length) {
       const text = model.plaidSetupState === "conflicting-credentials"
-        ? "Plaid setup needs attention: choose separate client ID and environment secrets in TPS Finances settings."
+        ? "Plaid setup needs attention: choose separate client ID and environment secrets in TPS Controller settings."
         : model.plaidSetupState === "ready"
           ? "Plaid credentials are ready. Connect an institution to see your financial snapshot."
-          : "Add Plaid credentials in TPS Finances settings, then connect an institution.";
+          : "Add Plaid credentials in TPS Controller settings, then connect an institution.";
       container.createDiv({ cls: "tps-finances-home-empty", text });
     } else if (model.connectedItems && !model.accounts.length) {
       container.createDiv({ cls: "tps-finances-home-empty", text: "Plaid is connected, but no account snapshot has synced yet. Open Finances and run Sync to see the provider error." });
@@ -529,11 +526,21 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  private getPlaidCredentials(
-    secretName = this.settings.plaidSecretSecret,
-    clientIdSecretName = this.settings.plaidClientIdSecret,
-  ): PlaidCredentials {
-    return readPlaidCredentials(clientIdSecretName, secretName, (name) => this.app.secretStorage.getSecret(name));
+  private controllerPlaid(required = true): any {
+    const service = (this.app as any).plugins?.plugins?.["tps-controller"]?.api?.plaid;
+    if (service?.version === 1 && typeof service.request === "function") return service;
+    if (required) throw new Error("Enable or update TPS Controller to use Plaid. Manual finance records remain available.");
+    return null;
+  }
+
+  getPlaidConfiguration() {
+    return this.controllerPlaid(false)?.getConfiguration(this.settings) || this.settings;
+  }
+
+  private createPlaidClient(environment: TPSFinancesSettings["plaidEnvironment"], secretRef?: string, clientRef?: string): PlaidClient {
+    const provider = this.controllerPlaid();
+    provider.getConfiguration(this.settings);
+    return new PlaidClient((path, body) => provider.request(environment, path, body, clientRef, secretRef));
   }
 
   private async runUserAction(scope: string, trigger: string, action: () => Promise<void>): Promise<void> {
@@ -690,7 +697,7 @@ export default class TPSFinancesPlugin extends Plugin {
     try {
       const parsed = JSON.parse(stored) as Partial<DeviceState>;
       const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
-      const normalized = normalizeDeviceItems(rawItems, this.settings.plaidClientIdSecret, this.settings.plaidSecretSecret);
+      const normalized = normalizeDeviceItems(rawItems, this.getPlaidConfiguration().plaidClientIdSecret, this.getPlaidConfiguration().plaidSecretSecret);
       if (normalized.skipped) logger.warn("DeviceState", "invalid-items-skipped", { skippedItems: normalized.skipped });
       const state = {
         plaidUserId: String(parsed.plaidUserId || createLocalId("finance-user")),
