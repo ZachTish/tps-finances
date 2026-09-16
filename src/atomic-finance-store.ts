@@ -1,4 +1,5 @@
-import { App, TFile, normalizePath, parseYaml, stringifyYaml } from "obsidian";
+import { financeDirectory, financePath, financePrefix } from "./finance-paths";
+import { App, TFile, parseYaml, stringifyYaml } from "obsidian";
 import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody } from "./finance-store";
 import { normalizeTags } from "./classification";
 import { providerIdentityKey } from "./identity";
@@ -13,9 +14,9 @@ export class AtomicFinanceStore extends FinanceStore {
   async ensureStructure(): Promise<void> {
     await super.ensureStructure();
     for (const name of ["Transactions", "Holdings"]) {
-      const path = normalizePath(`${this.folder}/${name}`);
-      if (!this.vaultApp.vault.getAbstractFileByPath(path)) await this.vaultApp.vault.createFolder(path);
-      const base = this.vaultApp.vault.getAbstractFileByPath(`${this.folder}/${name}.base`);
+      const path = financeDirectory(this.folder, name);
+      if (path && !this.vaultApp.vault.getAbstractFileByPath(path)) await this.vaultApp.vault.createFolder(path);
+      const base = this.vaultApp.vault.getAbstractFileByPath(financePath(this.folder, "", `${name}.base`));
       const body = atomicBase(this.folder, name);
       if (base instanceof TFile) {
         // Convert only uncustomized generated views. Preserve customized Bases in place.
@@ -23,7 +24,7 @@ export class AtomicFinanceStore extends FinanceStore {
         if (content === (name === "Transactions" ? transactionsBaseBody(this.folder) : holdingsBaseBody(this.folder))) {
           await this.vaultApp.vault.process(base, current => current === content ? body : current);
         } else if (content !== body) {
-          const atomicPath = `${this.folder}/${name} (Atomic notes).base`;
+          const atomicPath = financePath(this.folder, "", `${name} (Atomic notes).base`);
           if (!this.vaultApp.vault.getAbstractFileByPath(atomicPath)) await this.vaultApp.vault.create(atomicPath, body);
         }
       }
@@ -32,7 +33,7 @@ export class AtomicFinanceStore extends FinanceStore {
 
   async restoreLineBases(): Promise<void> {
     for(const name of ["Transactions","Holdings"]){
-      const file=this.vaultApp.vault.getAbstractFileByPath(`${this.folder}/${name}.base`);
+      const file=this.vaultApp.vault.getAbstractFileByPath(financePath(this.folder, "", `${name}.base`));
       if(file instanceof TFile)await this.vaultApp.vault.process(file,content=>content===atomicBase(this.folder,name)?(name==="Transactions"?transactionsBaseBody(this.folder):holdingsBaseBody(this.folder)):content);
     }
   }
@@ -64,10 +65,10 @@ export class AtomicFinanceStore extends FinanceStore {
     const result = new Map<string, TFile>();
     for (const file of this.vaultApp.vault.getMarkdownFiles()) {
       // Metadata narrows candidates; direct reads below avoid stale values after mutations.
-      if (!file.path.startsWith(`${this.folder}/Transactions/`) && !this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId) continue;
+      if ((!this.folder || !file.path.startsWith(financePrefix(this.folder, "Transactions"))) && !this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId) continue;
       const fm = await this.fields(file);
       const accountPath = String(fm.account || "").replace(/^\[\[|\]\]$/g, "");
-      if (!file.path.startsWith(`${this.folder}/Transactions/`) && !accountPath.startsWith(`${this.folder}/Accounts/`)) continue;
+      if (!file.path.startsWith(financePrefix(this.folder, "Transactions")) && !accountPath.startsWith(financePrefix(this.folder, "Accounts"))) continue;
       if (!fm.financeId || !["transaction", "investmentTransaction"].includes(fm.type)) continue;
       const id = String(fm.financeId);
       if (result.has(id)) throw new Error(`Duplicate atomic transaction identity: ${id}. Resolve the duplicate notes before syncing.`);
@@ -92,7 +93,7 @@ export class AtomicFinanceStore extends FinanceStore {
       });
     } else {
       const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
-      const path = normalizePath(`${this.folder}/Transactions/${safeId}.md`);
+      const path = financePath(this.folder, "Transactions", `${safeId}.md`);
       if (this.vaultApp.vault.getAbstractFileByPath(path)) throw new Error(`Transaction destination is occupied: ${path}`);
       file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml({ ...fm, [this.identityKey()]: fm[this.identityKey()] || id })}---\n`);
       index.set(id, file);
@@ -138,7 +139,7 @@ export class AtomicFinanceStore extends FinanceStore {
     this.transactionIndex = null;
     for (const record of await super.readTransactionRecords()) {
       const accountPath=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
-      if (accountPath.startsWith(`${this.folder}/Accounts/`) && !index.has(field(record.line,"financeId"))) records.push(record);
+      if (accountPath.startsWith(financePrefix(this.folder, "Accounts")) && !index.has(field(record.line,"financeId"))) records.push(record);
     }
     return records;
   }
@@ -159,12 +160,12 @@ export class AtomicFinanceStore extends FinanceStore {
     this.transactionIndex = null;
     for (const record of await super.readTransactionRecords()) {
       const ownedAccount=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
-      if(!ownedAccount.startsWith(`${this.folder}/Accounts/`)&&!record.path.startsWith(`${this.folder}/Transactions/`))continue;
+      if(!ownedAccount.startsWith(financePrefix(this.folder, "Accounts"))&&!record.path.startsWith(financePrefix(this.folder, "Transactions")))continue;
       const fm = legacyFields(record.line);
       if (!fm) {skipped++;continue;}
       const account = String(fm.account || "").replace(/^\[\[|\]\]$/g,"");
       const accountFile=this.vaultApp.vault.getAbstractFileByPath(account.endsWith('.md')?account:`${account}.md`);
-      if (!(accountFile instanceof TFile) || !accountFile.path.startsWith(`${this.folder}/Accounts/`)) {skipped++;continue;}
+      if (!(accountFile instanceof TFile) || !accountFile.path.startsWith(financePrefix(this.folder, "Accounts")) || (!this.folder && !(await this.fields(accountFile)).financeAccountId)) {skipped++;continue;}
       const source=this.vaultApp.vault.getAbstractFileByPath(record.path);
       if (!(source instanceof TFile)) {skipped++;continue;}
       let target=index.get(String(fm.financeId));
@@ -188,9 +189,19 @@ export class AtomicFinanceStore extends FinanceStore {
   async writeSnapshot(accounts:FinanceAccount[], holdings:FinanceHolding[], accountPaths:Map<string,string>, at:Date):Promise<string> {
     // Current balances and positions live on their notes; atomic mode creates no line snapshots.
     await this.ensureStructure();
+    const holdingFiles = new Map<string, TFile>();
+    for (const file of this.vaultApp.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(financePrefix(this.folder, "Holdings"))) continue;
+      if (!this.folder && this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.type !== "holding") continue;
+      const fm = await this.fields(file);
+      if (fm.type !== "holding" || !fm.financeAccountId || !fm.securityId) continue;
+      const key = `${fm.financeAccountId}:${fm.securityId}`;
+      if (holdingFiles.has(key)) throw new Error("Duplicate holding identity; resolve the duplicate notes before syncing.");
+      holdingFiles.set(key, file);
+    }
     for (const holding of holdings) {
       const id=encodeURIComponent(`${holding.financeAccountId}:${holding.securityId}`).replace(/\./g,'%2E');
-      const target=`${this.folder}/Holdings/${id}.md`;
+      const target=holdingFiles.get(`${holding.financeAccountId}:${holding.securityId}`)?.path || financePath(this.folder, "Holdings", `${id}.md`);
       const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[this.identityKey()]:`holding-${id}`,account:`[[${(accountPaths.get(holding.financeAccountId)||'').replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10)};
       const existing=this.vaultApp.vault.getAbstractFileByPath(target);
       if(existing instanceof TFile)await this.vaultApp.fileManager.processFrontMatter(existing,current=>{if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");Object.assign(current,fm);});
@@ -200,11 +211,12 @@ export class AtomicFinanceStore extends FinanceStore {
     // Mark disappeared holdings inactive rather than deleting user-authored content.
     const active=new Set(holdings.map(h=>`${h.financeAccountId}:${h.securityId}`));
     const accountIds=new Set(accounts.map(a=>a.financeAccountId));
-    for(const file of this.vaultApp.vault.getMarkdownFiles().filter(f=>f.path.startsWith(`${this.folder}/Holdings/`))){
+    for(const file of this.vaultApp.vault.getMarkdownFiles().filter(f=>f.path.startsWith(financePrefix(this.folder, "Holdings")))){
+      if (!this.folder && this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.type !== "holding") continue;
       const fm=await this.fields(file);
       if(fm.type==='holding'&&accountIds.has(fm.financeAccountId))await this.vaultApp.fileManager.processFrontMatter(file,current=>{current.active=active.has(`${fm.financeAccountId}:${fm.securityId}`);});
     }
-    return `${this.folder}/Holdings.base`;
+    return financePath(this.folder, "", "Holdings.base");
   }
 }
 
@@ -229,5 +241,5 @@ export function legacyFields(line:string):Fields|null {
 }
 export function atomicBase(root:string,name:string):string {
   const transactions=name==='Transactions';
-  return stringifyYaml({filters:{and:[`file.inFolder(${JSON.stringify(`${root}/${name}`)})`,...(transactions?['financeId != null']:['type == "holding"','active == true'])]},views:[{type:'table',name,order:transactions?['file.name','date','account','title','amount','currency','pending','categoryOverride','tags']:['file.name','account','name','quantity','price','value','currency','asOf','stale'],sort:[{property:transactions?'date':'value',direction:'DESC'}]}]});
+  return stringifyYaml({filters:{and:[...(root ? [`file.inFolder(${JSON.stringify(financeDirectory(root,name))})`] : []),...(transactions?['financeId != null']:['type == "holding"','active == true'])]},views:[{type:'table',name,order:transactions?['file.name','date','account','title','amount','currency','pending','categoryOverride','tags']:['file.name','account','name','quantity','price','value','currency','asOf','stale'],sort:[{property:transactions?'date':'value',direction:'DESC'}]}]});
 }

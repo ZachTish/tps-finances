@@ -136,10 +136,11 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
     new Setting(parent)
       .setName("Finance folder")
-      .setDesc("Accounts, transactions, holdings, rules, budgets, and dated snapshots.")
-      .addText((text) => text.setValue(this.plugin.settings.financeFolder).onChange(async (value) => {
-        this.plugin.settings.financeFolder = value.trim() || "Finances";
-        await this.plugin.saveSettings();
+      .setDesc("Leave blank for the vault root, without subfolders. Existing notes stay where they are.")
+      .addText((text) => text.setPlaceholder("Vault root").setValue(this.plugin.settings.financeFolder).onChange(async (value) => {
+        try {
+          await this.plugin.setFinanceFolder(value);
+        } catch (error) { new Notice(String(error)); }
       }));
 
     new Setting(parent)

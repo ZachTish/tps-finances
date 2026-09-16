@@ -47,3 +47,58 @@ test('atomic dashboard excludes records owned by a different finance collection'
  await h.app.vault.create('Other/Transactions/elsewhere.md','---\n'+JSON.stringify(other)+'\n---\n');
  assert.equal((await h.store.readTransactionRecords()).length,1);
 });
+
+test('root atomic storage creates no folders and keeps additions, corrections, holdings, and removals visible',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'');
+ const account={financeAccountId:'account-1',name:'Checking',institutionName:'QA',currency:'USD',type:'depository',subtype:'checking',mask:'1234',current:100,available:100};
+ const paths=await root.upsertAccounts([account]);
+ assert.ok(!paths.get('account-1').includes('/'));
+ await root.applyTransactions([tx],[],[],state,paths);
+ await root.applyTransactions([],[{...tx,amount:-19}],[],state,paths);
+ assert.equal(h.fm('local-1.md').amount,-19);
+ assert.equal((await root.readTransactionRecords()).length,1);
+ const holding={financeAccountId:'account-1',securityId:'ABC',type:'equity',name:'Fund',quantity:2,price:50,value:100,currency:'USD'};
+ await root.writeSnapshot([account],[holding],paths,new Date('2026-09-16T12:00:00Z'));
+ assert.equal(h.fm('account-1%3AABC.md').active,true);
+ assert.ok([...h.nodes.values()].every(n=>n instanceof File));
+ assert.ok([...h.nodes.keys()].every(p=>!p.includes('/')));
+ const view=JSON.parse(h.text.get('Transactions.base'));assert.ok(view.filters.and.includes('financeId != null'));assert.ok(!JSON.stringify(view).includes('inFolder'));
+ await root.applyTransactions([],[],['provider-1'],state,paths);assert.equal((await root.readTransactionRecords()).length,0);
+});
+
+test('switching to root keeps existing account, transaction and holding identities in place',async()=>{
+ const h=harness(),account={financeAccountId:'account-1',name:'Checking',institutionName:'QA',currency:'USD',current:100,available:100};
+ const paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],state,paths);
+ const holding={financeAccountId:'account-1',securityId:'ABC',type:'equity',quantity:2,price:50,value:100,currency:'USD'};
+ await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-16T12:00:00Z'));
+ const root=new AtomicFinanceStore(h.app,'');assert.deepEqual(await root.upsertAccounts([account]),paths);
+ await root.applyTransactions([],[{...tx,amount:-30}],[],state,paths);
+ await root.writeSnapshot([account],[{...holding,value:110}],paths,new Date('2026-09-16T12:00:00Z'));
+ assert.equal(h.fm(path).amount,-30);assert.equal(h.fm('Finances/Holdings/account-1%3AABC.md').value,110);
+ assert.ok(!h.nodes.has('local-1.md'));assert.ok(!h.nodes.has('account-1%3AABC.md'));
+});
+
+test('root ignores unrelated notes and preserves occupied transaction names',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'');await h.app.vault.create('Unrelated.md','---\ninvalid yaml in another note\n---\n');
+ await h.app.vault.create('local-1.md','Personal note');
+ await assert.rejects(root.applyTransactions([tx],[],[],state,new Map([['account-1','Checking.md']])),/occupied/);
+ assert.equal(h.text.get('local-1.md'),'Personal note');assert.equal((await root.readTransactionRecords()).length,0);
+});
+
+test('root rules, budgets and legacy snapshots are typed and do not overwrite ordinary notes',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'');
+ await h.app.vault.create('Personal.md','---\n'+JSON.stringify({category:'Food',monthlyLimit:100,tags:['personal'],date:'2099-01-01'})+'\n---\n');
+ await root.createBudget({id:'budget',name:'Food budget',category:'Food',monthlyLimit:500});
+ await root.createRule({id:'rule',name:'Food rule',enabled:true,priority:100,accountContains:'',nameContains:'Market',merchantContains:'',minAmount:null,maxAmount:null,category:'Food',tags:[]});
+ assert.equal(root.readRules().length,1);assert.equal(root.readBudgets().length,1);
+ assert.ok(h.nodes.has('Food budget.md'));assert.ok(h.nodes.has('Food rule.md'));
+});
+
+test('root legacy snapshots preserve ordinary names and return the actual existing destination',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'');
+ const name='Finance snapshot 2026-09-16.md';await h.app.vault.create(name,'Personal note');
+ const write=Object.getPrototypeOf(AtomicFinanceStore.prototype).writeSnapshot;
+ const saved=await write.call(root,[],[],new Map(),new Date('2026-09-16T12:00:00Z'));
+ assert.equal(saved,'Finance snapshot 2026-09-16 2.md');assert.equal(h.text.get(name),'Personal note');
+ assert.equal(await write.call(root,[],[],new Map(),new Date('2026-09-16T12:00:00Z')),saved);
+});

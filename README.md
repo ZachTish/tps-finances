@@ -2,7 +2,7 @@
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.3.0](https://github.com/ZachTish/tps-finances/releases/tag/1.3.0) · Obsidian 1.12.0+ · Desktop only.
+Current release: [1.3.1](https://github.com/ZachTish/tps-finances/releases/tag/1.3.1) · Obsidian 1.12.0+ · Desktop only.
 
 ## Install with BRAT
 
@@ -14,6 +14,16 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 2. Open **Plaid setup → Open Controller settings**. Select the environment and separate client-ID/secret references under **Advanced → Plaid**. These preferences are device-local; credentials and Item tokens stay in SecretStorage.
 3. Return to **Connections** to connect an institution, sync, reconnect, or disconnect. Link authentication is desktop-only. Use Sandbox for synthetic testing; Production connects real institutions under your own Plaid account and terms.
 4. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** also work without Plaid.
+
+## Vault-root storage
+
+In **Data & routing → Finance folder**, leave the field blank (or enter `/`) to write new finance notes and Bases directly in the vault root, without category subfolders. The empty value survives closing settings and reloading. A missing setting on a new installation still defaults to `Finances`; named folders keep their existing layout.
+
+Existing identified finance records stay where they are and remain discoverable in root mode; this is not a bulk move. Accounts, transactions, and holdings are updated by identity instead of duplicated after changing the destination. Root views filter by finance properties, and ordinary notes are not treated as rules, budgets, or snapshots. Name collisions preserve existing content. Atomic line transactions retain their configured Daily Note/account-note routing.
+
+Patch **1.3.1** fixes the empty-value fallback in both the settings field and persistence normalization, and removes folder assumptions from writers, readers, and generated Bases. Regression coverage includes persistence, flat manual/provider records, folder-to-root identity reuse, unrelated-note exclusion, and collisions. All 114 tests and the separate production build passed; the build deployed only to the test vault. After a plugin reload, UI QA cleared Finance folder, verified its blank persisted value, reloaded again, and created a synthetic cash-account note directly at the root. Original settings were restored and QA outputs archived. No provider call was made.
+
+Root mode discovers finance records across the vault. Duplicate identities or broken account links in old records must be repaired; they are not silently ignored. The test vault contains an older cash fixture with a missing account link, so its combined root dashboard correctly reports that error. Isolated root dashboard/read/write cases pass the regression suite.
 
 ## Records and valuation
 

@@ -887,7 +887,7 @@ test("finance transactions are contract-native daily-note log lines", () => {
   assert.match(store, /`\[amount::/);
   assert.match(store, /`\[subtype:: \$\{inlineValue\(transaction\.subtype\)\}\]`/);
   assert.doesNotMatch(store, /## Transactions/);
-  assert.match(store, /findFinanceLedgerFile\(`\$\{this\.rootFolder\}\/Snapshots\/`, "financeSnapshot", "date", date\)/);
+  assert.match(store, /findFinanceLedgerFile\(financePrefix\(this\.rootFolder, "Snapshots"\), "financeSnapshot", "date", date\)/);
   assert.match(store, /String\(frontmatter\.type \|\| ""\) === type && String\(frontmatter\[key\] \|\| ""\) === value/);
   assert.match(store, /providerCategory/);
   assert.match(store, /categoryOverride/);
@@ -2436,4 +2436,26 @@ test("connecting retains the environment and secret references used for Link", a
   assert.equal(plugin.deviceState.items[0].environment, "sandbox");
   assert.equal(plugin.deviceState.items[0].plaidSecretName, "secret-original");
   assert.equal(plugin.deviceState.items[0].plaidClientIdSecretName, "client-original");
+});
+
+test('blank and slash finance destinations survive saving, serialized persistence, and reload normalization',async()=>{
+ const plugin=new mainActionModule.default({});let disk;let refreshed=0;
+ plugin.settings={financeFolder:'Finances'};
+ plugin.settingsWriter={save:async value=>{disk=JSON.parse(JSON.stringify(value));}};
+ plugin.refreshDashboard=async()=>{refreshed++;};
+ for(const value of ['', '/', '  ', '.']) {
+  await plugin.setFinanceFolder(value);assert.equal(disk.financeFolder,'');
+  plugin.settings=JSON.parse(JSON.stringify(disk));await plugin.saveSettings();assert.equal(plugin.settings.financeFolder,'');
+ }
+ assert.equal(refreshed,4);
+ await plugin.setFinanceFolder('Money/Personal');assert.equal(disk.financeFolder,'Money/Personal');
+ await assert.rejects(plugin.setFinanceFolder('../Outside'),/inside the vault/);assert.equal(disk.financeFolder,'Money/Personal');
+ plugin.settings={};await plugin.saveSettings();assert.equal(disk.financeFolder,'Finances');
+});
+
+test('root dashboard identifies accounts and snapshots without mistaking holdings or ordinary notes for them',()=>{
+ const files=[{path:'Wallet.md',basename:'Wallet',fm:{kind:'account',financeAccountId:'a',accountType:'depository',current:10}},{path:'Holding.md',basename:'Holding',fm:{type:'holding',financeAccountId:'a',securityId:'s'}},{path:'Journal.md',basename:'Journal',fm:{date:'2099-01-01'}},{path:'Old/Snapshot.md',fm:{type:'financeSnapshot',date:'2026-09-16'}}];
+ const plugin=new mainActionModule.default({vault:{getMarkdownFiles:()=>files},metadataCache:{getFileCache:f=>({frontmatter:f.fm})}});
+ plugin.settings={financeFolder:'',recordMode:'atomic-note'};
+ assert.equal(plugin.readAccountsFromVault(null).length,1);assert.deepEqual(plugin.accountFiles().map(f=>f.path),['Wallet.md']);assert.equal(plugin.latestSnapshotFile().path,'Old/Snapshot.md');
 });

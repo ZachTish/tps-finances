@@ -28,3 +28,13 @@ test('valid transfer persists one note and links both accounts',async()=>{const 
 test('asset valuation update preserves purchase/loan links and body, and creates no income',async()=>{const h=harness(),purchase=await h.app.vault.create('Purchase.md','---\n{}\n---\n'),a=await h.store.createAccount({...input,kind:'asset',purchaseTransaction:purchase.path});await h.store.updateValue(a.path,90,'2026-09-14');assert.equal(h.fm(a.path).current,90);assert.equal(h.fm(a.path).valuationDate,'2026-09-14');assert.equal(h.fm(a.path).purchaseTransaction,'[[Purchase]]');assert.match(h.text.get(a.path),/Keep body/);assert.equal((await h.atomic.readTransactionRecords()).length,0);await assert.rejects(h.store.updateValue(a.path,-1,'2026-09-14'));});
 test('invalid dates, amounts, currencies and unsafe links do not create notes',async()=>{const h=harness();for(const changes of [{value:NaN},{value:-1},{currency:'US'},{valuationDate:'2026-02-30'},{purchaseTransaction:'../private'}])await assert.rejects(h.store.createAccount({...input,...changes}));assert.equal(h.nodes.size,0);assert.throws(()=>validateDate('2026-13-01'));});
 test('failed transaction write does not mutate the cash account',async()=>{const h=harness(),a=await h.store.createAccount(input),before=h.text.get(a.path);h.fail();await assert.rejects(h.store.createCashEntry({...entry,accountPath:a.path}),/disk full/);assert.equal(h.text.get(a.path),before);});
+
+test('root manual cash and resale assets create flat notes and readable transactions',async()=>{
+ const h=harness(),store=new ManualFinanceStore(h.app,''),atomic=new AtomicFinanceStore(h.app,'');
+ const account=await store.createAccount(input),asset=await store.createAccount({...input,name:'Computer',kind:'asset'});
+ const entryFile=await store.createCashEntry({...entry,accountPath:account.path});
+ assert.ok([account,asset,entryFile].every(f=>!f.path.includes('/')));
+ assert.ok([...h.nodes.values()].every(n=>n instanceof File));
+ assert.equal((await atomic.readTransactionRecords()).length,1);
+ await store.updateValue(asset.path,90,'2026-09-16');assert.equal(h.fm(asset.path).current,90);
+});
