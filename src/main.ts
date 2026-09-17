@@ -1,5 +1,5 @@
 import { financePath, financePrefix, normalizeFinanceFolder } from "./finance-paths";
-import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
@@ -12,7 +12,7 @@ import { createLocalId } from "./identity";
 import { applyInvestmentTransactionResult, holdingsForSnapshot, investmentDateRange } from "./investment-sync";
 import * as logger from "./logger";
 import { PlaidClient } from "./plaid-client";
-import { openLocalPlaidLink } from "./plaid-link";
+import { assertLocalPlaidLinkAvailable, openLocalPlaidLink } from "./plaid-link";
 import { TPSFinancesSettingTab } from "./settings";
 import { CoalescedSnapshotWriter, reconcilePersistedSnapshot } from "./settings-persistence";
 import {
@@ -181,7 +181,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async connectPlaid(): Promise<void> {
-    if (!Platform.isDesktopApp) throw new Error("TPS Finances Plaid authentication currently requires the desktop app.");
+    assertLocalPlaidLinkAvailable();
     try {
       const config = this.getPlaidConfiguration();
       const client = this.createPlaidClient(config.plaidEnvironment, config.plaidSecretSecret, config.plaidClientIdSecret);
@@ -215,6 +215,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async reconnectItem(localItemId: string): Promise<void> {
+    assertLocalPlaidLinkAvailable();
     if(this.syncing) throw new Error("Wait for the current sync to finish.");
     const item=this.deviceState.items.find(i=>i.localItemId===localItemId);
     if(!item) throw new Error("Connection no longer exists.");

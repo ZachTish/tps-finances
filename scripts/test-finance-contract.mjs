@@ -84,6 +84,7 @@ const dashboardViewBuild = await build({
           "export class Menu {}",
           "export class Notice { constructor(message) { globalThis.__tpsDashboardNotices?.push(String(message)); } }",
           "export class WorkspaceLeaf {}",
+          "export const Platform = { isDesktopApp: true };",
           "export const setIcon = () => {};",
         ].join("\n"),
       }));
@@ -115,7 +116,7 @@ const mainActionBuild = await build({
           };
         }
         if (args.path === "plaid-link") {
-          return { contents: "export async function openLocalPlaidLink() { return { publicToken: 'public-token', institutionName: 'Test Bank' }; }" };
+          return { contents: "export function assertLocalPlaidLinkAvailable() {} export async function openLocalPlaidLink() { return { publicToken: 'public-token', institutionName: 'Test Bank' }; }" };
         }
         return {
           contents: [
@@ -301,13 +302,13 @@ function financeAccount(index, financeAccountId = `account-${index}`) {
   };
 }
 
-test("TPS Finances is a desktop finance view with device-local authentication", () => {
+test("TPS Finances supports mobile with device-local desktop Link authentication", () => {
   assert.equal(manifest.id, "tps-finances");
-  assert.equal(manifest.isDesktopOnly, true);
+  assert.equal(manifest.isDesktopOnly, false);
   assert.match(main, /registerView\(TPS_FINANCES_VIEW_TYPE/);
   assert.match(main, /SecretStorage|getSecret/);
   assert.match(main, /DEVICE_STATE_SECRET/);
-  assert.match(main, /Platform\.isDesktopApp/);
+  assert.match(link, /Platform\.isDesktopApp/);
   assert.match(link, /127\.0\.0\.1/);
   assert.match(link, /cdn\.plaid\.com\/link\/v2\/stable\/link-initialize\.js/);
   assert.match(link, /let completing=false/);

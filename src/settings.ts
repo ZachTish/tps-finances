@@ -1,4 +1,4 @@
-import { App, ButtonComponent, Modal, Notice, PluginSettingTab, SecretComponent, Setting } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, Platform, PluginSettingTab, SecretComponent, Setting } from "obsidian";
 import type TPSFinancesPlugin from "./main";
 import type { PlaidEnvironment, TransactionLogTarget } from "./types";
 
@@ -169,11 +169,13 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
     new Setting(parent)
       .setName("Connect another institution")
-      .setDesc("Opens Plaid Link in your browser through a temporary localhost callback.")
+      .setDesc(Platform.isDesktopApp && !Platform.isMobile
+        ? "Opens Plaid Link in your browser through a temporary localhost callback."
+        : "Connect or reconnect on desktop, then sync the finance notes with your vault. Manual accounts and transactions work here.")
       .addButton((button) => button
         .setButtonText("Connect with Plaid")
         .setCta()
-        .setDisabled(plaidSetup.state !== "ready")
+        .setDisabled(!Platform.isDesktopApp || Platform.isMobile || plaidSetup.state !== "ready")
         .onClick(async () => {
           await this.plugin.runConnectPlaid("settings");
           this.renderSettings(true);
@@ -197,7 +199,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       new Setting(parent)
         .setName(item.institutionName)
         .setDesc(`${item.environment} · ${item.lastSyncAt ? `Last synced ${new Date(item.lastSyncAt).toLocaleString()}` : "Not synced yet"}`)
-        .addButton((button) => button.setButtonText("Reconnect").onClick(async () => {
+        .addButton((button) => button.setButtonText("Reconnect").setDisabled(!Platform.isDesktopApp || Platform.isMobile).onClick(async () => {
           await this.plugin.runReconnectItem(item.localItemId);
           this.renderSettings(true);
         }))

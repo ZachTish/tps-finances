@@ -1,4 +1,4 @@
-import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, Notice, Platform, WorkspaceLeaf, setIcon } from "obsidian";
 import { accountSummaries } from "./finance-summary";
 import type { FinanceAccount, FinanceHolding, PlaidSetupState } from "./types";
 
@@ -165,7 +165,10 @@ export class TPSFinancesView extends ItemView {
     actions.appendChild(add);
     actions.appendChild(actionButton("wand-sparkles", "Rule", () => this.plugin.addCategorizationRule()));
     actions.appendChild(actionButton("gauge", "Budget", () => this.plugin.addMonthlyBudget()));
-    actions.appendChild(actionButton("link", "Connect", () => void this.runAction(() => this.plugin.connectPlaid())));
+    const connect = actionButton("link", "Connect", () => void this.runAction(() => this.plugin.connectPlaid()));
+    connect.disabled = !Platform.isDesktopApp || Platform.isMobile;
+    if (connect.disabled) connect.title = "Connect Plaid on desktop";
+    actions.appendChild(connect);
     actions.appendChild(actionButton("refresh-cw", "Sync", () => void this.runAction(() => this.plugin.syncAll("dashboard"))));
   }
 
@@ -193,13 +196,17 @@ export class TPSFinancesView extends ItemView {
     const icon = welcome.createDiv({ cls: "tps-finances-welcome-icon" });
     setIcon(icon, "landmark");
     welcome.createEl("h2", { text: "Add cash or assets, or connect an institution" });
-    const detail = setupState === "conflicting-credentials"
-      ? "Plaid client ID and Plaid secret currently use the same Obsidian secret. Select two different secrets in TPS Finances settings before connecting."
+    const detail = (!Platform.isDesktopApp || Platform.isMobile)
+      ? "Add cash accounts and transactions here, or connect Plaid on desktop and sync the finance notes with your vault."
+      : setupState === "conflicting-credentials"
+      ? "Plaid client ID and Plaid secret currently use the same Obsidian secret. Select two different secrets in TPS Controller settings before connecting."
       : setupState === "ready"
-        ? "Plaid credentials are ready. Connect an institution to begin syncing accounts and normalized daily-note transaction logs."
-        : "Add separate Plaid client ID and environment secrets in TPS Finances settings, then connect an institution.";
+        ? "Plaid credentials are ready. Connect an institution to begin syncing accounts and transactions."
+        : "Add separate Plaid client ID and environment secrets in TPS Controller settings, then connect an institution.";
     welcome.createEl("p", { text: detail });
-    welcome.appendChild(actionButton("link", "Connect with Plaid", () => void this.runAction(() => this.plugin.connectPlaid()), true));
+    const connect = actionButton("link", "Connect with Plaid", () => void this.runAction(() => this.plugin.connectPlaid()), true);
+    connect.disabled = !Platform.isDesktopApp || Platform.isMobile;
+    welcome.appendChild(connect);
   }
 
   private renderSummary(root: HTMLElement, model: DashboardModel): void {

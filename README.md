@@ -2,7 +2,7 @@
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.3.1](https://github.com/ZachTish/tps-finances/releases/tag/1.3.1) · Obsidian 1.12.0+ · Desktop only.
+Current release: [1.3.2](https://github.com/ZachTish/tps-finances/releases/tag/1.3.2) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -14,6 +14,14 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 2. Open **Plaid setup → Open Controller settings**. Select the environment and separate client-ID/secret references under **Advanced → Plaid**. These preferences are device-local; credentials and Item tokens stay in SecretStorage.
 3. Return to **Connections** to connect an institution, sync, reconnect, or disconnect. Link authentication is desktop-only. Use Sandbox for synthetic testing; Production connects real institutions under your own Plaid account and terms.
 4. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** also work without Plaid.
+
+## Mobile activation — 1.3.2
+
+Finances can now activate on iPad and iPhone. Earlier releases declared the entire plugin desktop-only and loaded Node's HTTP module at startup. The desktop Plaid callback server now loads only when desktop Link is invoked. Accounts, transactions, budgets, manual cash, and resale assets use the vault APIs on every device; existing settings and records need no migration.
+
+Connecting or reconnecting a Plaid institution still requires Obsidian on desktop. Mobile Connect/Reconnect controls are disabled and explain the desktop handoff. Command and API entry points reject before requesting a Link token or loading desktop modules. Connect and sync on desktop, then let your vault sync carry the resulting notes to mobile. Bank tokens remain device-local; this release does not transfer a desktop connection to iPad or add mobile bank authentication. Controller remains necessary only for Plaid requests.
+
+Regression coverage executes the complete minified bundle in an isolated mobile environment without Node, Electron, Buffer, or process. It covers startup, storage preparation, manual account/transaction writes and balances, rejected mobile Link/reconnect commands, and desktop callback-server loading/cleanup. All 120 tests passed. Test-vault UI verification in Obsidian mobile emulation confirmed activation, the populated dashboard, all four settings destinations, disabled Connect/Reconnect with desktop guidance, and the manual cash-account form. The form was cancelled without writing a record, and settings remained unchanged. The separate final production build deploys only shipped artifacts to the test vault; reload uses `plugin:reload`. Physical iPad/iPhone verification remains the user's device test after the BRAT update.
 
 ## Vault-root storage
 

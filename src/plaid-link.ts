@@ -1,10 +1,20 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { Platform } from "obsidian";
+import type { IncomingMessage, ServerResponse } from "http";
 import type { AddressInfo } from "net";
 import type { PlaidLinkResult } from "./types";
 
 const LINK_TIMEOUT_MS = 15 * 60 * 1000;
 
+export function assertLocalPlaidLinkAvailable(): void {
+  if (!Platform.isDesktopApp || Platform.isMobile) {
+    throw new Error("Connect or reconnect Plaid in Obsidian on desktop. Sync the resulting finance notes to this device with your vault.");
+  }
+}
+
 export async function openLocalPlaidLink(linkToken: string, updateMode = false): Promise<PlaidLinkResult> {
+  assertLocalPlaidLinkAvailable();
+  // Mobile has no Node runtime. Load the localhost callback server only for desktop Link.
+  const { createServer } = require("http") as typeof import("http");
   const callbackKey = randomKey();
   return new Promise<PlaidLinkResult>((resolve, reject) => {
     let settled = false;
