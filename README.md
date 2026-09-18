@@ -2,7 +2,7 @@
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.3.2](https://github.com/ZachTish/tps-finances/releases/tag/1.3.2) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.4.0](https://github.com/ZachTish/tps-finances/releases/tag/1.4.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -10,18 +10,31 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 
 ## Connect and use
 
-1. Install/update **TPS Controller 1.3.0+** before Finances. Plaid operations require Controller's Obsidian 1.12.3 minimum; manual finance records remain available independently.
-2. Open **Plaid setup → Open Controller settings**. Select the environment and separate client-ID/secret references under **Advanced → Plaid**. These preferences are device-local; credentials and Item tokens stay in SecretStorage.
-3. Return to **Connections** to connect an institution, sync, reconnect, or disconnect. Link authentication is desktop-only. Use Sandbox for synthetic testing; Production connects real institutions under your own Plaid account and terms.
-4. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** also work without Plaid.
+1. Install/update **TPS Controller 1.4.0 and Finances 1.4.0** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
+2. On your always-running Controller desktop, open **Plaid setup → Open Controller settings**. Configure the environment and separate client-ID/secret references under **Advanced → Plaid**, then choose **Finance server → Use this Controller**. Use the desktop that already owns your bank connections.
+3. Export its pairing code and enter it in Controller's Finance server settings on the phone/iPad. Pairing, credentials, connection tokens, and request journals are device-local. Do not connect the same banks independently on each device.
+4. Return to **Connections** to Connect, Sync, Reconnect, Disconnect, or reopen a pending request. Bank sign-in opens [Plaid Hosted Link](https://plaid.com/docs/link/hosted-link/) in your browser. Return to Obsidian afterward; the Controller imports the records and normal vault sync delivers the notes.
+5. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** work without Plaid.
 
-## Mobile activation — 1.3.2
+## Shared Controller connection — 1.4.0
 
-Finances can now activate on iPad and iPhone. Earlier releases declared the entire plugin desktop-only and loaded Node's HTTP module at startup. The desktop Plaid callback server now loads only when desktop Link is invoked. Accounts, transactions, budgets, manual cash, and resale assets use the vault APIs on every device; existing settings and records need no migration.
+One pinned desktop imports bank data for all paired devices. The Controller checks for requests every four seconds and defaults to refreshing bank data every 15 minutes; its interval can be changed or set to manual-only. It must remain awake with Obsidian and vault sync running. A sleeping/offline Controller leaves requests waiting. This is a personal server inside Obsidian, not an OS background daemon. Request/response latency follows your vault synchronization.
 
-Connecting or reconnecting a Plaid institution still requires Obsidian on desktop. Mobile Connect/Reconnect controls are disabled and explain the desktop handoff. Command and API entry points reject before requesting a Link token or loading desktop modules. Connect and sync on desktop, then let your vault sync carry the resulting notes to mobile. Bank tokens remain device-local; this release does not transfer a desktop connection to iPad or add mobile bank authentication. Controller remains necessary only for Plaid requests.
+Keep `_assets/TPS Finance Relay` included in vault sync. Those Markdown files carry encrypted requests, institution summaries, and short-lived sign-in URLs. Controller's AES-256-GCM transport does not put API secrets, bank access tokens, Link tokens, or the operation journal into plaintext notes or shared plugin settings. Your imported finance notes continue to use your normal vault synchronization. Treat pairing codes as private credentials.
 
-Regression coverage executes the complete minified bundle in an isolated mobile environment without Node, Electron, Buffer, or process. It covers startup, storage preparation, manual account/transaction writes and balances, rejected mobile Link/reconnect commands, and desktop callback-server loading/cleanup. All 120 tests passed. Test-vault UI verification in Obsidian mobile emulation confirmed activation, the populated dashboard, all four settings destinations, disabled Connect/Reconnect with desktop guidance, and the manual cash-account form. The form was cancelled without writing a record, and settings remained unchanged. The separate final production build deploys only shipped artifacts to the test vault; reload uses `plugin:reload`. Physical iPad/iPhone verification remains the user's device test after the BRAT update.
+Closing the connection modal or restarting Obsidian preserves a request. Reopen it from **Connections**. Reconnect uses the existing Item and preserves account IDs, transaction cursors, credential references, and the original environment even after defaults change. An interrupted one-time token exchange is recovered from a persisted receipt when possible; otherwise it is reported as uncertain rather than blindly creating another connection. Missing or corrupt Controller bank state pauses provider operations. Partial bank import failures are reported to the requesting device. A paired client never falls back to importing locally when Controller is paused or unavailable.
+
+The always-running host refreshes shared Finances settings before linking or importing, using the existing merge-aware settings writer. Changes such as a blank vault-root destination take effect at the next operation without restarting the host. Files already identified by finance ID continue to be updated in place. This adds no automatic folder migration or new note schema.
+
+Unpaired desktop installations retain the earlier local-browser connection flow. Unpaired mobile devices must pair a Controller before Connect/Reconnect becomes available. Manual records work independently on every device. Existing bank tokens are neither copied to mobile nor merged across desktops. Production institutions and OAuth eligibility remain subject to the user's own Plaid account; scheduled reads do not force a bank refresh or call the paid Transactions Refresh endpoint. No fund transfers or trading operations are added.
+
+**Settings/API:** the existing four destinations remain **Plaid setup** (default, direct Controller handoff), **Data & routing**, **Connections**, and **Rules & budgets**. Connections now shows shared banks, Controller status, and recent resumable requests when paired; local bank actions remain for unpaired desktop installations. Native buttons, stable status text, keyboard focus, and wrapping mobile controls avoid rerendering an active sign-in button every poll. `api.controllerFinanceBackend` version 1 supplies host-only provider operations; `api.openConnectionSettings()` opens the Connections destination. The only new Item field, `linkRequestId`, is a local SecretStorage completion receipt. No existing setting defaults or commands are removed.
+
+**Validation:** hosted-provider tests cover modern and legacy result shapes, OAuth update completion, duplicate-item rejection, persisted exchange receipts, environment/cursor preservation, lost host state, refreshed shared settings, and client-only routing. Full mobile-bundle tests cover paired bank requests without Node/Electron as well as existing manual workflows and unpaired guards. Controller tests independently simulate delayed device synchronization and recovery failures. A real Plaid Sandbox browser session completed the synthetic First Platypus Bank OAuth flow and produced four account notes and 241 transaction notes in an isolated Inbox fixture. The full suite, separate final build/deployment, test-vault reload, desktop settings, and mobile-emulated connection controls are required for the release. Physical iPhone/iPad sign-in and production-bank acceptance still require device testing after the BRAT pull.
+
+### Earlier mobile compatibility — 1.3.2
+
+Version 1.3.2 removed the desktop-only manifest restriction and deferred Node's HTTP module until desktop Link is invoked. Manual records and dashboards already worked on mobile; 1.4.0 adds paired mobile bank authentication through the Controller without loading that callback server.
 
 ## Vault-root storage
 
@@ -47,7 +60,7 @@ The four settings destinations are **Plaid setup** (Controller handoff), **Data 
 
 Atomic line compatibility: Bank and investment transactions are plain `log` bullets in the configured daily note. Each account card can inherit that default or explicitly choose daily notes/account note. Changing either route moves existing identified transactions to the resolved owner; it does not keep mirrored copies. See [the reference](REFERENCE.md) for the legacy line format and conversion history.
 
-Each device connects independently. Separate Plaid Items may incur separate subscription charges. Finances does not transfer funds or place trades. Live bank access and physical-device behavior are not established by mock-provider tests.
+Paired devices share the Controller’s existing Plaid Items. Unpaired independent connections can still create separate Items and subscription charges under your Plaid plan; avoid duplicating banks on other desktops. Finances does not transfer funds or place trades. Live bank access and physical-device behavior are not established by mock-provider tests.
 
 ## Development and repository policy
 

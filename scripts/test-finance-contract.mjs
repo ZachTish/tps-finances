@@ -863,8 +863,8 @@ test("finance settings use a shallow routed hub with complete controls and actio
   assert.match(settings, /pageHeading\.focus\(\{ preventScroll: true \}\)/);
   assert.match(settings, /pageHeading\.scrollIntoView\(\{ block: "start" \}\)/);
   assert.match(settings, /activeRouteButton\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
-  assert.match(settings, /await this\.plugin\.runConnectPlaid\("settings"\);\s*this\.renderSettings\(true\)/);
-  assert.match(settings, /await this\.plugin\.runSync\("settings"\);\s*this\.renderSettings\(true\)/);
+  assert.match(settings, /await this\.plugin\.runConnectPlaid\("settings"\);\s*this\.renderSettings\(!relay\)/);
+  assert.match(settings, /await this\.plugin\.runSync\("settings"\);\s*this\.renderSettings\(!relay\)/);
   assert.match(main, /runConnectPlaid\(source: "command" \| "settings"\): Promise<void>/);
   assert.match(main, /runSync\(reason: string\): Promise<void>/);
   assert.doesNotMatch(settings, /createEl\("details"/);

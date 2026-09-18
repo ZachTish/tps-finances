@@ -1,3 +1,6 @@
+import type { LinkResult } from "./finance-relay";
+import { parseHostedLinkResult, validHostedLink } from "./hosted-link";
+export { parseHostedLinkResult } from "./hosted-link";
 import { createLocalId, providerIdentityKey } from "./identity";
 import * as logger from "./logger";
 import type {
@@ -56,6 +59,23 @@ export class PlaidClient {
     const response=await this.post("/link/token/create",body);
     if(!response.link_token) throw new Error("Plaid did not return an update Link token.");
     return String(response.link_token);
+  }
+
+  async createHostedLink(userId: string, daysRequested: number, accessToken?: string): Promise<{linkToken: string; url: string; expiresAt: number}> {
+    const body: Record<string, unknown> = {
+      client_name: "TPS Finances", country_codes: ["US"], language: "en",
+      user: {client_user_id: userId}, hosted_link: {is_mobile_app: false, url_lifetime_seconds: 1800},
+    };
+    if (accessToken) body.access_token = accessToken;
+    else Object.assign(body, {products:["transactions"], optional_products:["investments"], transactions:{days_requested:Math.max(30,Math.min(730,daysRequested))}});
+    const response = await this.post("/link/token/create", body);
+    const expiresAt = Date.parse(response.expiration);
+    if (typeof response.link_token !== 'string' || !response.link_token || !validHostedLink(response.hosted_link_url) || !Number.isFinite(expiresAt)) throw new Error("Plaid did not return a valid hosted sign-in session.");
+    return {linkToken:response.link_token,url:response.hosted_link_url,expiresAt};
+  }
+
+  async getHostedLinkResult(linkToken: string, updateMode = false): Promise<LinkResult> {
+    return parseHostedLinkResult(await this.post("/link/token/get", {link_token:linkToken}), updateMode);
   }
 
   async exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }> {

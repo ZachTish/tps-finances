@@ -149,3 +149,12 @@ test('mobile emulation also blocks desktop Link instead of disguising unavailabl
   await assert.rejects(h.exports.openLocalPlaidLink('synthetic'), /Connect or reconnect Plaid.*desktop/);
   assert.ok(h.required.every(name => name === 'obsidian'));
 });
+
+test('paired mobile startup and bank actions use the Controller with no local tokens or desktop imports', async () => {
+  const h=mobileHarness();const requests=[];
+  h.app.plugins.plugins['tps-controller']={api:{financeRelay:{version:1,getConfiguration:()=>({mode:'client',enabled:true}),getStatus:()=>({configured:true,mode:'client',enabled:true,online:true,message:'Controller ready.',items:[{localItemId:'synthetic-item',institutionName:'Synthetic Bank',environment:'sandbox',lastSyncAt:''}]}),getOperations:()=>[],request:async(action,id)=>{requests.push([action,id]);return 'synthetic-request';}}}};
+  const plugin=new h.exports.default();await plugin.onload();assert.equal(plugin.canConnectPlaid(),true);
+  await plugin.connectPlaid();await plugin.reconnectItem('synthetic-item');await plugin.syncAll('mobile');await plugin.disconnectItem('synthetic-item');
+  assert.equal(plugin.getConnectedItems().length,1);assert.deepEqual(requests.map(r=>r[0]),['connect','reconnect','sync','disconnect']);
+  assert.deepEqual([...new Set(h.required)],['obsidian']);assert.equal(h.modals.length,4);
+});

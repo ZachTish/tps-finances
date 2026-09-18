@@ -1,5 +1,6 @@
+import { FinanceRequestModal, getFinanceRelay, LinkSession, LinkResult, RelayItem } from "./finance-relay";
 import { financePath, financePrefix, normalizeFinanceFolder } from "./finance-paths";
-import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
+import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
@@ -65,7 +66,8 @@ export default class TPSFinancesPlugin extends Plugin {
     logger.setLoggingEnabled(this.settings.enableLogging);
     this.deviceState = this.loadDeviceState();
     this.registerView(TPS_FINANCES_VIEW_TYPE, (leaf) => new TPSFinancesView(leaf, this));
-    this.addSettingTab(new TPSFinancesSettingTab(this.app, this));
+    const financeSettingsTab = new TPSFinancesSettingTab(this.app, this);
+    this.addSettingTab(financeSettingsTab);
     this.addRibbonIcon("landmark", "Open TPS Finances", () => void this.openDashboard());
     this.addCommand({ id: "open-finances", name: "Open finances", callback: () => void this.openDashboard() });
     this.addCommand({ id: "connect-plaid", name: "Connect an institution with Plaid", callback: () => this.runConnectPlaid("command") });
@@ -89,6 +91,8 @@ export default class TPSFinancesPlugin extends Plugin {
       if (!this.syncing && (file.path.startsWith(root) || oldPath.startsWith(root))) void this.refreshDashboard();
     }));
     (this as any).api = {
+      controllerFinanceBackend: this.createControllerBackend(),
+      openConnectionSettings: () => financeSettingsTab.openConnections(),
       openDashboard: () => this.openDashboard(),
       sync: (reason = "api") => this.syncAll(reason),
       getDashboardModel: () => this.getDashboardModel(),
@@ -151,11 +155,83 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  getConnectedItems(): DeviceItemState[] {
-    return this.deviceState.items.map((item) => ({ ...item, accessToken: "" }));
+  getConnectedItems(): RelayItem[] {
+    const relay = this.getRelayStatus();
+    if (relay?.mode === 'client' || relay && !relay.enabled) return relay.items;
+    return this.deviceState.items.map(({localItemId,institutionName,environment,lastSyncAt}) => ({localItemId,institutionName,environment,lastSyncAt}));
+  }
+
+  getRelayStatus() {
+    try { return getFinanceRelay(this.app)?.getStatus() || null; }
+    catch { return {configured:true,mode:'client' as const,enabled:false,online:false,updatedAt:0,lastSyncAt:0,items:[] as RelayItem[],message:'Enable TPS Controller 1.4.0+ and check its finance pairing. Bank requests are paused; saved notes remain available.'}; }
+  }
+  getRelayOperations() { try { return getFinanceRelay(this.app)?.getOperations() || []; } catch { return []; } }
+  canConnectPlaid(): boolean {
+    const relay = this.getRelayStatus();
+    return relay ? relay.enabled : Platform.isDesktopApp && !Platform.isMobile;
+  }
+  showFinanceRequest(id: string): void {
+    const relay = getFinanceRelay(this.app);
+    if (relay) new FinanceRequestModal(this.app, relay, id, () => void this.refreshDashboard()).open();
+  }
+  private async requestFinance(action: 'connect'|'reconnect'|'sync'|'disconnect', itemId?: string): Promise<boolean> {
+    const relay = getFinanceRelay(this.app);
+    if (!relay) return false;
+    const id = await relay.request(action,itemId);
+    this.showFinanceRequest(id);
+    return true;
+  }
+  private createControllerBackend() {
+    const assertHost = () => {
+      const relay=getFinanceRelay(this.app)?.getConfiguration();
+      if (Platform.isMobile || relay?.mode !== 'host' || !relay.enabled || !(this.app as any).plugins?.plugins?.['tps-controller']?.api?.isController()) throw new Error('Only the paired desktop Controller can import bank records.');
+      this.loadControllerState();
+    };
+    return {
+      version: 1 as const,
+      prepareHost: () => this.loadControllerState(true),
+      snapshot: () => { this.loadControllerState(); return ({ready:this.controllerPlaid(false)?.inspect().state==='ready',items:this.deviceState.items.map(({localItemId,institutionName,environment,lastSyncAt})=>({localItemId,institutionName,environment,lastSyncAt}))}); },
+      createLink: async (itemId?: string): Promise<LinkSession> => {
+        assertHost();
+        if (this.settingsWriter) await this.saveSettings();
+        const item = itemId ? this.deviceState.items.find(item=>item.localItemId===itemId) : undefined;
+        if (itemId && !item) throw new Error('Connection no longer exists.');
+        const config = this.getPlaidConfiguration();
+        const environment = item?.environment || config.plaidEnvironment;
+        const clientRef = item?.plaidClientIdSecretName || config.plaidClientIdSecret;
+        const secretRef = item?.plaidSecretName || config.plaidSecretSecret;
+        const link = await this.createPlaidClient(environment,secretRef,clientRef).createHostedLink(this.deviceState.plaidUserId,this.settings.transactionHistoryDays,item?.accessToken);
+        return {...link,environment,clientRef,secretRef,itemId};
+      },
+      pollLink: async (session: LinkSession): Promise<LinkResult> => {
+        assertHost();
+        return this.createPlaidClient(session.environment as any,session.secretRef,session.clientRef).getHostedLinkResult(session.linkToken,!!session.itemId);
+      },
+      completeLink: async (session: LinkSession, result: LinkResult, requestId: string): Promise<void> => {
+        assertHost();
+        if (this.deviceState.items.some(item=>item.linkRequestId===requestId)) return;
+        if (session.itemId) {
+          const item=this.deviceState.items.find(item=>item.localItemId===session.itemId);
+          if (!item) throw new Error('Connection no longer exists.');
+          item.linkRequestId=requestId;
+        } else {
+          if (!result.publicToken) throw new Error('Plaid did not return a public token.');
+          const exchange=await this.createPlaidClient(session.environment as any,session.secretRef,session.clientRef).exchangePublicToken(result.publicToken);
+          this.deviceState.items.push({localItemId:createLocalId('finance-item'),providerItemId:exchange.itemId,accessToken:exchange.accessToken,
+            institutionName:result.institutionName||'Institution',cursor:'',lastSyncAt:'',lastInvestmentTransactionSyncAt:'',environment:session.environment as any,
+            plaidClientIdSecretName:session.clientRef,plaidSecretName:session.secretRef,linkRequestId:requestId});
+        }
+        this.saveDeviceState(); // Persist the token and receipt before acknowledging the request or importing notes.
+      },
+      hasCompleted: (requestId: string) => { assertHost(); return this.deviceState.items.some(item=>item.linkRequestId===requestId); },
+      sync: async () => { assertHost(); if (this.settingsWriter) await this.saveSettings(); await this.syncLocal('controller'); },
+      disconnect: async (itemId: string) => { assertHost(); await this.disconnectLocal(itemId); },
+    };
   }
 
   getPlaidSetupStatus(): PlaidSetupStatus {
+    const relay=this.getRelayStatus();
+    if (relay) return {state:relay.enabled?'ready':'missing-credentials',clientIdConfigured:relay.enabled,secretConfigured:relay.enabled,connectedItems:this.getConnectedItems().length};
     const provider = this.controllerPlaid(false);
     if (!provider) return { state: "missing-credentials", clientIdConfigured: false, secretConfigured: false, connectedItems: this.deviceState.items.length };
     provider.getConfiguration(this.settings);
@@ -181,6 +257,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async connectPlaid(): Promise<void> {
+    if (await this.requestFinance('connect')) return;
     assertLocalPlaidLinkAvailable();
     try {
       const config = this.getPlaidConfiguration();
@@ -215,6 +292,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async reconnectItem(localItemId: string): Promise<void> {
+    if (await this.requestFinance('reconnect',localItemId)) return;
     assertLocalPlaidLinkAvailable();
     if(this.syncing) throw new Error("Wait for the current sync to finish.");
     const item=this.deviceState.items.find(i=>i.localItemId===localItemId);
@@ -231,12 +309,18 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async disconnectItem(localItemId: string): Promise<void> {
+    if (await this.requestFinance('disconnect',localItemId)) return;
+    return this.disconnectLocal(localItemId);
+  }
+
+  private async disconnectLocal(localItemId: string): Promise<void> {
     const item = this.deviceState.items.find((candidate) => candidate.localItemId === localItemId);
     if (!item) return;
     const client = this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
     logger.flow("Disconnect", "start", { institution: item.institutionName });
     try {
-      await client.removeItem(item.accessToken);
+      try { await client.removeItem(item.accessToken); }
+      catch (error) { if ((error as {code?:string}).code !== 'ITEM_NOT_FOUND') throw error; }
       this.deviceState.items = this.deviceState.items.filter((candidate) => candidate.localItemId !== localItemId);
       this.saveDeviceState();
       logger.flow("Disconnect", "done", { institution: item.institutionName, connectedItems: this.deviceState.items.length });
@@ -249,13 +333,19 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async syncAll(reason: string): Promise<void> {
+    if (await this.requestFinance('sync')) return;
+    return this.syncLocal(reason);
+  }
+
+  private async syncLocal(reason: string): Promise<void> {
     if (this.syncing) {
+      if (reason === "controller") throw new Error("TPS Finances is already syncing. Try again shortly.");
       new Notice("TPS Finances is already syncing.");
       return;
     }
     if (!this.deviceState.items.length) {
-      new Notice("Connect an institution before syncing TPS Finances.");
-      return;
+      if (reason === "controller") return;
+      throw new Error("Connect an institution before syncing TPS Finances.");
     }
     this.syncing = true;
     const started = Date.now();
@@ -361,11 +451,12 @@ export default class TPSFinancesPlugin extends Plugin {
         const first = failures[0];
         const more = failures.length > 1 ? ` (${failures.length - 1} more institution${failures.length === 2 ? "" : "s"} failed)` : "";
         const optional = optionalWarnings.length ? ` ${optionalInvestmentWarningSummary(optionalWarnings)}` : "";
+        if (reason === "controller") throw first.error;
         new Notice(`TPS Finances could not sync ${first.institution}: ${userFacingError(first.error)}${more}.${optional}`, 12000);
       }
       else {
         const summary = `TPS Finances synced ${allAccounts.length} accounts and ${transactionChanges} transaction changes.`;
-        new Notice(optionalWarnings.length ? `${summary} ${optionalInvestmentWarningSummary(optionalWarnings)}` : summary, optionalWarnings.length ? 12000 : 5000);
+        if (reason !== "controller") new Notice(optionalWarnings.length ? `${summary} ${optionalInvestmentWarningSummary(optionalWarnings)}` : summary, optionalWarnings.length ? 12000 : 5000);
       }
     } catch (error) {
       logger.failure("Sync", "failed", error, { reason });
@@ -397,14 +488,15 @@ export default class TPSFinancesPlugin extends Plugin {
     applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
     const budgets = calculateMonthlyBudgetProgress(store.readBudgets(), transactions, month);
-    const lastSyncAt = this.deviceState.items.map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
+    const lastSyncAt = this.getConnectedItems().map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
       accounts,
       holdings,
       transactions,
       budgets,
       lastSyncAt,
-      connectedItems: this.deviceState.items.length,
+      connectedItems: this.getConnectedItems().length,
+      relayMessage: this.getRelayStatus()?.message,
       plaidSetupState: this.getPlaidSetupStatus().state,
     };
   }
@@ -698,6 +790,20 @@ export default class TPSFinancesPlugin extends Plugin {
       },
       onClick: () => this.openDashboard(),
     });
+  }
+
+  private loadControllerState(allowCreate = false): void {
+    const stored=this.app.secretStorage.getSecret(DEVICE_STATE_SECRET);
+    if (!stored) {
+      if (!allowCreate || this.app.loadLocalStorage?.('tps-finances-controller-state')) throw new Error('Controller bank state is missing. Restore its SecretStorage before continuing.');
+      this.saveDeviceState();
+    } else {
+      const raw=JSON.parse(stored);
+      if (!raw.plaidUserId || !Array.isArray(raw.items) || !raw.providerIdentityMap || typeof raw.providerIdentityMap !== 'object'
+        || raw.items.some((item: any)=>!item.localItemId || !item.providerItemId || !item.accessToken)) throw new Error('Controller bank state is invalid. Restore its SecretStorage before continuing.');
+      this.deviceState=this.loadDeviceState();
+    }
+    this.app.saveLocalStorage?.('tps-finances-controller-state',true);
   }
 
   private loadDeviceState(): DeviceState {

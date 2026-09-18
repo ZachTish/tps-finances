@@ -26,6 +26,7 @@ export const DEFAULT_SETTINGS: TPSFinancesSettings = {
 };
 
 export interface DeviceItemState {
+  linkRequestId?: string;
   localItemId: string;
   providerItemId: string;
   accessToken: string;

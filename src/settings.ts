@@ -38,6 +38,12 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
+  openConnections(): void {
+    this.activeRoute = "connections";
+    const settings = (this.app as any).setting;
+    settings?.open(); settings?.openTabById("tps-finances");
+  }
+
   display(): void {
     this.renderSettings();
   }
@@ -47,7 +53,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     const scrollTop = containerEl.scrollTop;
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Finances" });
-    containerEl.createEl("p", { text: "Plaid credentials and connected Item tokens are stored in this device's Obsidian SecretStorage. They are not saved in plugin data or Markdown." });
+    containerEl.createEl("p", { text: "Bank credentials stay in the Controller’s SecretStorage when devices are paired." });
 
     const hub = containerEl.createDiv({ cls: "tps-finances-settings-hub" });
     hub.createEl("h3", { text: "Choose what to configure" });
@@ -166,42 +172,44 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
   private renderConnectionSettings(parent: HTMLElement): void {
     const plaidSetup = this.plugin.getPlaidSetupStatus();
+    const relay = this.plugin.getRelayStatus();
+    if (relay) new Setting(parent).setName(relay.online ? "Controller connected" : "Waiting for Controller").setDesc(relay.message);
 
     new Setting(parent)
       .setName("Connect another institution")
-      .setDesc(Platform.isDesktopApp && !Platform.isMobile
+      .setDesc(relay ? "Sign in through Plaid in your browser. The Controller saves the connection and imports your notes." : Platform.isDesktopApp && !Platform.isMobile
         ? "Opens Plaid Link in your browser through a temporary localhost callback."
         : "Connect or reconnect on desktop, then sync the finance notes with your vault. Manual accounts and transactions work here.")
       .addButton((button) => button
         .setButtonText("Connect with Plaid")
         .setCta()
-        .setDisabled(!Platform.isDesktopApp || Platform.isMobile || plaidSetup.state !== "ready")
+        .setDisabled(!this.plugin.canConnectPlaid() || plaidSetup.state !== "ready")
         .onClick(async () => {
           await this.plugin.runConnectPlaid("settings");
-          this.renderSettings(true);
+          this.renderSettings(!relay);
         }));
 
     new Setting(parent)
       .setName("Sync now")
-      .setDesc("Refresh accounts, transactions, investments, and snapshots for every connection on this device.")
+      .setDesc("Refresh accounts, transactions, investments, and snapshots. Paired devices send the request to the Controller.")
       .addButton((button) => button
         .setButtonText("Sync finances")
-        .setDisabled(this.plugin.getConnectedItems().length === 0)
+        .setDisabled(!relay && this.plugin.getConnectedItems().length === 0)
         .onClick(async () => {
           await this.plugin.runSync("settings");
-          this.renderSettings(true);
+          this.renderSettings(!relay);
         }));
 
-    parent.createEl("h4", { text: "Connections on this device" });
+    parent.createEl("h4", { text: relay ? "Shared connections" : "Connections on this device" });
     const items = this.plugin.getConnectedItems();
-    if (!items.length) parent.createEl("p", { text: "No Plaid Items are connected on this device.", cls: "setting-item-description" });
+    if (!items.length) parent.createEl("p", { text: relay ? "No shared connections received yet." : "No Plaid Items are connected on this device.", cls: "setting-item-description" });
     for (const item of items) {
       new Setting(parent)
         .setName(item.institutionName)
         .setDesc(`${item.environment} · ${item.lastSyncAt ? `Last synced ${new Date(item.lastSyncAt).toLocaleString()}` : "Not synced yet"}`)
-        .addButton((button) => button.setButtonText("Reconnect").setDisabled(!Platform.isDesktopApp || Platform.isMobile).onClick(async () => {
+        .addButton((button) => button.setButtonText("Reconnect").setDisabled(!this.plugin.canConnectPlaid()).onClick(async () => {
           await this.plugin.runReconnectItem(item.localItemId);
-          this.renderSettings(true);
+          this.renderSettings(!relay);
         }))
         .addButton((button) => button.setButtonText("Disconnect").setWarning().onClick(() => {
           new DisconnectItemModal(this.app, item.institutionName, async () => {
@@ -209,6 +217,12 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
             this.renderSettings(true);
           }).open();
         }));
+    }
+
+    for (const operation of this.plugin.getRelayOperations().slice(-10).reverse()) {
+      new Setting(parent).setName(`${operation.action[0].toUpperCase()}${operation.action.slice(1)} · ${operation.state}`)
+        .setDesc(operation.message)
+        .addButton(button=>button.setButtonText(operation.url ? "Continue sign-in" : "View request").onClick(()=>this.plugin.showFinanceRequest(operation.id)));
     }
 
     new Setting(parent)

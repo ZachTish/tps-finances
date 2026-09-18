@@ -45,12 +45,14 @@ export interface DashboardModel {
   lastSyncAt: string;
   connectedItems: number;
   plaidSetupState: PlaidSetupState;
+  relayMessage?: string;
   budgets: BudgetProgress[];
 }
 
 interface FinancesViewPlugin {
   settings?: {recordMode: string};
   getDashboardModel(): Promise<DashboardModel>;
+  canConnectPlaid?(): boolean;
   connectPlaid(): Promise<void>;
   syncAll(reason: string): Promise<void>;
   openTransactionSource(transaction: DashboardTransaction): Promise<void>;
@@ -115,6 +117,7 @@ export class TPSFinancesView extends ItemView {
           this.contentEl.empty();
           const root = this.contentEl.createDiv({ cls: "tps-finances-root" });
           this.renderHeader(root, model);
+          if (model.relayMessage) root.createDiv({cls:"tps-finances-status",text:model.relayMessage});
           if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
           else {
             if (model.connectedItems && !model.accounts.length) {
@@ -166,8 +169,8 @@ export class TPSFinancesView extends ItemView {
     actions.appendChild(actionButton("wand-sparkles", "Rule", () => this.plugin.addCategorizationRule()));
     actions.appendChild(actionButton("gauge", "Budget", () => this.plugin.addMonthlyBudget()));
     const connect = actionButton("link", "Connect", () => void this.runAction(() => this.plugin.connectPlaid()));
-    connect.disabled = !Platform.isDesktopApp || Platform.isMobile;
-    if (connect.disabled) connect.title = "Connect Plaid on desktop";
+    connect.disabled = this.plugin.canConnectPlaid ? !this.plugin.canConnectPlaid() : !Platform.isDesktopApp || Platform.isMobile;
+    if (connect.disabled) connect.title = "Pair with the finance Controller in TPS Controller settings";
     actions.appendChild(connect);
     actions.appendChild(actionButton("refresh-cw", "Sync", () => void this.runAction(() => this.plugin.syncAll("dashboard"))));
   }
@@ -196,7 +199,9 @@ export class TPSFinancesView extends ItemView {
     const icon = welcome.createDiv({ cls: "tps-finances-welcome-icon" });
     setIcon(icon, "landmark");
     welcome.createEl("h2", { text: "Add cash or assets, or connect an institution" });
-    const detail = (!Platform.isDesktopApp || Platform.isMobile)
+    const detail = this.plugin.canConnectPlaid?.() && (!Platform.isDesktopApp || Platform.isMobile)
+      ? "Connect through your paired Controller. Bank sign-in opens in your browser."
+      : (!Platform.isDesktopApp || Platform.isMobile)
       ? "Add cash accounts and transactions here, or connect Plaid on desktop and sync the finance notes with your vault."
       : setupState === "conflicting-credentials"
       ? "Plaid client ID and Plaid secret currently use the same Obsidian secret. Select two different secrets in TPS Controller settings before connecting."
@@ -205,7 +210,7 @@ export class TPSFinancesView extends ItemView {
         : "Add separate Plaid client ID and environment secrets in TPS Controller settings, then connect an institution.";
     welcome.createEl("p", { text: detail });
     const connect = actionButton("link", "Connect with Plaid", () => void this.runAction(() => this.plugin.connectPlaid()), true);
-    connect.disabled = !Platform.isDesktopApp || Platform.isMobile;
+    connect.disabled = this.plugin.canConnectPlaid ? !this.plugin.canConnectPlaid() : !Platform.isDesktopApp || Platform.isMobile;
     welcome.appendChild(connect);
   }
 
