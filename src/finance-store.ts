@@ -1,10 +1,11 @@
 import { financeDirectory, financePath, financePrefix } from "./finance-paths";
-import { App, TFile, normalizePath } from "obsidian";
+import { App, TFile, normalizePath, parseYaml, stringifyYaml } from "obsidian";
 import type { DeviceState, FinanceAccount, FinanceBudget, FinanceHolding, FinanceRule, FinanceTransaction } from "./types";
 import { normalizeTags } from "./classification";
 import { providerIdentityKey } from "./identity";
 import { appendTransactionIfMissing, removeTransactionContent, upsertTransactionContent } from "./transaction-content";
 import { boundedWork } from "./bounded-work";
+import { budgetInputError, budgetOverlapError, budgetBucket, budgetCurrency, accountLinkPath } from "./flex-budget";
 
 const GENERATED_START = "<!-- tps-finances:generated:start -->";
 const GENERATED_END = "<!-- tps-finances:generated:end -->";
@@ -235,6 +236,69 @@ export class FinanceStore {
     const path = this.uniquePath(financePath(this.rootFolder, "Budgets", `${safeName(budget.name)}.md`));
     const body = `---\ntitle: ${yamlString(budget.name)}\nkind: financeBudget\nfinanceBudgetId: ${yamlString(budget.id)}\ncategory: ${yamlString(budget.category)}\nmonthlyLimit: ${decimal(budget.monthlyLimit)}\n---\n`;
     return this.app.vault.create(path, body);
+  }
+
+  async readBudgetEntries(): Promise<FinanceBudget[]> {
+    const records: FinanceBudget[] = [];
+    const prefix = financePrefix(this.rootFolder, "Budgets");
+    // Read current content, including newly-created notes whose metadata is not indexed yet.
+    const files = this.app.vault.getMarkdownFiles().filter(file => {
+      if (!file.path.startsWith(prefix)) return false;
+      if (this.rootFolder) return true;
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      return !fm || !Object.keys(fm).length || fm.kind === "financeBudget" || Boolean(fm.financeBudgetId);
+    });
+    await boundedWork(files, async file => {
+      const text = await this.app.vault.cachedRead(file);
+      const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+      if (!match || !/financeBudgetId|financeBudget/.test(match[1])) return;
+      const fm = parseYaml(match[1]);
+      if (!fm || (!fm.financeBudgetId && fm.kind !== "financeBudget")) return;
+      const links = Array.isArray(fm.accounts) ? fm.accounts : fm.accounts ? [fm.accounts] : [];
+      const accounts = links.map((value: unknown) => {
+        const raw = String(value), link = raw.replace(/^\[\[|\]\]$/g, "").split("|")[0];
+        const resolved = this.app.metadataCache.getFirstLinkpathDest?.(link, file.path);
+        return resolved ? `[[${resolved.path.replace(/\.md$/i, "")}]]` : raw;
+      });
+      records.push({id:String(fm.financeBudgetId || file.path),name:String(fm.title || file.basename),
+        category:String(fm.category || ""),monthlyLimit:fm.monthlyLimit == null || fm.monthlyLimit === "" ? NaN : Number(fm.monthlyLimit),
+        bucket:fm.bucket || "category",currency:String(fm.currency || "USD"),accounts,sourcePath:file.path,revision:budgetRevision(fm)});
+    });
+    return records.sort((a,b)=>a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  }
+
+  async saveBudgetEntry(budget: FinanceBudget, original?: FinanceBudget): Promise<TFile> {
+    const existing = await this.readBudgetEntries();
+    if (existing.some(entry=>entry.id===budget.id && entry.sourcePath!==original?.sourcePath)) throw new Error("Duplicate budget identity. Reopen the existing target.");
+    const error = budgetInputError(budget) || budgetOverlapError(budget, existing);
+    if (error) throw new Error(error);
+    if (budgetBucket(budget) === "savings") {
+      for (const link of budget.accounts || []) {
+        const file = this.app.vault.getAbstractFileByPath(`${accountLinkPath(link)}.md`);
+        if (!(file instanceof TFile)) throw new Error("A selected account moved or was deleted. Reopen the budget editor.");
+        const body = await this.app.vault.read(file);
+        const match = body.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+        const fm = match ? parseYaml(match[1]) : null;
+        if (!fm?.financeAccountId || !["depository", "investment", "brokerage"].includes(fm.accountType) || (fm.currency || "USD") !== budgetCurrency(budget)) {
+          throw new Error("Choose existing savings or investment accounts in this currency.");
+        }
+      }
+    }
+    const fields = { title:budget.name.trim(), financeBudgetId:budget.id, bucket:budgetBucket(budget),
+      category:budget.category.trim(), monthlyLimit:budget.monthlyLimit, currency:budgetCurrency(budget), accounts:budget.accounts || [] };
+    if (original?.sourcePath) {
+      const file = this.app.vault.getAbstractFileByPath(original.sourcePath);
+      if (!(file instanceof TFile)) throw new Error("The budget note moved or was deleted. Reopen it and try again.");
+      await this.app.fileManager.processFrontMatter(file, fm => {
+        if (!original.revision || budgetRevision(fm) !== original.revision) {
+          throw new Error("The budget changed while you were editing. Reopen it to keep the newer values.");
+        }
+        Object.assign(fm,fields); // Preserve custom properties, tags, kind and the note body.
+      });
+      return file;
+    }
+    const path = this.uniquePath(financePath(this.rootFolder,"Budgets",`${safeName(budget.name)}.md`));
+    return this.app.vault.create(path,`---\n${stringifyYaml({kind:"financeBudget",...fields})}---\n`);
   }
 
   async updateTransactionMetadata(financeId: string, categoryOverride: string, tags: string[]): Promise<boolean> {
@@ -538,6 +602,7 @@ export function transactionLine(transaction: FinanceTransaction, accountPath: st
   if (transaction.quantity != null) fields.push(`[quantity:: ${decimal(transaction.quantity)}]`);
   if (transaction.price != null) fields.push(`[price:: ${decimal(transaction.price)}]`);
   if (transaction.fees != null) fields.push(`[fees:: ${decimal(transaction.fees)}]`);
+  if (transaction.investmentType) fields.push(`[investmentType:: ${inlineValue(transaction.investmentType)}]`);
   return `- ${inlineValue(transaction.name)} ${fields.join(" ")}`;
 }
 
@@ -634,4 +699,9 @@ function setInlineField(line: string, key: string, value: string): string {
   const pattern = new RegExp(`\\s*\\[${key}::\\s*[^\\]]*\\]`, "g");
   const without = line.replace(pattern, "");
   return value ? `${without} [${key}:: ${inlineValue(value)}]` : without;
+}
+
+// Only owned fields participate; unrelated property/body edits remain safe to preserve.
+function budgetRevision(fm: Record<string, unknown>): string {
+  return JSON.stringify(["financeBudgetId", "title", "kind", "category", "monthlyLimit", "bucket", "currency", "accounts"].map(key => fm[key] ?? null));
 }

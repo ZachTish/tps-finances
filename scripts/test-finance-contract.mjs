@@ -220,7 +220,7 @@ function snapshotDashboardPlugin(app) {
   plugin.createStore = () => ({
     readTransactionRecords: async () => [],
     readRules: () => [],
-    readBudgets: () => [],
+    readBudgetEntries: async () => [],
   });
   plugin.getPlaidSetupStatus = () => ({ state: "ready" });
   return plugin;
@@ -1042,7 +1042,7 @@ test("monthly budget aggregation is equivalent across boundaries, categories, an
   const dashboardModelStart = main.indexOf("async getDashboardModel");
   const dashboardModelImplementation = main.slice(dashboardModelStart, main.indexOf("addCategorizationRule", dashboardModelStart));
   assert.match(dashboardModelImplementation, /const month = localDate\(new Date\(\)\)\.slice\(0, 7\)/);
-  assert.match(dashboardModelImplementation, /calculateMonthlyBudgetProgress\(store\.readBudgets\(\), transactions, month\)/);
+  assert.match(dashboardModelImplementation, /calculateMonthlyBudgetProgress\(budgetEntries\.filter\([\s\S]*?transactions, month\)/);
   assert.doesNotMatch(dashboardModelImplementation, /transactions\.filter\(/);
 });
 
@@ -1227,7 +1227,7 @@ test("dashboard account labels reuse the account scan without changing label sem
       category: "Matched account",
       tags: ["account-match"],
     }],
-    readBudgets: () => [],
+    readBudgetEntries: async () => [],
   });
   plugin.getPlaidSetupStatus = () => ({ state: "ready" });
 

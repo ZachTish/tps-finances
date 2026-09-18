@@ -130,6 +130,11 @@ export interface FinanceBudget {
   name: string;
   category: string;
   monthlyLimit: number;
+  bucket?: "income" | "fixed" | "flex" | "savings" | "category";
+  currency?: string;
+  accounts?: string[];
+  sourcePath?: string;
+  revision?: string;
 }
 
 export interface PlaidCredentials {

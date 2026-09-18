@@ -1,6 +1,8 @@
 import { ItemView, Menu, Notice, Platform, WorkspaceLeaf, setIcon } from "obsidian";
+import { renderBudgetView, type BudgetViewState } from "./budget-view";
+import type { BudgetBucket } from "./flex-budget";
 import { accountSummaries } from "./finance-summary";
-import type { FinanceAccount, FinanceHolding, PlaidSetupState } from "./types";
+import type { FinanceAccount, FinanceBudget, FinanceHolding, PlaidSetupState } from "./types";
 
 export const TPS_FINANCES_VIEW_TYPE = "tps-finances";
 
@@ -26,6 +28,7 @@ export interface DashboardTransaction {
   ruleId: string;
   subtype: string;
   type: "transaction" | "investmentTransaction";
+  investmentType?: string;
   sourcePath: string;
   sourceLine: number;
 }
@@ -47,6 +50,7 @@ export interface DashboardModel {
   plaidSetupState: PlaidSetupState;
   relayMessage?: string;
   budgets: BudgetProgress[];
+  budgetEntries?: FinanceBudget[];
 }
 
 interface FinancesViewPlugin {
@@ -61,7 +65,8 @@ interface FinancesViewPlugin {
   addCashTransaction(): Promise<void>;
   updateAssetValue(account: FinanceAccount): void;
   addCategorizationRule(): void;
-  addMonthlyBudget(): void;
+  addMonthlyBudget(bucket?: BudgetBucket, currency?: string): void;
+  editMonthlyBudget(budget: FinanceBudget): void;
   openFinanceBase(name: "Rules" | "Budgets"): Promise<void>;
   setAccountTransactionLogTarget(account: FinanceAccount, target: "default" | "daily-note" | "account-note"): Promise<void>;
 }
@@ -70,6 +75,10 @@ export class TPSFinancesView extends ItemView {
   private renderRequested = false;
   private renderPromise: Promise<void> | null = null;
   private closed = false;
+  private route: "overview" | "budget" = "overview";
+  private readonly budgetState: BudgetViewState = {month:`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}`,currency:"USD",expanded:new Set()};
+
+  async showBudget(): Promise<void> { this.route="budget"; await this.render(); }
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: FinancesViewPlugin) {
     super(leaf);
@@ -114,11 +123,24 @@ export class TPSFinancesView extends ItemView {
         try {
           const model = await this.plugin.getDashboardModel();
           if (this.closed || this.renderRequested) continue;
+          const scroll = this.contentEl.scrollTop;
+          const focused = this.contentEl.ownerDocument?.activeElement;
+          const focusKey = focused?.getAttribute("data-budget-focus");
           this.contentEl.empty();
-          const root = this.contentEl.createDiv({ cls: "tps-finances-root" });
+          const root = this.contentEl.createDiv({ cls: `tps-finances-root${this.route === "budget" ? " tps-finances-root--budget" : ""}` });
           this.renderHeader(root, model);
+          const navigation = root.createDiv({cls:"tps-finances-view-routes",attr:{"aria-label":"Finance pages"}});
+          for (const [route,label] of [["overview","Overview"],["budget","Budget"]] as const) {
+            const button=navigation.createEl("button",{type:"button",text:label,attr:{"aria-pressed":String(this.route===route),"data-budget-focus":route}});
+            button.addEventListener("click",()=>{this.route=route;void this.render();});
+          }
           if (model.relayMessage) root.createDiv({cls:"tps-finances-status",text:model.relayMessage});
-          if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
+          if (this.route === "budget") {
+            renderBudgetView(root,model,this.budgetState,{
+              render:()=>void this.render(),add:(bucket,currency)=>this.plugin.addMonthlyBudget(bucket,currency),
+              edit:budget=>this.plugin.editMonthlyBudget(budget),open:transaction=>void this.runAction(()=>this.plugin.openTransactionSource(transaction)),
+            });
+          } else if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
           else {
             if (model.connectedItems && !model.accounts.length) {
               root.createDiv({
@@ -135,11 +157,12 @@ export class TPSFinancesView extends ItemView {
               });
             }
             this.renderSummary(root, model);
-            this.renderBudgets(root, model.budgets);
             this.renderAccounts(root, model.accounts);
             this.renderHoldings(root, model.holdings);
             this.renderTransactions(root, model.transactions);
           }
+          if(focusKey) Array.from(this.contentEl.querySelectorAll<HTMLElement>("[data-budget-focus]")).find(element=>element.getAttribute("data-budget-focus")===focusKey)?.focus({preventScroll:true});
+          this.contentEl.scrollTop=scroll;
         } catch (error) {
           if (this.closed || this.renderRequested) continue;
           this.contentEl.empty();
@@ -167,31 +190,11 @@ export class TPSFinancesView extends ItemView {
     });
     actions.appendChild(add);
     actions.appendChild(actionButton("wand-sparkles", "Rule", () => this.plugin.addCategorizationRule()));
-    actions.appendChild(actionButton("gauge", "Budget", () => this.plugin.addMonthlyBudget()));
     const connect = actionButton("link", "Connect", () => void this.runAction(() => this.plugin.connectPlaid()));
     connect.disabled = this.plugin.canConnectPlaid ? !this.plugin.canConnectPlaid() : !Platform.isDesktopApp || Platform.isMobile;
     if (connect.disabled) connect.title = "Pair with the finance Controller in TPS Controller settings";
     actions.appendChild(connect);
     actions.appendChild(actionButton("refresh-cw", "Sync", () => void this.runAction(() => this.plugin.syncAll("dashboard"))));
-  }
-
-  private renderBudgets(root: HTMLElement, budgets: BudgetProgress[]): void {
-    if (!budgets.length) return;
-    const section = sectionEl(root, "Monthly budgets", "gauge");
-    const headingActions = section.querySelector("h2")?.createSpan({ cls: "tps-finances-section-actions" });
-    const manage = headingActions?.createEl("button", { text: "Manage", attr: { type: "button" } });
-    manage?.addEventListener("click", () => void this.plugin.openFinanceBase("Budgets"));
-    const grid = section.createDiv({ cls: "tps-finances-budget-grid" });
-    for (const budget of budgets) {
-      const ratio = budget.monthlyLimit > 0 ? budget.spent / budget.monthlyLimit : 0;
-      const card = grid.createDiv({ cls: `tps-finances-budget${ratio > 1 ? " is-over" : ratio >= 0.8 ? " is-close" : ""}` });
-      const label = card.createDiv({ cls: "tps-finances-budget-label" });
-      label.createEl("strong", { text: humanCategory(budget.category) });
-      label.createEl("span", { text: `${money(budget.spent)} of ${money(budget.monthlyLimit)}` });
-      const track = card.createDiv({ cls: "tps-finances-budget-track" });
-      track.createDiv({ cls: "tps-finances-budget-fill", attr: { style: `width: ${Math.min(100, Math.max(0, ratio * 100))}%` } });
-      card.createEl("small", { text: ratio > 1 ? `${money(budget.spent - budget.monthlyLimit)} over` : `${money(budget.monthlyLimit - budget.spent)} remaining` });
-    }
   }
 
   private renderWelcome(root: HTMLElement, setupState: PlaidSetupState): void {

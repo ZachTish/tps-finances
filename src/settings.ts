@@ -252,7 +252,8 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
     new Setting(parent)
       .setName("Monthly budgets")
-      .setDesc("Create a monthly spending target for a category.")
+      .setDesc("Plan income, fixed expenses, flexible spending, and savings contributions.")
+      .addButton((button) => button.setButtonText("Open budget").onClick(() => void this.plugin.openDashboard("budget")))
       .addButton((button) => button.setButtonText("Add budget").onClick(() => this.plugin.addMonthlyBudget()));
   }
 }

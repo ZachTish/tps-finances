@@ -1,3 +1,5 @@
+import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
+import type { FinanceBudget } from "./types";
 import { FinanceRequestModal, getFinanceRelay, LinkSession, LinkResult, RelayItem } from "./finance-relay";
 import { financePath, financePrefix, normalizeFinanceFolder } from "./finance-paths";
 import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
@@ -73,6 +75,7 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "connect-plaid", name: "Connect an institution with Plaid", callback: () => this.runConnectPlaid("command") });
     this.addCommand({ id: "sync-finances", name: "Sync accounts and transactions", callback: () => this.runSync("command") });
     this.addCommand({ id: "add-categorization-rule", name: "Add categorization rule", callback: () => this.addCategorizationRule() });
+    this.addCommand({ id: "open-budget", name: "Open budget", callback: () => void this.openDashboard("budget") });
     this.addCommand({ id: "add-monthly-budget", name: "Add monthly budget", callback: () => this.addMonthlyBudget() });
     this.addCommand({ id: "add-cash-account", name: "Add cash account", callback: () => this.addManualAccount("cash") });
     this.addCommand({ id: "add-resale-asset", name: "Add resale asset", callback: () => this.addManualAccount("asset") });
@@ -247,13 +250,14 @@ export default class TPSFinancesPlugin extends Plugin {
     return this.runUserAction("Sync", reason, () => this.syncAll(reason));
   }
 
-  async openDashboard(): Promise<void> {
+  async openDashboard(page?: "budget"): Promise<void> {
     let leaf = this.app.workspace.getLeavesOfType(TPS_FINANCES_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getLeaf("tab");
       await leaf.setViewState({ type: TPS_FINANCES_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
+    if (page === "budget" && leaf.view instanceof TPSFinancesView) await leaf.view.showBudget();
   }
 
   async connectPlaid(): Promise<void> {
@@ -499,13 +503,15 @@ export default class TPSFinancesPlugin extends Plugin {
       }).sort((left, right) => right.date.localeCompare(left.date));
     applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
-    const budgets = calculateMonthlyBudgetProgress(store.readBudgets(), transactions, month);
+    const budgetEntries = await store.readBudgetEntries();
+    const budgets = calculateMonthlyBudgetProgress(budgetEntries.filter(budget=>budgetBucket(budget)==="category" && budgetCurrency(budget)==="USD"), transactions, month);
     const lastSyncAt = this.getConnectedItems().map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
       accounts,
       holdings,
       transactions,
       budgets,
+      budgetEntries,
       lastSyncAt,
       connectedItems: this.getConnectedItems().length,
       relayMessage: this.getRelayStatus()?.message,
@@ -555,15 +561,29 @@ export default class TPSFinancesPlugin extends Plugin {
     }).open();
   }
 
-  addMonthlyBudget(): void {
-    new FinanceBudgetModal(this.app, async (input) => {
-      const store = this.createStore();
-      await store.ensureStructure();
-      await store.createBudget({ ...input, id: createLocalId("finance-budget") });
-      logger.flow("Budget", "created");
-      new Notice("Monthly budget created.");
-      await this.refreshDashboard();
-    }).open();
+  addMonthlyBudget(bucket: BudgetBucket = "income", currency = "USD"): void {
+    void this.openBudgetEditor({id:createLocalId("finance-budget"),name:bucket==="flex"?"Flexible spending":"",category:"",monthlyLimit:NaN,bucket,currency});
+  }
+
+  editMonthlyBudget(budget: FinanceBudget): void { void this.openBudgetEditor(budget); }
+
+  private budgetSave: Promise<unknown> = Promise.resolve();
+  private async openBudgetEditor(budget: FinanceBudget): Promise<void> {
+    try {
+      const model = await this.getDashboardModel();
+      const categories=Array.from(new Set(model.transactions.map(transaction=>transaction.category).filter(Boolean))).sort();
+      new FinanceBudgetModal(this.app,budget,model.accounts,categories,async input=>{
+        const save=this.budgetSave.catch(()=>{}).then(async()=>{
+          const store=this.createStore();
+          await store.ensureStructure();
+          await store.saveBudgetEntry(input,budget.sourcePath?budget:undefined);
+          logger.flow("Budget",budget.sourcePath?"updated":"created",{bucket:budgetBucket(input),currency:budgetCurrency(input)});
+        });
+        this.budgetSave=save;
+        await save;
+        await this.refreshDashboard();
+      }).open();
+    } catch(error) { new Notice(`Could not open budget: ${error instanceof Error?error.message:String(error)}`); }
   }
 
   editTransactionClassification(transaction: DashboardTransaction): void {
@@ -1060,6 +1080,7 @@ function parseDashboardTransaction(line: string, sourcePath: string, sourceLine:
     ruleId: "",
     subtype: field(line, "providerCategoryDetail").toLowerCase() === "loan_payments_credit_card_payment" ? "transfer-out" : field(line, "subtype"),
     type: field(line, "type") === "investmentTransaction" ? "investmentTransaction" : "transaction",
+    investmentType: field(line, "investmentType"),
     sourcePath,
     sourceLine,
   };

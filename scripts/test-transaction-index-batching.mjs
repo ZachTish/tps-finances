@@ -47,6 +47,8 @@ async function loadFinanceStore(root, label) {
             "  }",
             "}",
             "export const normalizePath = (value) => value;",
+            "export const parseYaml = value => JSON.parse(value);",
+            "export const stringifyYaml = value => JSON.stringify(value) + '\\n';",
           ].join("\n"),
         }));
       },

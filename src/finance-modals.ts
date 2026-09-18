@@ -1,7 +1,7 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import { normalizeTags } from "./classification";
 import type { DashboardTransaction } from "./dashboard-view";
-import type { FinanceBudget, FinanceRule } from "./types";
+import type { FinanceRule } from "./types";
 
 export class FinanceRuleModal extends Modal {
   constructor(app: App, private readonly save: (rule: Omit<FinanceRule, "id">) => Promise<void>) {
@@ -40,27 +40,7 @@ export class FinanceRuleModal extends Modal {
   }
 }
 
-export class FinanceBudgetModal extends Modal {
-  constructor(app: App, private readonly save: (budget: Omit<FinanceBudget, "id">) => Promise<void>) {
-    super(app);
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("tps-keyboard-aware-modal");
-    this.titleEl.setText("New monthly budget");
-    this.contentEl.createEl("p", { cls: "setting-item-description", text: "The budget repeats each calendar month and measures spending in the selected effective category." });
-    let category = "";
-    let limit = 0;
-    textSetting(this.contentEl, "Category", "Must match your category or rule output", "", (value) => { category = value; });
-    textSetting(this.contentEl, "Monthly limit", "Positive amount in dollars", "", (value) => { limit = Number(value); });
-    modalActions(this.contentEl, this, async () => {
-      if (!category.trim()) return void new Notice("Enter a category.");
-      if (!Number.isFinite(limit) || limit <= 0) return void new Notice("Enter a positive monthly limit.");
-      await this.save({ name: `${category.trim()} monthly budget`, category: category.trim(), monthlyLimit: limit });
-      this.close();
-    });
-  }
-}
+export { FinanceBudgetModal } from "./budget-modal";
 
 export class TransactionClassificationModal extends Modal {
   constructor(app: App, private readonly transaction: DashboardTransaction, private readonly save: (category: string, tags: string[]) => Promise<void>) {
