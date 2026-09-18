@@ -4,6 +4,7 @@ import type { DeviceState, FinanceAccount, FinanceBudget, FinanceHolding, Financ
 import { normalizeTags } from "./classification";
 import { providerIdentityKey } from "./identity";
 import { appendTransactionIfMissing, removeTransactionContent, upsertTransactionContent } from "./transaction-content";
+import { boundedWork } from "./bounded-work";
 
 const GENERATED_START = "<!-- tps-finances:generated:start -->";
 const GENERATED_END = "<!-- tps-finances:generated:end -->";
@@ -359,7 +360,7 @@ export class FinanceStore {
       fileOrder: new Map(),
       nextFileOrder: files.length,
     };
-    for (const [order, file] of files.entries()) {
+    await boundedWork([...files.entries()], async ([order, file]) => {
       const pathBeforeRead = file.path;
       const content = await this.app.vault.cachedRead(file);
       if (
@@ -373,7 +374,12 @@ export class FinanceStore {
       }
       index.fileOrder.set(file.path, order);
       this.indexTransactionFile(index, file.path, content);
-    }
+    });
+    // Async reads may finish out of order. Preserve vault/line precedence both for
+    // duplicate metadata and for callers enumerating the transaction records.
+    index.recordsById = new Map([...index.recordsById].sort((a, b) =>
+      (index.fileOrder.get(a[1][0].path)! - index.fileOrder.get(b[1][0].path)!)
+      || a[1][0].lineNumber - b[1][0].lineNumber));
     this.transactionIndex = index;
     return index;
   }

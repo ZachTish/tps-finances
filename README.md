@@ -2,7 +2,7 @@
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.4.0](https://github.com/ZachTish/tps-finances/releases/tag/1.4.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.4.1](https://github.com/ZachTish/tps-finances/releases/tag/1.4.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -10,11 +10,23 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 
 ## Connect and use
 
-1. Install/update **TPS Controller 1.4.0 and Finances 1.4.0** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
+1. Install/update **TPS Controller 1.4.0 and Finances 1.4.1** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
 2. On your always-running Controller desktop, open **Plaid setup → Open Controller settings**. Configure the environment and separate client-ID/secret references under **Advanced → Plaid**, then choose **Finance server → Use this Controller**. Use the desktop that already owns your bank connections.
 3. Export its pairing code and enter it in Controller's Finance server settings on the phone/iPad. Pairing, credentials, connection tokens, and request journals are device-local. Do not connect the same banks independently on each device.
 4. Return to **Connections** to Connect, Sync, Reconnect, Disconnect, or reopen a pending request. Bank sign-in opens [Plaid Hosted Link](https://plaid.com/docs/link/hosted-link/) in your browser. Return to Obsidian afterward; the Controller imports the records and normal vault sync delivers the notes.
 5. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** work without Plaid.
+
+## Faster atomic-note imports — 1.4.1
+
+Bank and investment imports write up to 16 independent transaction notes concurrently. Revisions sharing a finance ID retain their original order; deletions complete before replacements start. Input validation and duplicate-identity checks finish before transaction mutations. An error stops queued work and waits for already-started writes before reporting failure, so a retry cannot race the previous batch. The bank cursor still advances only after the whole transaction batch succeeds.
+
+Content inspections use Obsidian's invalidated-on-write `cachedRead` API; property updates continue to use `processFrontMatter` against current content and preserve user tags, categories, other properties, and note bodies. Deletion and legacy-migration guards force fresh reads. Empty patches avoid indexing, dashboard reads reuse the fields gathered during their index pass, and legacy line discovery uses bounded parallel reads while preserving vault/line precedence. No persistent cache or schema migration is introduced. Fast retries at the vault root can reuse a verified ID-named transaction before metadata indexing catches up, while unrelated name collisions still fail safely. See [Obsidian's content-cache and atomic-write contract](https://docs.obsidian.md/Plugins/Vault).
+
+The existing **Data & routing → Enable logging** switch now reports phase durations for provider requests, account/transaction/investment/holding note writes, legacy migration, and dashboard refresh, plus index/write totals for atomic transactions. It records counts and timings rather than note contents or credentials. Settings, actions, routing, filenames, Controller pairing, and the minimum Obsidian version are unchanged; this is a backward-compatible patch release.
+
+Regression coverage includes a 250-note batch, bounded writes and cold index reads, same-ID ordering, failed writes/verification/reads, drained retries, cursor commit ordering, duplicate precedence, empty patches, root metadata lag, and preserved manual content. The previously separate transaction-index suite is now part of `npm test`. Synthetic test-vault benchmarking isolates note creation from Plaid and cross-device vault transport; real bank response time, device storage, and other plugins can add latency. Physical iPhone/iPad throughput remains a device-testing limitation.
+
+**Release validation (2026-09-18):** all 160 tests passed, including the mobile bundle without Node dependencies. In the reloaded desktop test vault, the released 1.4.0 importer took 157.76 seconds to create 250 synthetic transaction notes; the final 1.4.1 build took 35.90 seconds (about 4.4× faster), replayed the same batch in 1.27 seconds without duplicate notes, and read its dashboard records in 2.59 seconds. These are measured runs in a busy iCloud-backed test vault, not a throughput guarantee. A separate synthetic provider run exercised the actual sync orchestration, account creation, migration, cursor persistence, and dashboard model: 250 records in 55.05 seconds, then a correction and deletion in 11.26 seconds, leaving exactly 249 records with the corrected amount and preserved manual category, tags, custom property, and receipt body. Provider calls and device-state writes in that run were confined to in-memory fixtures; no bank connection or credential was changed. The separate final production-mode build deployed only shipped files to the test vault, followed by a plugin reload and artifact/state verification. Runtime `data.json` stayed byte-identical. QA notes were moved from `Inbox` to `_archive`. Production installation remains the user's BRAT pull; physical mobile performance and live bank latency were not tested in this release.
 
 ## Shared Controller connection — 1.4.0
 

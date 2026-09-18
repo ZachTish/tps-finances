@@ -350,6 +350,17 @@ export default class TPSFinancesPlugin extends Plugin {
     this.syncing = true;
     const started = Date.now();
     const store = this.createStore();
+    const timed = async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+      const begin = Date.now();
+      let completed = false;
+      try {
+        const value = await work();
+        completed = true;
+        return value;
+      } finally {
+        logger.flow("Sync", "phase", { phase, completed, durationMs: Date.now() - begin });
+      }
+    };
     const allAccounts: FinanceAccount[] = [];
     const allHoldings: FinanceHolding[] = [];
     const failures: Array<{ institution: string; error: unknown }> = [];
@@ -357,19 +368,19 @@ export default class TPSFinancesPlugin extends Plugin {
     let transactionChanges = 0;
     logger.flow("Sync", "start", { reason, itemCount: this.deviceState.items.length });
     try {
-      await store.ensureStructure();
-      await this.migrateLegacyTransactions(store);
+      await timed("storage-setup", () => store.ensureStructure());
+      await timed("legacy-migration", () => this.migrateLegacyTransactions(store));
       const previousSnapshot = await this.readLatestSnapshotDocument();
       const previousAccounts = this.readAccountsFromVault(previousSnapshot);
       const previousHoldings = this.parseSnapshotHoldings(previousSnapshot, previousAccounts);
       for (const item of this.deviceState.items) {
         try {
           const client = this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
-          const accounts = await client.getAccounts(item, this.deviceState);
-          const accountPaths = await store.upsertAccounts(accounts);
-          const patch = await client.syncTransactions(item, this.deviceState);
+          const accounts = await timed("accounts-fetch", () => client.getAccounts(item, this.deviceState));
+          const accountPaths = await timed("account-notes", () => store.upsertAccounts(accounts));
+          const patch = await timed("transactions-fetch", () => client.syncTransactions(item, this.deviceState));
           this.saveDeviceState();
-          const applied = await store.applyTransactions(patch.added, patch.modified, patch.removedProviderIds, this.deviceState, accountPaths);
+          const applied = await timed("transaction-notes", () => store.applyTransactions(patch.added, patch.modified, patch.removedProviderIds, this.deviceState, accountPaths));
           item.cursor = patch.nextCursor;
           item.lastSyncAt = new Date().toISOString();
           this.saveDeviceState();
@@ -377,13 +388,13 @@ export default class TPSFinancesPlugin extends Plugin {
           transactionChanges += applied.added + applied.modified + applied.removed;
 
           const range = investmentDateRange(item.lastInvestmentTransactionSyncAt, this.settings.transactionHistoryDays);
-          const investmentResult = await client.getInvestmentTransactions(item, this.deviceState, range.start, range.end);
+          const investmentResult = await timed("investment-history-fetch", () => client.getInvestmentTransactions(item, this.deviceState, range.start, range.end));
           if (investmentResult.status === "ok") this.saveDeviceState();
           const investmentApplied = await applyInvestmentTransactionResult(
             investmentResult,
             item.lastInvestmentTransactionSyncAt,
             new Date().toISOString(),
-            (transactions) => store.replaceInvestmentTransactions(transactions, accountPaths),
+            (transactions) => timed("investment-notes", () => store.replaceInvestmentTransactions(transactions, accountPaths)),
           );
           if (investmentResult.status === "ok") {
             item.lastInvestmentTransactionSyncAt = investmentApplied.watermark;
@@ -399,7 +410,7 @@ export default class TPSFinancesPlugin extends Plugin {
           }
           transactionChanges += investmentApplied.count;
 
-          const holdingsResult = await client.getHoldings(item, this.deviceState);
+          const holdingsResult = await timed("holdings-fetch", () => client.getHoldings(item, this.deviceState));
           if (holdingsResult.status === "ok") this.saveDeviceState();
           const holdings = holdingsForSnapshot(
             holdingsResult,
@@ -434,9 +445,10 @@ export default class TPSFinancesPlugin extends Plugin {
         }
       }
       if (!failures.length && (allAccounts.length || allHoldings.length)) {
-        await store.writeSnapshot(allAccounts, allHoldings, new Map(await this.accountPathEntries()), new Date());
+        const accountPaths = new Map(await this.accountPathEntries());
+        await timed("holding-notes", () => store.writeSnapshot(allAccounts, allHoldings, accountPaths, new Date()));
       }
-      await this.refreshDashboard();
+      await timed("dashboard", () => this.refreshDashboard());
       logger.flow("Sync", "done", {
         reason,
         durationMs: Date.now() - started,

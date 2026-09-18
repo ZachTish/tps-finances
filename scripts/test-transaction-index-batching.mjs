@@ -375,6 +375,35 @@ async function runPerformance(module, fileCount, transactionCount) {
   };
 }
 
+test("parallel cold index reads stay bounded and preserve vault/line order and duplicate precedence", async () => {
+  const entries = Array.from({length:80}, (_,i)=>[`Note-${i}.md`, `- Item ${i} [financeId:: id-${i}]`]);
+  entries[1][1] += '\n- Duplicate [financeId:: id-0]';
+  const vault=createVault(entries), read=vault.app.vault.cachedRead;
+  let active=0,peak=0;
+  vault.app.vault.cachedRead=async file=>{
+    active++;peak=Math.max(peak,active);
+    try{await new Promise(resolve=>setTimeout(resolve,file.path==='Note-0.md'?15:1));return await read(file);}finally{active--;}
+  };
+  const records=await createStore(subjectModule,vault).readTransactionRecords();
+  assert.equal(peak,16);assert.equal(active,0);
+  assert.deepEqual(records.map(r=>r.path),entries.map(([path])=>path));
+  assert.equal(records[0].line,'- Item 0 [financeId:: id-0]');
+});
+
+test("a failed cold index waits for started reads and publishes no partial cache", async () => {
+  const entries = Array.from({length:50}, (_,i)=>[`Note-${i}.md`, `- Item ${i} [financeId:: id-${i}]`]);
+  const vault=createVault(entries), read=vault.app.vault.cachedRead;
+  let active=0,attempts=0,fail=true;
+  vault.app.vault.cachedRead=async file=>{
+    active++;attempts++;
+    try{await new Promise(resolve=>setTimeout(resolve,file.path==='Note-0.md'?1:10));if(fail&&file.path==='Note-0.md')throw Error('cold read failed');return await read(file);}finally{active--;}
+  };
+  const store=createStore(subjectModule,vault);
+  await assert.rejects(store.readTransactionRecords(),/cold read failed/);
+  assert.equal(active,0);assert.equal(attempts,16);assert.equal(store.transactionIndex,null);
+  fail=false;assert.equal((await store.readTransactionRecords()).length,50);
+});
+
 test("transaction batches reuse one lazy content index and discard it at the public boundary", async () => {
   const fileCount = 2_000;
   const transactionCount = 80;

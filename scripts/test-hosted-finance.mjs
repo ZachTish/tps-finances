@@ -68,3 +68,27 @@ test('long-running host refreshes shared routing/settings before linking and imp
  await h.backend.createLink();assert.equal(h.calls.at(-1).body.transactions.days_requested,730);
  h.plugin.syncLocal=async()=>{assert.equal(h.plugin.settings.financeFolder,'');};await h.backend.sync();assert.equal(refreshes,2);
 });
+
+test('host commits its transaction cursor only after every started write drains, and failed imports can retry',async()=>{
+ const {boundedWork}=await compile('bounded-work',{});
+ const h=harness();h.backend.prepareHost();const session=await h.backend.createLink();
+ await h.backend.completeLink(session,{state:'complete',publicToken:'public-test'},'cursor-qa');
+ h.plugin.deviceState.items[0].cursor='before';h.plugin.saveDeviceState();
+ h.plugin.readLatestSnapshotDocument=async()=>null;h.plugin.readAccountsFromVault=()=>[];
+ h.plugin.parseSnapshotHoldings=()=>[];h.plugin.refreshDashboard=async()=>{};h.plugin.accountPathEntries=async()=>[];
+ let release,failed=false,settled=false,fail=true;
+ const gate=new Promise(resolve=>release=resolve);
+ h.plugin.createStore=()=>({
+  ensureStructure:async()=>{},migrateLegacyTransactionLedgers:async()=>({moved:0,skipped:0}),upsertAccounts:async()=>new Map(),
+  applyTransactions:async()=>{await boundedWork([0,1],async id=>{if(fail&&id===0){failed=true;throw Error('synthetic disk failure');}if(fail)await gate;});return {added:2,modified:0,removed:0};},
+  replaceInvestmentTransactions:async()=>{},writeSnapshot:async()=>{},
+ });
+ h.plugin.createPlaidClient=()=>({getAccounts:async()=>[{financeAccountId:'account-1'}],syncTransactions:async()=>({added:[],modified:[],removedProviderIds:[],nextCursor:'after'}),getInvestmentTransactions:async()=>({status:'ok',value:[]}),getHoldings:async()=>({status:'ok',value:[]})});
+ const run=h.backend.sync().then(()=>{settled=true;throw Error('expected failure');},error=>{settled=true;return error;});
+ while(!failed)await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(settled,false);assert.equal(h.plugin.deviceState.items[0].cursor,'before');
+ assert.equal(JSON.parse(h.secrets.get('tps-finances-device-state')).items[0].cursor,'before');
+ release();assert.match(String(await run),/synthetic disk failure/);assert.equal(h.plugin.syncing,false);
+ assert.equal(JSON.parse(h.secrets.get('tps-finances-device-state')).items[0].cursor,'before');
+ fail=false;await h.backend.sync();assert.equal(JSON.parse(h.secrets.get('tps-finances-device-state')).items[0].cursor,'after');
+});

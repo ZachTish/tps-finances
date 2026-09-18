@@ -4,6 +4,8 @@ import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody }
 import { normalizeTags } from "./classification";
 import { providerIdentityKey } from "./identity";
 import type { DeviceState, FinanceHolding, FinanceAccount, FinanceTransaction } from "./types";
+import { boundedWork } from "./bounded-work";
+import * as logger from "./logger";
 
 type Fields = Record<string, any>;
 
@@ -55,31 +57,54 @@ export class AtomicFinanceStore extends FinanceStore {
     return paths;
   }
 
-  private async fields(file: TFile): Promise<Fields> {
-    const content = await this.vaultApp.vault.read(file);
+  private async fields(file: TFile, fresh = false): Promise<Fields> {
+    // Obsidian invalidates its content cache on writes and filesystem changes.
+    // Inspect content through that cache; destructive guards still force a disk read.
+    // Updates use processFrontMatter's current content, never this parsed snapshot.
+    const content = await (fresh ? this.vaultApp.vault.read(file) : this.vaultApp.vault.cachedRead(file));
     const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     return match ? parseYaml(match[1]) || {} : {};
   }
 
-  private async index(): Promise<Map<string, TFile>> {
+  private async index(fieldsByFile?: Map<TFile, Fields>): Promise<Map<string, TFile>> {
     const result = new Map<string, TFile>();
-    for (const file of this.vaultApp.vault.getMarkdownFiles()) {
-      // Metadata narrows candidates; direct reads below avoid stale values after mutations.
-      if ((!this.folder || !file.path.startsWith(financePrefix(this.folder, "Transactions"))) && !this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId) continue;
+    const files = this.vaultApp.vault.getMarkdownFiles().filter(file =>
+      (this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
+      || this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId);
+    await boundedWork(files, async file => {
+      // Metadata narrows candidates; file content supplies the actual property values.
       const fm = await this.fields(file);
       const accountPath = String(fm.account || "").replace(/^\[\[|\]\]$/g, "");
-      if (!file.path.startsWith(financePrefix(this.folder, "Transactions")) && !accountPath.startsWith(financePrefix(this.folder, "Accounts"))) continue;
-      if (!fm.financeId || !["transaction", "investmentTransaction"].includes(fm.type)) continue;
+      if (!file.path.startsWith(financePrefix(this.folder, "Transactions")) && !accountPath.startsWith(financePrefix(this.folder, "Accounts"))) return;
+      if (!fm.financeId || !["transaction", "investmentTransaction"].includes(fm.type)) return;
       const id = String(fm.financeId);
       if (result.has(id)) throw new Error(`Duplicate atomic transaction identity: ${id}. Resolve the duplicate notes before syncing.`);
       result.set(id, file);
-    }
-    return result;
+      fieldsByFile?.set(file, fm);
+    });
+    // Read completion order must not change dashboard or migration ordering.
+    const order = new Map(files.map((file, index) => [file, index]));
+    return new Map([...result].sort((a, b) => order.get(a[1])! - order.get(b[1])!));
   }
 
   private async put(fm: Fields, index: Map<string, TFile>): Promise<TFile> {
     const id = String(fm.financeId);
     let file = index.get(id);
+    if (!file) {
+      const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
+      const path = financePath(this.folder, "Transactions", `${safeId}.md`);
+      const existing = this.vaultApp.vault.getAbstractFileByPath(path);
+      if (existing) {
+        // A fast retry can precede Obsidian's metadata cache update, especially at
+        // the vault root. Reuse only a directly verified transaction at its ID path.
+        const fields = existing instanceof TFile ? await this.fields(existing, true) : {};
+        if (!(existing instanceof TFile) || String(fields.financeId) !== id || fields.type !== fm.type) {
+          throw new Error(`Transaction destination is occupied: ${path}`);
+        }
+        file = existing;
+        index.set(id, file);
+      }
+    }
     if (file && this.vaultApp.vault.getAbstractFileByPath(file.path) !== file) throw new Error("Transaction moved during sync; retry.");
     if (file) {
       const before = await this.fields(file);
@@ -104,23 +129,39 @@ export class AtomicFinanceStore extends FinanceStore {
   }
 
   async applyTransactions(added: FinanceTransaction[], modified: FinanceTransaction[], removedProviderIds: string[], state: DeviceState, accountPaths: Map<string, string>): Promise<{added:number;modified:number;removed:number}> {
+    if (!added.length && !modified.length && !removedProviderIds.length) return {added:0,modified:0,removed:0};
+    const started = Date.now();
+    // Validate before mutating, and serialize revisions of the same identity. Independent
+    // notes can be written together without racing a duplicate or pending/posted revision.
+    const groups = new Map<string, Fields[]>();
+    for (const transaction of [...modified, ...added]) {
+      const path = accountPaths.get(transaction.financeAccountId);
+      if (!path) throw new Error("Transaction account note is missing.");
+      const fields = transactionFields(transaction, path);
+      const revisions = groups.get(transaction.financeId) || [];
+      revisions.push(fields);
+      groups.set(transaction.financeId, revisions);
+    }
     await this.ensureStructure();
     const index = await this.index();
+    const indexedAt = Date.now();
     let removed = 0;
     for (const providerId of removedProviderIds) {
       const id = state.providerIdentityMap[providerIdentityKey("transaction", providerId)];
       const file = index.get(id);
       if (file) {
-        if (String((await this.fields(file)).financeId) !== id) throw new Error("Transaction identity changed before deletion.");
+        if (String((await this.fields(file, true)).financeId) !== id) throw new Error("Transaction identity changed before deletion.");
         await this.vaultApp.fileManager.trashFile(file);
         index.delete(id); removed++;
       }
     }
-    for (const transaction of [...modified, ...added]) {
-      const path = accountPaths.get(transaction.financeAccountId);
-      if (!path) throw new Error("Transaction account note is missing.");
-      await this.put(transactionFields(transaction, path), index);
-    }
+    await boundedWork([...groups.values()], async revisions => {
+      for (const fields of revisions) await this.put(fields, index);
+    });
+    logger.flow("Storage", "atomic-transactions", {
+      added: added.length, modified: modified.length, removed,
+      indexMs: indexedAt - started, writeMs: Date.now() - indexedAt, durationMs: Date.now() - started,
+    });
     return {added:added.length,modified:modified.length,removed};
   }
 
@@ -130,9 +171,10 @@ export class AtomicFinanceStore extends FinanceStore {
 
   async readTransactionRecords(): Promise<{line:string;path:string;lineNumber:number}[]> {
     const records = [];
-    const index = await this.index();
+    const fieldsByFile = new Map<TFile, Fields>();
+    const index = await this.index(fieldsByFile);
     for (const file of index.values()) {
-      const fm = await this.fields(file);
+      const fm = fieldsByFile.get(file)!;
       records.push({line: fieldsLine(fm), path:file.path, lineNumber:0});
     }
     // Until explicit migration, old lines remain visible. A note always wins by stable ID.
@@ -170,12 +212,12 @@ export class AtomicFinanceStore extends FinanceStore {
       if (!(source instanceof TFile)) {skipped++;continue;}
       let target=index.get(String(fm.financeId));
       if (target) {
-        const existing=await this.fields(target);
+        const existing=await this.fields(target, true);
         // An existing different revision needs reconciliation, never silently overwrite it.
         if (existing.migrationSource !== record.line || Object.keys(fm).some(key=>JSON.stringify(existing[key])!==JSON.stringify(fm[key]))) {skipped++;continue;}
       } else target=await this.put({...fm,migrationSource:record.line},index);
-      const verified=await this.fields(target);
-      if(verified.migrationSource!==record.line)throw new Error("Migrated transaction verification failed.");
+      const verified=await this.fields(target, true);
+      if(verified.migrationSource!==record.line || Object.keys(fm).some(key=>JSON.stringify(verified[key])!==JSON.stringify(fm[key])))throw new Error("Migrated transaction verification failed.");
       const link=`- [[${target.path.replace(/\.md$/i,"")}]]`;
       let replaced=false;
       await this.vaultApp.vault.process(source, content=>content.split('\n').map(line=>{

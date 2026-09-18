@@ -782,7 +782,7 @@ test("dashboard action wrapper is limited to self-refreshing mutations", () => {
   ]);
   assert.match(main, /await this\.syncAll\("connect"\)/);
   assert.match(main, /const syncWasAlreadyRunning = this\.syncing;\s*await this\.syncAll\("connect"\);\s*if \(syncWasAlreadyRunning\) await this\.refreshDashboard\(\)/);
-  assert.match(main, /await this\.refreshDashboard\(\);\s*logger\.flow\("Sync", "done"/);
+  assert.match(main, /await timed\("dashboard", \(\) => this\.refreshDashboard\(\)\);\s*logger\.flow\("Sync", "done"/);
   assert.match(main, /await this\.rerouteFinanceTransactions\("account-changed"\)/);
   assert.match(main, /rerouteFinanceTransactions[\s\S]*?await this\.refreshDashboard\(\)/);
   assert.doesNotMatch(dashboard, /await action\(\);\s*await this\.render\(\)/);

@@ -102,3 +102,85 @@ test('root legacy snapshots preserve ordinary names and return the actual existi
  assert.equal(saved,'Finance snapshot 2026-09-16 2.md');assert.equal(h.text.get(name),'Personal note');
  assert.equal(await write.call(root,[],[],new Map(),new Date('2026-09-16T12:00:00Z')),saved);
 });
+
+test('bulk imports overlap independent writes with at most sixteen in flight and verify every note',async()=>{
+ const h=harness(),create=h.app.vault.create;let active=0,peak=0,verified=0;
+ const read=h.app.vault.cachedRead;
+ h.app.vault.cachedRead=async file=>{if(file.path.includes('/Transactions/'))verified++;return read(file);};
+ h.app.vault.create=async(p,c)=>{
+  if(!p.includes('/Transactions/'))return create(p,c);
+  active++;peak=Math.max(peak,active);
+  try{await new Promise(resolve=>setTimeout(resolve,2));return await create(p,c);}finally{active--;}
+ };
+ const transactions=Array.from({length:250},(_,i)=>({...tx,financeId:`bulk-${i}`}));
+ await h.store.applyTransactions(transactions,[],[],state,accounts);
+ assert.equal(peak,16);assert.equal(active,0);assert.equal(verified,250);
+ assert.equal((await h.store.readTransactionRecords()).length,250);
+ for(let i=0;i<250;i++)assert.equal(h.fm(`Finances/Transactions/bulk-${i}.md`).amount,tx.amount);
+});
+
+test('competing revisions of one identity keep modified then added order without overlapping writes',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ const process=h.app.fileManager.processFrontMatter;let active=0,peak=0;
+ h.app.fileManager.processFrontMatter=async(...args)=>{active++;peak=Math.max(peak,active);try{await new Promise(resolve=>setTimeout(resolve,1));return await process(...args);}finally{active--;}};
+ await h.store.applyTransactions([{...tx,amount:-40},{...tx,amount:-50}],[{...tx,amount:-30}],[],state,accounts);
+ assert.equal(peak,1);assert.equal(h.fm(path).amount,-50);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+});
+
+test('failed batch stops scheduling, drains in-flight writes, and resumes without duplicates',async()=>{
+ const h=harness(),create=h.app.vault.create;let active=0,attempts=0,fail=true;
+ h.app.vault.create=async(p,c)=>{
+  if(!p.includes('/Transactions/'))return create(p,c);
+  attempts++;active++;
+  try{await new Promise(resolve=>setTimeout(resolve,p.endsWith('batch-0.md')?1:10));if(fail&&p.endsWith('batch-0.md'))throw Error('disk full');return await create(p,c);}finally{active--;}
+ };
+ const transactions=Array.from({length:100},(_,i)=>({...tx,financeId:`batch-${i}`}));
+ await assert.rejects(h.store.applyTransactions(transactions,[],[],state,accounts),/disk full/);
+ assert.equal(active,0);assert.equal(attempts,16);assert.equal(h.app.vault.getMarkdownFiles().length,15);
+ fail=false;await h.store.applyTransactions(transactions,[],[],state,accounts);
+ assert.equal((await h.store.readTransactionRecords()).length,100);
+});
+
+test('a post-write verification failure is drained and a retry reuses the saved note',async()=>{
+ const h=harness(),read=h.app.vault.cachedRead;let fail=true;
+ h.app.vault.cachedRead=async file=>{if(fail&&file.path===path)throw Error('verification read failed');return read(file);};
+ await assert.rejects(h.store.applyTransactions([tx],[],[],state,accounts),/verification read failed/);
+ assert.ok(h.nodes.has(path));fail=false;
+ await h.store.applyTransactions([tx],[],[],state,accounts);assert.equal((await h.store.readTransactionRecords()).length,1);
+});
+
+test('empty bank and investment patches do no filesystem work',async()=>{
+ const h=harness();h.app.vault.getMarkdownFiles=()=>{throw Error('unexpected vault scan');};
+ assert.deepEqual(await h.store.applyTransactions([],[],[],state,accounts),{added:0,modified:0,removed:0});
+ await h.store.replaceInvestmentTransactions([],accounts);assert.equal(h.nodes.size,0);
+});
+
+test('root retries work before metadata arrives and never adopt an unrelated or wrong-type note',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'');h.app.metadataCache.getFileCache=()=>null;
+ await root.applyTransactions([tx],[],[],state,accounts);
+ await root.applyTransactions([{...tx,amount:-44}],[],[],state,accounts);
+ assert.equal(h.fm('local-1.md').amount,-44);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+ await h.app.fileManager.processFrontMatter(h.nodes.get('local-1.md'),fm=>fm.type='personal');
+ await assert.rejects(root.applyTransactions([tx],[],[],state,accounts),/occupied/);
+ assert.equal(h.fm('local-1.md').type,'personal');
+});
+
+test('duplicate detection completes before a batch can change any transaction',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ await h.app.vault.create('Duplicate.md',h.text.get(path));
+ const before=new Map(h.text);
+ await assert.rejects(h.store.applyTransactions([{...tx,financeId:'new'}],[{...tx,amount:-99}],[],state,accounts),/Duplicate atomic/);
+ assert.deepEqual(h.text,before);
+});
+
+test('invalid transactions are rejected before earlier rows or removals mutate the vault',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);const before=new Map(h.text);
+ await assert.rejects(h.store.applyTransactions([{...tx,financeId:'valid'},{...tx,amount:NaN}],[],['provider-1'],state,accounts),/Invalid atomic/);
+ assert.deepEqual(h.text,before);
+});
+
+test('parallel identity reads preserve the vault order of dashboard records',async()=>{
+ const h=harness();await h.store.applyTransactions([tx,{...tx,financeId:'second'}],[],[],state,accounts);
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{if(file.path===path)await new Promise(resolve=>setTimeout(resolve,5));return read(file);};
+ assert.deepEqual((await h.store.readTransactionRecords()).map(r=>r.path),[path,'Finances/Transactions/second.md']);
+});
