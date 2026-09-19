@@ -7,6 +7,7 @@ import type { DeviceState, FinanceHolding, FinanceAccount, FinanceTransaction } 
 import { boundedWork } from "./bounded-work";
 import * as logger from "./logger";
 import { providerTransactionFields, proposedTransactionTitle, titleSignature, transactionTitle, type TransactionTitleChange } from "./transaction-titles";
+import { absentProviderProperties, compactTransactionProperties, emptyTransactionProperties } from "./transaction-properties";
 
 type Fields = Record<string, any>;
 
@@ -110,10 +111,13 @@ export class AtomicFinanceStore extends FinanceStore {
     if (file) {
       const before = await this.fields(file);
       const providerFields = providerTransactionFields(fm, before);
-      if (Object.keys(providerFields).every(key => JSON.stringify(before[key]) === JSON.stringify(providerFields[key]))) return file;
+      if (!absentProviderProperties(providerFields, before).length
+        && Object.keys(providerFields).every(key => JSON.stringify(before[key]) === JSON.stringify(providerFields[key]))) return file;
       await this.vaultApp.fileManager.processFrontMatter(file, current => {
         if (String(current.financeId) !== id) throw new Error("Transaction identity changed during sync.");
-        Object.assign(current, providerTransactionFields(fm, current));
+        const providerFields = providerTransactionFields(fm, current);
+        for (const key of absentProviderProperties(providerFields, current)) delete current[key];
+        Object.assign(current, providerFields);
         // User classifications, tags, unrelated properties and body survive provider updates.
       });
     } else {
@@ -195,31 +199,40 @@ export class AtomicFinanceStore extends FinanceStore {
 
   async rerouteTransactions(): Promise<{moved:number;skipped:number}> { return {moved:0,skipped:0}; }
 
-  async reviewTransactionTitles(): Promise<TransactionTitleChange[]> {
+  async reviewTransactionTitles(includeEmptyProperties = false): Promise<TransactionTitleChange[]> {
     const fields = new Map<TFile, Fields>();
     const index = await this.index(fields);
     const changes: TransactionTitleChange[] = [];
     for (const [financeId, file] of index) {
       const fm = fields.get(file)!;
+      if (fm.financeSource === "manual") continue;
       const after = proposedTransactionTitle(fm);
-      if (after) changes.push({ path: file.path, financeId, before: String(fm.title ?? ""),
-        after, date: String(fm.date ?? ""), signature: titleSignature(fm) });
+      const removeFields = includeEmptyProperties ? emptyTransactionProperties(fm) : [];
+      if (after || removeFields.length) changes.push({ path: file.path, financeId, before: String(fm.title ?? ""),
+        after: after ?? String(fm.title ?? ""), date: String(fm.date ?? ""), signature: titleSignature(fm), removeFields });
     }
     return changes;
   }
 
   async applyTransactionTitle(change: TransactionTitleChange): Promise<void> {
     const file = this.vaultApp.vault.getAbstractFileByPath(change.path);
-    if (!(file instanceof TFile)) throw new Error("Transaction moved or disappeared. Reopen the title review.");
+    if (!(file instanceof TFile)) throw new Error("Transaction moved or disappeared. Reopen the review.");
     await this.vaultApp.fileManager.processFrontMatter(file, current => {
-      if (titleSignature(current) !== change.signature || proposedTransactionTitle(current) !== change.after) {
-        throw new Error("Transaction changed. Reopen the title review.");
+      const proposedTitle = proposedTransactionTitle(current) ?? String(current.title ?? "");
+      const removeFields = change.removeFields || [];
+      if (titleSignature(current) !== change.signature || proposedTitle !== change.after
+        || current.financeSource === "manual"
+        || removeFields.some(key => !emptyTransactionProperties(current).includes(key))) {
+        throw new Error("Transaction changed. Reopen the review.");
       }
       // Older notes only retained their title. Preserve it until a provider revision
       // supplies the actual bank description; never discard the reviewed text.
-      if (typeof current.providerName !== "string") current.providerName = String(current.title ?? "");
-      current.title = change.after;
-      current.providerTitle = change.after;
+      if (change.after !== String(current.title ?? "")) {
+        if (typeof current.providerName !== "string") current.providerName = String(current.title ?? "");
+        current.title = change.after;
+        current.providerTitle = change.after;
+      }
+      for (const key of removeFields) delete current[key];
     });
   }
 
@@ -292,7 +305,7 @@ export class AtomicFinanceStore extends FinanceStore {
 
 export function transactionFields(t:FinanceTransaction,accountPath:string):Fields {
   if(!t.financeId||!/^\d{4}-\d{2}-\d{2}$/.test(t.date)||!Number.isFinite(t.amount))throw new Error('Invalid atomic transaction');
-  return {kind:t.kind,type:t.kind,financeId:t.financeId,financeAccountId:t.financeAccountId,date:t.date,authorizedDate:t.authorizedDate,title:transactionTitle(t.name,t.merchantName,t.kind),providerName:t.name,providerTitle:transactionTitle(t.name,t.merchantName,t.kind),merchant:t.merchantName,account:`[[${accountPath.replace(/\.md$/i,'')}]]`,amount:t.amount,currency:t.currency,pending:t.pending,providerCategory:t.category,providerCategoryDetail:t.categoryDetail,subtype:t.subtype,securityId:t.securityId||'',quantity:t.quantity??null,price:t.price??null,fees:t.fees??null,investmentType:t.investmentType||''};
+  return compactTransactionProperties({kind:t.kind,type:t.kind,financeId:t.financeId,financeAccountId:t.financeAccountId,date:t.date,authorizedDate:t.authorizedDate,title:transactionTitle(t.name,t.merchantName,t.kind),providerName:t.name,providerTitle:transactionTitle(t.name,t.merchantName,t.kind),merchant:t.merchantName,account:`[[${accountPath.replace(/\.md$/i,'')}]]`,amount:t.amount,currency:t.currency,pending:t.pending,providerCategory:t.category,providerCategoryDetail:t.categoryDetail,subtype:t.subtype,securityId:t.securityId||'',quantity:t.quantity??null,price:t.price??null,fees:t.fees??null,investmentType:t.investmentType||''});
 }
 function fieldsLine(f:Fields):string {
   if(!Number.isFinite(Number(f.amount))||f.amount===null||f.amount===''||!/^\d{4}-\d{2}-\d{2}$/.test(String(f.date)))throw new Error('Invalid atomic transaction properties; repair the note before syncing.');

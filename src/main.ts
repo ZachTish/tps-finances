@@ -82,6 +82,7 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "add-resale-asset", name: "Add resale asset", callback: () => this.addManualAccount("asset") });
     this.addCommand({ id: "add-cash-transaction", name: "Log cash transaction", callback: () => void this.runUserAction("Cash", "command", () => this.addCashTransaction()) });
     this.addCommand({ id: "review-transaction-titles", name: "Review transaction titles", callback: () => void this.runUserAction("Titles", "command", () => this.reviewTransactionTitles()) });
+    this.addCommand({ id: "review-transaction-records", name: "Review transaction records", callback: () => void this.runUserAction("Titles", "records-command", () => this.reviewTransactionTitles(true)) });
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       if (this.syncing) return; // Sync owns the final dashboard refresh.
@@ -699,9 +700,9 @@ export default class TPSFinancesPlugin extends Plugin {
     );
   }
 
-  async reviewTransactionTitles(): Promise<void> {
+  async reviewTransactionTitles(includeEmptyProperties = false): Promise<void> {
     const store = new AtomicFinanceStore(this.app, this.settings.financeFolder);
-    new TransactionTitleModal(this.app, await store.reviewTransactionTitles(), store, () => this.refreshDashboard()).open();
+    new TransactionTitleModal(this.app, await store.reviewTransactionTitles(includeEmptyProperties), store, () => this.refreshDashboard(), includeEmptyProperties).open();
   }
 
   private async rerouteFinanceTransactions(reason: string): Promise<void> {

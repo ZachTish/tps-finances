@@ -1,3 +1,5 @@
+import { OPTIONAL_TRANSACTION_PROPERTIES } from "./transaction-properties";
+
 type Fields = Record<string, any>;
 
 /** Use provider-enriched names, without guessing brands or stripping bank details. */
@@ -27,18 +29,23 @@ export interface TransactionTitleChange {
   after: string;
   date: string;
   signature: string;
+  removeFields?: string[];
 }
 
 export function titleSignature(fields: Fields): string {
   return JSON.stringify(["financeId", "type", "title", "merchant", "providerName", "providerTitle",
-    "financeSource", "account"].map(key => fields[key] ?? null));
+    "financeSource", "account", ...OPTIONAL_TRANSACTION_PROPERTIES].map(key => fields[key] ?? null));
 }
 
 export function proposedTransactionTitle(fields: Fields): string | null {
-  if (fields.financeSource === "manual" || fields.type !== "transaction") return null;
+  if (fields.financeSource === "manual" || !["transaction", "investmentTransaction"].includes(fields.type)) return null;
   if (typeof fields.providerTitle === "string" && fields.title !== fields.providerTitle) return null;
   const merchant = typeof fields.merchant === "string" ? fields.merchant.trim() : "";
-  if (!merchant) return null;
-  const title = transactionTitle("", merchant, fields.type);
+  const name = typeof fields.title === "string" ? fields.title : "";
+  // A missing title can be explicitly recovered from retained provider data.
+  // Do not manufacture a generic title when no useful description is available.
+  const fallback = name.trim() ? name : typeof fields.providerName === "string" ? fields.providerName : "";
+  if (!fallback.trim() && !(fields.type === "transaction" && merchant)) return null;
+  const title = transactionTitle(fallback, merchant, fields.type);
   return title !== fields.title ? title : null;
 }

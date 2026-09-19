@@ -2,7 +2,7 @@
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.5.1](https://github.com/ZachTish/tps-finances/releases/tag/1.5.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.6.0](https://github.com/ZachTish/tps-finances/releases/tag/1.6.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -10,11 +10,25 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 
 ## Connect and use
 
-1. Install/update **TPS Controller 1.4.0+ and Finances 1.5.1** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
+1. Install/update **TPS Controller 1.4.0+ and Finances 1.6.0** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
 2. On your always-running Controller desktop, open **Plaid setup → Open Controller settings**. Configure the environment and separate client-ID/secret references under **Advanced → Plaid**, then choose **Finance server → Use this Controller**. Use the desktop that already owns your bank connections.
 3. Export its pairing code and enter it in Controller's Finance server settings on the phone/iPad. Pairing, credentials, connection tokens, and request journals are device-local. Do not connect the same banks independently on each device.
 4. Return to **Connections** to Connect, Sync, Reconnect, Disconnect, or reopen a pending request. Bank sign-in opens [Plaid Hosted Link](https://plaid.com/docs/link/hosted-link/) in your browser. Return to Obsidian afterward; the Controller imports the records and normal vault sync delivers the notes.
 5. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** work without Plaid.
+
+## Transaction record cleanup — 1.6.0
+
+New atomic-note imports omit empty optional provider fields. Ordinary purchases no longer accumulate blank investment properties. The optional fields are `authorizedDate`, `merchant`, `providerCategoryDetail`, `subtype`, `securityId`, `quantity`, `price`, `fees`, and `investmentType`. Nonempty values and real zeros remain; absent optional fields are cleared when the provider supplies a revised transaction. Identical retries do not rewrite the note.
+
+For older notes, run **TPS Finances: Review transaction records**. The preview shows proposed title changes and the exact empty properties to remove. Nothing is selected initially; apply selected entries only. Manual cash records are excluded. Tracked custom titles stay unchanged even when their empty provider properties are cleaned. Amounts, dates, currencies, identities, tags, category overrides, arbitrary user properties (including blank ones), filenames, links and bodies are preserved. A changed identity, title, ownership or reviewed optional field invalidates the preview, including a previously empty field that now contains zero. Failed writes keep remaining selections available for retry.
+
+The existing **Review transaction titles** command remains available and never removes properties. Both reviews now also normalize spacing in transfer and investment descriptions without guessing merchants or dropping trade details, and can recover an untracked missing title from retained provider text. Spacing-only changes are labelled **Normalize spacing** instead of displaying two apparently identical titles. Historical title ownership remains unknown until explicit review; existing tracked manual titles are protected.
+
+**Interface/state contract:** one additive maintenance command, no new settings, no background cleanup, no bank calls or forced resync. The existing settings destinations and commands remain intact. Both previews reuse one flat, paginated review with 40 entries, native labelled checkboxes, keyboard activation and wrapping controls. Selection, page and busy state stay in memory only. Atomic-line records and manual finance workflows retain their existing format.
+
+**Validation (2026-09-19):** 209 tests cover imports, corrections, no-op retries, optional field removal, zero preservation, manual titles/records, custom fields and bodies, stale/altered previews, transfer/investment titles, failed writes and existing provider/mobile loading behavior. Synthetic test-vault UI QA verified a new compact import and three selected cleanups: a legacy merchant title plus empty fields, empty fields beneath a custom title, and a transfer's spacing. Native Space selected a row, and Enter activated Select shown and Apply; rereading all notes confirmed their preserved values and the manual-record exclusion. Desktop and 390-pixel layouts were inspected without horizontal overflow. The release validation also requires the final versioned full suite, separate production build, test-only artifact deployment, plugin reload and runtime-settings checksum comparison. Fixtures are archived after QA. Physical iPhone/iPad testing and production installation remain the user's BRAT handoff.
+
+This is a minor release for the added record-review workflow. Minimum Obsidian compatibility stays 1.12.0; Controller banking still requires 1.12.3+. Personal vault records are not migrated automatically.
 
 ## Readable transaction titles — 1.5.1
 

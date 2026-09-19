@@ -8,7 +8,7 @@ export class TransactionTitleModal extends Modal {
   private page = 0;
   private busy = false;
   constructor(app: App, private changes: TransactionTitleChange[], private store: AtomicFinanceStore,
-    private refreshed: () => Promise<void>) {
+    private refreshed: () => Promise<void>, private includeEmptyProperties = false) {
     super(app);
     // Obsidian's modal scope consumes Enter before the browser activates a button.
     this.scope.register([], "Enter", () => {
@@ -21,7 +21,7 @@ export class TransactionTitleModal extends Modal {
   }
 
   onOpen(): void {
-    this.titleEl.setText("Review transaction titles");
+    this.titleEl.setText(this.includeEmptyProperties ? "Review transaction records" : "Review transaction titles");
     this.contentEl.addClass("tps-finances-title-review");
     this.render();
   }
@@ -36,10 +36,9 @@ export class TransactionTitleModal extends Modal {
     close.disabled = this.busy;
     close.onclick = () => this.close();
     if (!this.changes.length) {
-      this.contentEl.createEl("p", { text: "No transaction titles need updating.", attr: { role: "status" } });
+      this.contentEl.createEl("p", { text: this.includeEmptyProperties ? "No transaction records need cleanup." : "No transaction titles need updating.", attr: { role: "status" } });
       return;
     }
-    this.contentEl.createEl("p", { text: "Select the titles to replace with merchant names. Files and links stay in place." });
     const pageSize = 40;
     this.page = Math.min(this.page, Math.floor((this.changes.length - 1) / pageSize));
     const visible = this.changes.slice(this.page * pageSize, (this.page + 1) * pageSize);
@@ -53,7 +52,10 @@ export class TransactionTitleModal extends Modal {
       input.disabled = this.busy;
       const text = row.createDiv();
       text.createEl("span", { text: change.before || "(No title)" });
-      text.createEl("strong", { text: `→ ${change.after}` });
+      if (change.before !== change.after) text.createEl("strong", {
+        text: change.before.replace(/\s+/g, " ").trim() === change.after ? "Normalize spacing" : `→ ${change.after}`,
+      });
+      if (change.removeFields?.length) text.createEl("span", { text: `Remove empty: ${change.removeFields.join(", ")}` });
       text.createEl("small", { text: [change.date, change.path].filter(Boolean).join(" · ") });
       input.onchange = () => {
         if (input.checked) this.selected.add(change); else this.selected.delete(change);
@@ -82,8 +84,8 @@ export class TransactionTitleModal extends Modal {
         this.changes = this.changes.filter(candidate => candidate !== change);
         saved++;
       }
-      new Notice(`Updated ${saved} transaction title${saved === 1 ? "" : "s"}.`);
-      logger.flow("Titles", "review-applied", { saved });
+      new Notice(`Updated ${saved} transaction ${this.includeEmptyProperties ? "record" : "title"}${saved === 1 ? "" : "s"}.`);
+      logger.flow("Titles", "review-applied", { saved, includeEmptyProperties: this.includeEmptyProperties });
     } catch (error) {
       logger.flow("Titles", "review-failed", { saved, remaining: this.selected.size });
       new Notice(`Saved ${saved}. ${error instanceof Error ? error.message : String(error)}`);
@@ -91,7 +93,7 @@ export class TransactionTitleModal extends Modal {
       this.busy = false;
       this.render();
       this.contentEl.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-      if (saved) await this.refreshed().catch(() => new Notice("Titles saved. Reopen Finances to refresh."));
+      if (saved) await this.refreshed().catch(() => new Notice(`${this.includeEmptyProperties ? "Records" : "Titles"} saved. Reopen Finances to refresh.`));
     }
   }
 }

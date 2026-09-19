@@ -255,3 +255,79 @@ test('failed review writes leave the proposal reusable',async()=>{
  h.app.fileManager.processFrontMatter=async()=>{throw Error('disk failed')};await assert.rejects(h.store.applyTransactionTitle(change),/disk failed/);
  h.app.fileManager.processFrontMatter=process;await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).title,'Market');
 });
+
+test('new imports omit only empty provider properties and preserve zero investment values',()=>{
+ const f=transactionFields({...tx,authorizedDate:'',merchantName:' ',categoryDetail:'',fees:0,quantity:0,price:0},'A');
+ for(const key of ['authorizedDate','merchant','providerCategoryDetail','subtype','securityId','investmentType'])assert.ok(!(key in f),key);
+ for(const key of ['fees','quantity','price'])assert.equal(f[key],0);
+ assert.equal(f.amount,tx.amount);assert.equal(f.pending,true);assert.equal(f.title,'Groceries');
+});
+
+test('provider revisions clear obsolete optional data and do not rewrite it on retry',async()=>{
+ const h=harness();await h.store.applyTransactions([{...tx,securityId:'ABC',quantity:3,price:7,fees:0}],[],[],state,accounts);
+ await h.store.applyTransactions([],[{...tx,authorizedDate:'',merchantName:'',categoryDetail:''}],[],state,accounts);
+ for(const key of ['securityId','quantity','price','fees','authorizedDate','merchant','providerCategoryDetail'])assert.ok(!(key in h.fm(path)),key);
+ h.app.fileManager.processFrontMatter=async()=>{throw Error('unexpected rewrite');};
+ await h.store.applyTransactions([],[{...tx,authorizedDate:'',merchantName:'',categoryDetail:''}],[],state,accounts);
+});
+
+test('record review removes empty placeholders without changing custom titles, user fields, body or financial values',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>Object.assign(f,{
+  title:'Weekly groceries',securityId:'',quantity:null,price:null,fees:0,investmentType:'  ',customEmpty:'',
+  tags:['food'],categoryOverride:'Groceries',pending:false
+ }));
+ h.text.set(path,h.text.get(path)+'Keep [[Receipt]] and this body.\n');
+ const before=h.fm(path),content=new Map(h.text);
+ assert.deepEqual(await h.store.reviewTransactionTitles(),[]);
+ const [change]=await h.store.reviewTransactionTitles(true);
+ assert.deepEqual(h.text,content);assert.equal(change.before,change.after);
+ assert.deepEqual(change.removeFields,['securityId','quantity','price','investmentType']);
+ await h.store.applyTransactionTitle(change);
+ const expected={...before};for(const key of change.removeFields)delete expected[key];
+ assert.deepEqual(h.fm(path),expected);assert.match(h.text.get(path),/Keep \[\[Receipt\]\] and this body/);
+ assert.deepEqual(await h.store.reviewTransactionTitles(true),[]);
+});
+
+test('record cleanup refuses newly populated fields including zero and changes during the atomic callback',async()=>{
+ for(const value of [0,2,'ABC']) {
+  const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+  await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>f.quantity=null);
+  const [change]=await h.store.reviewTransactionTitles(true);
+  const process=h.app.fileManager.processFrontMatter;
+  h.app.fileManager.processFrontMatter=async(file,update)=>{await process(file,f=>f.quantity=value);return process(file,update);};
+  await assert.rejects(h.store.applyTransactionTitle(change),/Transaction changed/);assert.equal(h.fm(path).quantity,value);
+ }
+});
+
+test('record cleanup refuses fields outside its allowlist even if a proposal is altered',async()=>{
+ const h=harness();await oldTitle(h);await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>f.customEmpty='');
+ const [change]=await h.store.reviewTransactionTitles(true);const before=new Map(h.text);
+ await assert.rejects(h.store.applyTransactionTitle({...change,removeFields:['customEmpty']}),/Transaction changed/);
+ assert.deepEqual(h.text,before);
+});
+
+test('manual notes remain outside record cleanup even with empty provider-like properties',async()=>{
+ const h=harness();await oldTitle(h);
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{f.financeSource='manual';f.quantity=null;});
+ const before=new Map(h.text);assert.deepEqual(await h.store.reviewTransactionTitles(true),[]);assert.deepEqual(h.text,before);
+});
+
+test('title review also normalizes untracked transfer and investment descriptions without discarding trade details',async()=>{
+ for(const kind of ['transaction','investmentTransaction']) {
+  const h=harness();await h.store.applyTransactions([{...tx,kind,merchantName:''}],[],[],state,accounts);
+  await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{f.title='  BUY   2 ABC / TRANSFER  ';delete f.providerTitle;delete f.providerName;});
+  const [change]=await h.store.reviewTransactionTitles();assert.equal(change.after,'BUY 2 ABC / TRANSFER');
+  await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).providerName,'  BUY   2 ABC / TRANSFER  ');
+  assert.equal(h.fm(path).title,'BUY 2 ABC / TRANSFER');
+ }
+});
+
+test('missing untracked titles can be restored only when a provider description exists',async()=>{
+ const h=harness();await h.store.applyTransactions([{...tx,merchantName:'',name:'ATM withdrawal'}],[],[],state,accounts);
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{delete f.title;delete f.providerTitle;});
+ const [change]=await h.store.reviewTransactionTitles();assert.equal(change.after,'ATM withdrawal');
+ await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).title,'ATM withdrawal');
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{delete f.title;delete f.providerTitle;delete f.providerName;});
+ assert.deepEqual(await h.store.reviewTransactionTitles(),[]);
+});
