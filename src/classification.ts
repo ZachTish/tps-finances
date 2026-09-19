@@ -4,6 +4,7 @@ export interface ClassifiableTransaction {
   account: string;
   accountSearchText?: string;
   name: string;
+  providerName?: string;
   merchant: string;
   amount: number;
   providerCategory: string;
@@ -85,7 +86,7 @@ export function ruleMatches(rule: FinanceRule, transaction: ClassifiableTransact
   const matchesText = (needle: string, haystack: string) => !needle || haystack.toLocaleLowerCase().includes(needle.toLocaleLowerCase());
   const absoluteAmount = Math.abs(transaction.amount);
   return matchesText(rule.accountContains, transaction.accountSearchText || transaction.account)
-    && matchesText(rule.nameContains, transaction.name)
+    && (matchesText(rule.nameContains, transaction.name) || Boolean(transaction.providerName && matchesText(rule.nameContains, transaction.providerName)))
     && matchesText(rule.merchantContains, transaction.merchant)
     && (rule.minAmount == null || absoluteAmount >= rule.minAmount)
     && (rule.maxAmount == null || absoluteAmount <= rule.maxAmount);

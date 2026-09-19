@@ -598,6 +598,7 @@ export function transactionLine(transaction: FinanceTransaction, accountPath: st
   const tags = normalizeTags(localMetadata.tags || []);
   if (tags.length) fields.push(`[tags:: ${tags.join(", ")}]`);
   if (transaction.merchantName) fields.push(`[merchant:: ${inlineValue(transaction.merchantName)}]`);
+  if (transaction.providerName) fields.push(`[providerName:: ${inlineValue(transaction.providerName)}]`);
   if (transaction.securityId) fields.push(`[securityId:: ${inlineValue(transaction.securityId)}]`);
   if (transaction.quantity != null) fields.push(`[quantity:: ${decimal(transaction.quantity)}]`);
   if (transaction.price != null) fields.push(`[price:: ${decimal(transaction.price)}]`);

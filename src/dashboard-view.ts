@@ -12,6 +12,7 @@ export interface DashboardTransaction {
   transferAccount?: string;
   date: string;
   name: string;
+  providerName?: string;
   account: string;
   accountPath: string;
   accountSearchText: string;
@@ -311,6 +312,9 @@ export class TPSFinancesView extends ItemView {
       const main = row.createDiv({ cls: "tps-finances-row-main" });
       const name = main.createDiv({ cls: "tps-finances-transaction-name" });
       name.createEl("strong", { text: transaction.name });
+      if (transaction.providerName && transaction.providerName !== transaction.name) {
+        name.setAttr("title", transaction.providerName);
+      }
       if (transaction.pending) name.createEl("span", { cls: "tps-finances-pending", text: "Pending" });
       main.createEl("small", { text: [transaction.date, transaction.account, humanCategory(transaction.subtype), humanCategory(transaction.category), ...transaction.tags].filter(Boolean).join(" · ") });
       const amount = row.createDiv({ cls: `tps-finances-row-amount ${transaction.amount >= 0 ? "is-positive" : "is-negative"}` });

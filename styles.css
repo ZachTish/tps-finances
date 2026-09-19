@@ -210,3 +210,11 @@
 }
 
 .tps-finances-root--budget .tps-finances-header { position:static; backdrop-filter:none; }
+.tps-finances-title-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; }
+.tps-finances-title-review button { height:auto; min-height:40px; white-space:normal; }
+.tps-finances-title-choice { display:flex; align-items:flex-start; gap:12px; padding:12px 0; border-bottom:1px solid var(--background-modifier-border); cursor:pointer; }
+.tps-finances-title-choice input { flex-shrink:0; margin-top:5px; }
+.tps-finances-title-choice div { min-width:0; overflow-wrap:anywhere; }
+.tps-finances-title-choice span, .tps-finances-title-choice strong, .tps-finances-title-choice small { display:block; }
+.tps-finances-title-choice small { color:var(--text-muted); margin-top:4px; }
+.tps-finances-title-review :focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; }

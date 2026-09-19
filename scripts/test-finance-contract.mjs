@@ -2460,3 +2460,12 @@ test('root dashboard identifies accounts and snapshots without mistaking holding
  plugin.settings={financeFolder:'',recordMode:'atomic-note'};
  assert.equal(plugin.readAccountsFromVault(null).length,1);assert.deepEqual(plugin.accountFiles().map(f=>f.path),['Wallet.md']);assert.equal(plugin.latestSnapshotFile().path,'Old/Snapshot.md');
 });
+
+test('readable merchant titles keep existing bank-description classification rules working', () => {
+ const rule={id:'r',name:'Bank descriptor',enabled:true,priority:0,accountContains:'',nameContains:'POS MARKET #1234',merchantContains:'',minAmount:null,maxAmount:null,category:'Groceries',tags:[]};
+ const transaction={account:'Checking',name:'Market',providerName:'POS MARKET #1234',merchant:'Market',amount:-20,providerCategory:'food',categoryOverride:'',tags:[]};
+ assert.equal(classification.ruleMatches(rule,transaction),true);
+ assert.equal(classification.ruleMatches({...rule,nameContains:'Market'},transaction),true);
+ assert.equal(classification.ruleMatches({...rule,nameContains:'Gas'},transaction),false);
+ assert.equal(classification.classifyTransaction(transaction,[rule]).category,'Groceries');
+});

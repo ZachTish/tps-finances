@@ -7,6 +7,7 @@ import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIE
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
 import { AtomicFinanceStore } from "./atomic-finance-store";
+import { TransactionTitleModal } from "./transaction-title-modal";
 import { FinanceStore } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
 import { ManualFinanceStore, applyManualCashBalances } from "./manual-finance";
@@ -80,6 +81,7 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "add-cash-account", name: "Add cash account", callback: () => this.addManualAccount("cash") });
     this.addCommand({ id: "add-resale-asset", name: "Add resale asset", callback: () => this.addManualAccount("asset") });
     this.addCommand({ id: "add-cash-transaction", name: "Log cash transaction", callback: () => void this.runUserAction("Cash", "command", () => this.addCashTransaction()) });
+    this.addCommand({ id: "review-transaction-titles", name: "Review transaction titles", callback: () => void this.runUserAction("Titles", "command", () => this.reviewTransactionTitles()) });
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       if (this.syncing) return; // Sync owns the final dashboard refresh.
@@ -697,6 +699,11 @@ export default class TPSFinancesPlugin extends Plugin {
     );
   }
 
+  async reviewTransactionTitles(): Promise<void> {
+    const store = new AtomicFinanceStore(this.app, this.settings.financeFolder);
+    new TransactionTitleModal(this.app, await store.reviewTransactionTitles(), store, () => this.refreshDashboard()).open();
+  }
+
   private async rerouteFinanceTransactions(reason: string): Promise<void> {
     const result = await this.createStore().rerouteTransactions();
     logger.flow("Storage", "transactions-rerouted", { reason, ...result });
@@ -1062,6 +1069,7 @@ function parseDashboardTransaction(line: string, sourcePath: string, sourceLine:
     financeId,
     manual: field(line, "financeSource") === "manual",
     transferAccount: field(line, "transferAccount"),
+    ...(field(line, "providerName") ? { providerName: field(line, "providerName") } : {}),
     date,
     name: line.replace(/^-\s*/, "").split(" [type::")[0].trim(),
     account: accountPath.split("/").at(-1) || "",

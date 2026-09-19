@@ -6,6 +6,7 @@ import { providerIdentityKey } from "./identity";
 import type { DeviceState, FinanceHolding, FinanceAccount, FinanceTransaction } from "./types";
 import { boundedWork } from "./bounded-work";
 import * as logger from "./logger";
+import { providerTransactionFields, proposedTransactionTitle, titleSignature, transactionTitle, type TransactionTitleChange } from "./transaction-titles";
 
 type Fields = Record<string, any>;
 
@@ -108,12 +109,11 @@ export class AtomicFinanceStore extends FinanceStore {
     if (file && this.vaultApp.vault.getAbstractFileByPath(file.path) !== file) throw new Error("Transaction moved during sync; retry.");
     if (file) {
       const before = await this.fields(file);
-      const {categoryOverride: ignoredCategory, tags: ignoredTags, ...providerFields} = fm;
+      const providerFields = providerTransactionFields(fm, before);
       if (Object.keys(providerFields).every(key => JSON.stringify(before[key]) === JSON.stringify(providerFields[key]))) return file;
       await this.vaultApp.fileManager.processFrontMatter(file, current => {
         if (String(current.financeId) !== id) throw new Error("Transaction identity changed during sync.");
-        const { categoryOverride, tags, ...providerFields } = fm;
-        Object.assign(current, providerFields);
+        Object.assign(current, providerTransactionFields(fm, current));
         // User classifications, tags, unrelated properties and body survive provider updates.
       });
     } else {
@@ -195,6 +195,34 @@ export class AtomicFinanceStore extends FinanceStore {
 
   async rerouteTransactions(): Promise<{moved:number;skipped:number}> { return {moved:0,skipped:0}; }
 
+  async reviewTransactionTitles(): Promise<TransactionTitleChange[]> {
+    const fields = new Map<TFile, Fields>();
+    const index = await this.index(fields);
+    const changes: TransactionTitleChange[] = [];
+    for (const [financeId, file] of index) {
+      const fm = fields.get(file)!;
+      const after = proposedTransactionTitle(fm);
+      if (after) changes.push({ path: file.path, financeId, before: String(fm.title ?? ""),
+        after, date: String(fm.date ?? ""), signature: titleSignature(fm) });
+    }
+    return changes;
+  }
+
+  async applyTransactionTitle(change: TransactionTitleChange): Promise<void> {
+    const file = this.vaultApp.vault.getAbstractFileByPath(change.path);
+    if (!(file instanceof TFile)) throw new Error("Transaction moved or disappeared. Reopen the title review.");
+    await this.vaultApp.fileManager.processFrontMatter(file, current => {
+      if (titleSignature(current) !== change.signature || proposedTransactionTitle(current) !== change.after) {
+        throw new Error("Transaction changed. Reopen the title review.");
+      }
+      // Older notes only retained their title. Preserve it until a provider revision
+      // supplies the actual bank description; never discard the reviewed text.
+      if (typeof current.providerName !== "string") current.providerName = String(current.title ?? "");
+      current.title = change.after;
+      current.providerTitle = change.after;
+    });
+  }
+
   /** Explicit, resumable migration. Write/verify the note before replacing the exact source line. */
   async migrateLegacyTransactionLedgers(): Promise<{moved:number;skipped:number}> {
     await this.ensureStructure();
@@ -264,11 +292,11 @@ export class AtomicFinanceStore extends FinanceStore {
 
 export function transactionFields(t:FinanceTransaction,accountPath:string):Fields {
   if(!t.financeId||!/^\d{4}-\d{2}-\d{2}$/.test(t.date)||!Number.isFinite(t.amount))throw new Error('Invalid atomic transaction');
-  return {kind:t.kind,type:t.kind,financeId:t.financeId,financeAccountId:t.financeAccountId,date:t.date,authorizedDate:t.authorizedDate,title:t.name,merchant:t.merchantName,account:`[[${accountPath.replace(/\.md$/i,'')}]]`,amount:t.amount,currency:t.currency,pending:t.pending,providerCategory:t.category,providerCategoryDetail:t.categoryDetail,subtype:t.subtype,securityId:t.securityId||'',quantity:t.quantity??null,price:t.price??null,fees:t.fees??null,investmentType:t.investmentType||''};
+  return {kind:t.kind,type:t.kind,financeId:t.financeId,financeAccountId:t.financeAccountId,date:t.date,authorizedDate:t.authorizedDate,title:transactionTitle(t.name,t.merchantName,t.kind),providerName:t.name,providerTitle:transactionTitle(t.name,t.merchantName,t.kind),merchant:t.merchantName,account:`[[${accountPath.replace(/\.md$/i,'')}]]`,amount:t.amount,currency:t.currency,pending:t.pending,providerCategory:t.category,providerCategoryDetail:t.categoryDetail,subtype:t.subtype,securityId:t.securityId||'',quantity:t.quantity??null,price:t.price??null,fees:t.fees??null,investmentType:t.investmentType||''};
 }
 function fieldsLine(f:Fields):string {
   if(!Number.isFinite(Number(f.amount))||f.amount===null||f.amount===''||!/^\d{4}-\d{2}-\d{2}$/.test(String(f.date)))throw new Error('Invalid atomic transaction properties; repair the note before syncing.');
-  const t:FinanceTransaction={financeId:String(f.financeId),providerTransactionId:'',financeAccountId:String(f.financeAccountId||''),date:String(f.date),authorizedDate:String(f.authorizedDate||''),name:String(f.title||''),merchantName:String(f.merchant||''),amount:Number(f.amount),currency:String(f.currency||'USD'),pending:f.pending===true,category:String(f.providerCategory||''),categoryDetail:String(f.providerCategoryDetail||''),subtype:String(f.subtype||''),kind:f.type==='investmentTransaction'?'investmentTransaction':'transaction',investmentType:String(f.investmentType||'')};
+  const t:FinanceTransaction={financeId:String(f.financeId),providerTransactionId:'',financeAccountId:String(f.financeAccountId||''),date:String(f.date),authorizedDate:String(f.authorizedDate||''),name:String(f.title||''),providerName:typeof f.providerName==='string'?f.providerName:undefined,merchantName:String(f.merchant||''),amount:Number(f.amount),currency:String(f.currency||'USD'),pending:f.pending===true,category:String(f.providerCategory||''),categoryDetail:String(f.providerCategoryDetail||''),subtype:String(f.subtype||''),kind:f.type==='investmentTransaction'?'investmentTransaction':'transaction',investmentType:String(f.investmentType||'')};
   return transactionLine(t,String(f.account||'').replace(/^\[\[|\]\]$/g,''),{categoryOverride:String(f.categoryOverride||''),tags:normalizeTags(Array.isArray(f.tags)?f.tags:[])}) + (f.financeSource === 'manual' ? ` [financeSource:: manual] [transferAccount:: ${String(f.transferAccount || '')}]` : '');
 }
 function field(line:string,key:string):string {return line.match(new RegExp(`\\[${key}::\\s*(\\[\\[[^\\]]+\\]\\]|[^\\]]*)\\]`))?.[1]?.trim()||'';}

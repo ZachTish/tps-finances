@@ -74,6 +74,7 @@ export interface FinanceTransaction {
   date: string;
   authorizedDate: string;
   name: string;
+  providerName?: string;
   merchantName: string;
   amount: number;
   currency: string;

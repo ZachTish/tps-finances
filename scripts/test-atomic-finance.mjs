@@ -184,3 +184,74 @@ test('parallel identity reads preserve the vault order of dashboard records',asy
  const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{if(file.path===path)await new Promise(resolve=>setTimeout(resolve,5));return read(file);};
  assert.deepEqual((await h.store.readTransactionRecords()).map(r=>r.path),[path,'Finances/Transactions/second.md']);
 });
+
+test('imported titles prefer merchant names while preserving exact provider text',async()=>{
+ const h=harness();await h.store.applyTransactions([{...tx,name:'  POS MARKET #1234\nDEBIT  ',merchantName:'  My   Market  '}],[],[],state,accounts);
+ assert.equal(h.fm(path).title,'My Market');assert.equal(h.fm(path).providerTitle,'My Market');
+ assert.equal(h.fm(path).providerName,'  POS MARKET #1234\nDEBIT  ');
+ const [record]=await h.store.readTransactionRecords();assert.match(record.line,/^- My Market \[type/);assert.match(record.line,/\[providerName::/);
+ assert.equal(record.path,path);
+});
+
+test('titles fall back conservatively and investment descriptions retain the trade',()=>{
+ assert.equal(transactionFields({...tx,merchantName:' ',name:' ATM   WITHDRAWAL '},'A').title,'ATM WITHDRAWAL');
+ assert.equal(transactionFields({...tx,kind:'investmentTransaction',merchantName:'Broker',name:'Buy 2 ABC'},'A').title,'Buy 2 ABC');
+ assert.equal(transactionFields({...tx,merchantName:'',name:''},'A').title,'Transaction');
+});
+
+test('provider corrections update managed titles and preserve manually edited titles',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ await h.store.applyTransactions([],[{...tx,merchantName:'Market Place',name:'BANK NEW',pending:false}],[],state,accounts);
+ assert.equal(h.fm(path).title,'Market Place');assert.equal(h.fm(path).providerName,'BANK NEW');
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>f.title='Weekly groceries');
+ await h.store.applyTransactions([],[{...tx,merchantName:'Market Final',amount:-30}],[],state,accounts);
+ assert.equal(h.fm(path).title,'Weekly groceries');assert.equal(h.fm(path).amount,-30);assert.equal(h.fm(path).providerTitle,'Market Final');
+ assert.deepEqual(await h.store.reviewTransactionTitles(),[]);
+ let writes=0;const process=h.app.fileManager.processFrontMatter;h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args)};
+ await h.store.applyTransactions([],[{...tx,merchantName:'Market Final',amount:-30}],[],state,accounts);assert.equal(writes,0);
+});
+
+test('an edit made after the pre-read survives the atomic provider update',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ const process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async(file,update)=>process(file,current=>{current.title='Concurrent title';current.tags=['keep'];update(current)});
+ await h.store.applyTransactions([],[{...tx,amount:-40,merchantName:'Corrected'}],[],state,accounts);
+ assert.equal(h.fm(path).title,'Concurrent title');assert.deepEqual(h.fm(path).tags,['keep']);assert.equal(h.fm(path).amount,-40);
+});
+
+async function oldTitle(h,title='BANK MARKET 1234') {
+ await h.store.applyTransactions([tx],[],[],state,accounts);
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{f.title=title;delete f.providerName;delete f.providerTitle;});
+}
+test('unknown legacy titles need explicit review and preview performs no writes',async()=>{
+ const h=harness();await oldTitle(h);const before=new Map(h.text);
+ const [change]=await h.store.reviewTransactionTitles();assert.equal(change.before,'BANK MARKET 1234');assert.equal(change.after,'Market');assert.deepEqual(h.text,before);
+ h.text.set(path,h.text.get(path)+'Receipt details');
+ await h.store.applyTransactionTitle(change);
+ assert.equal(h.fm(path).title,'Market');assert.equal(h.fm(path).providerName,'BANK MARKET 1234');assert.equal(h.fm(path).providerTitle,'Market');assert.match(h.text.get(path),/Receipt details/);
+ assert.deepEqual(await h.store.reviewTransactionTitles(),[]);
+ await h.store.applyTransactions([],[{...tx,merchantName:'Market Updated',name:'REAL BANK TEXT'}],[],state,accounts);
+ assert.equal(h.fm(path).title,'Market Updated');assert.equal(h.fm(path).providerName,'REAL BANK TEXT');
+});
+test('sync adopts verifiable old descriptions but keeps ambiguous legacy titles',async()=>{
+ const h=harness();await oldTitle(h,'Groceries');await h.store.applyTransactions([tx],[],[],state,accounts);assert.equal(h.fm(path).title,'Market');
+ await oldTitle(h,'Custom old title');await h.store.applyTransactions([tx],[],[],state,accounts);assert.equal(h.fm(path).title,'Custom old title');
+});
+test('review detects changed titles, merchants, identities, and paths without overwriting them',async()=>{
+ for(const [key,value] of [['title','Changed'],['merchant','Another'],['financeId','other'],['financeSource','manual'],['account','[[Elsewhere]]']]) {
+  const h=harness();await oldTitle(h);const [change]=await h.store.reviewTransactionTitles();
+  await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>f[key]=value);const before=new Map(h.text);
+  await assert.rejects(h.store.applyTransactionTitle(change),/Transaction changed/);assert.deepEqual(h.text,before);
+ }
+ const h=harness();await oldTitle(h);const [change]=await h.store.reviewTransactionTitles();h.nodes.delete(path);await assert.rejects(h.store.applyTransactionTitle(change),/moved or disappeared/);
+});
+test('manual records are excluded and import identity collisions never overwrite them',async()=>{
+ const h=harness();await oldTitle(h);await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>f.financeSource='manual');
+ assert.deepEqual(await h.store.reviewTransactionTitles(),[]);const before=new Map(h.text);
+ await assert.rejects(h.store.applyTransactions([tx],[],[],state,accounts),/conflicts with a manual/);assert.deepEqual(h.text,before);
+});
+test('failed review writes leave the proposal reusable',async()=>{
+ const h=harness();await oldTitle(h);const [change]=await h.store.reviewTransactionTitles(),process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async()=>{throw Error('disk failed')};await assert.rejects(h.store.applyTransactionTitle(change),/disk failed/);
+ h.app.fileManager.processFrontMatter=process;await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).title,'Market');
+});

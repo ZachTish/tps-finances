@@ -2,7 +2,7 @@
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.5.0](https://github.com/ZachTish/tps-finances/releases/tag/1.5.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.5.1](https://github.com/ZachTish/tps-finances/releases/tag/1.5.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
@@ -10,11 +10,27 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 
 ## Connect and use
 
-1. Install/update **TPS Controller 1.4.0+ and Finances 1.5.0** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
+1. Install/update **TPS Controller 1.4.0+ and Finances 1.5.1** on your desktop and mobile devices. Shared Plaid operation requires Obsidian 1.12.3+; manual finance records retain the 1.12.0 minimum.
 2. On your always-running Controller desktop, open **Plaid setup → Open Controller settings**. Configure the environment and separate client-ID/secret references under **Advanced → Plaid**, then choose **Finance server → Use this Controller**. Use the desktop that already owns your bank connections.
 3. Export its pairing code and enter it in Controller's Finance server settings on the phone/iPad. Pairing, credentials, connection tokens, and request journals are device-local. Do not connect the same banks independently on each device.
 4. Return to **Connections** to Connect, Sync, Reconnect, Disconnect, or reopen a pending request. Bank sign-in opens [Plaid Hosted Link](https://plaid.com/docs/link/hosted-link/) in your browser. Return to Obsidian afterward; the Controller imports the records and normal vault sync delivers the notes.
 5. Use **Open finances** for balances, holdings, transactions, categorization, rules, and budgets. **Add cash account**, **Log cash transaction**, and **Add resale asset** work without Plaid.
+
+## Readable transaction titles — 1.5.1
+
+Atomic-note imports use Plaid's enriched merchant name for the title when it is available. For example, `PURCHASE WM SUPERCENTER #1700` becomes `Walmart`. Transfers without a merchant keep their provider description; investment transactions keep their trade description. Only surrounding/repeated whitespace is cleaned. There is no merchant dictionary, inferred counterparty, AI rewrite, or case conversion. This follows [Plaid's guidance for merchant names](https://plaid.com/docs/api/products/transactions/#transactions-sync-response-added-merchant-name).
+
+`providerName` retains the exact imported `name` value and `providerTitle` records the last generated title. These are additive provider bookkeeping properties, alongside the existing provider category properties. They are not the optional, unparsed Plaid `original_description` field. Sync corrects a generated title while it remains unedited; a title changed by the user is preserved inside the atomic frontmatter update. Other properties, note bodies, tags, categories, stable identities, filenames and links stay in place. Existing name-based category rules also match `providerName`, so making the title readable does not discard their original matching text. The dashboard shows the note title and exposes the imported description on hover. Atomic-line records keep their current format and title behavior.
+
+Run **TPS Finances: Review transaction titles** for older atomic notes. It previews old/new titles without writing anything, selects nothing initially, and applies only the selected entries. It uses 40 rows per page with native labelled checkboxes, wrapping text, keyboard focus, and touch-size buttons. Already-tracked manual titles and manual cash records are excluded. Older versions did not track title ownership, so an ambiguous old title is never silently replaced during sync. A reviewed legacy title is retained as `providerName` until the next provider revision supplies its description. Changed identities, ownership, titles or merchant data invalidate the preview; failed writes retain remaining selections for a retry. Previously saved entries are not repeated. Notes already using their merchant name need no review; old verifiable provider descriptions can upgrade when a new provider revision arrives.
+
+No settings or existing actions were removed; the four settings destinations remain unchanged. This patch adds one maintenance command and makes no startup scans, bank calls, forced resync, filename migration or provider connection changes. Historical transactions not included in a provider update use the explicit review command. Minimum Obsidian compatibility remains 1.12.0 (Controller banking requires 1.12.3+).
+
+Regression coverage includes merchant/fallback/investment titles, exact imported descriptions, manual edits before and during writes, unchanged retries, legacy review, failed/stale reviews, manual identity collisions, and original-description category rules. Validation uses synthetic transactions under Inbox in the isolated test vault, followed by the full suite, separate final build, shipped-artifact deployment and plugin reload. Physical iPhone/iPad validation remains the user's BRAT testing step.
+
+**Test-vault UI verification (2026-09-18):** a synthetic import displayed `Walmart` while retaining `PURCHASE WM SUPERCENTER #1700`. The review proposed only the legacy title and excluded a manually edited title. Native Space selected a checkbox; focused Select shown and Apply buttons worked with Enter after fixing Obsidian modal-scope handling. The saved note kept its path and imported description. At a 390-pixel viewport, the modal wrapped controls and long paths without horizontal overflow. The final full suite contains 201 checks; release validation includes a separate final production build, test-only deployment, reload, and runtime-data checksum comparison. Synthetic fixtures are archived after QA. A clean stable worktree based on released main isolates this patch from the canonical checkout's older unrelated edits.
+
+For Cash App, Venmo and PayPal feasibility, see [wallet connection research](WALLET-CONNECTIONS.md). No new provider is installed or connected by this patch.
 
 ## Flex budgeting — 1.5.0
 
