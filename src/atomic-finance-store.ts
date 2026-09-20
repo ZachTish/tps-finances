@@ -1,3 +1,4 @@
+import { financeProperties } from "./finance-properties";
 import { financeDirectory, financePath, financePrefix } from "./finance-paths";
 import { App, TFile, parseYaml, stringifyYaml } from "obsidian";
 import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody } from "./finance-store";
@@ -21,11 +22,11 @@ export class AtomicFinanceStore extends FinanceStore {
       const path = financeDirectory(this.folder, name);
       if (path && !this.vaultApp.vault.getAbstractFileByPath(path)) await this.vaultApp.vault.createFolder(path);
       const base = this.vaultApp.vault.getAbstractFileByPath(financePath(this.folder, "", `${name}.base`));
-      const body = atomicBase(this.folder, name);
+      const body = financeProperties(this.vaultApp).base(atomicBase(this.folder, name));
       if (base instanceof TFile) {
         // Convert only uncustomized generated views. Preserve customized Bases in place.
         const content = await this.vaultApp.vault.read(base);
-        if (content === (name === "Transactions" ? transactionsBaseBody(this.folder) : holdingsBaseBody(this.folder))) {
+        if (content === financeProperties(this.vaultApp).base(name === "Transactions" ? transactionsBaseBody(this.folder) : holdingsBaseBody(this.folder))) {
           await this.vaultApp.vault.process(base, current => current === content ? body : current);
         } else if (content !== body) {
           const atomicPath = financePath(this.folder, "", `${name} (Atomic notes).base`);
@@ -38,7 +39,7 @@ export class AtomicFinanceStore extends FinanceStore {
   async restoreLineBases(): Promise<void> {
     for(const name of ["Transactions","Holdings"]){
       const file=this.vaultApp.vault.getAbstractFileByPath(financePath(this.folder, "", `${name}.base`));
-      if(file instanceof TFile)await this.vaultApp.vault.process(file,content=>content===atomicBase(this.folder,name)?(name==="Transactions"?transactionsBaseBody(this.folder):holdingsBaseBody(this.folder)):content);
+      if(file instanceof TFile)await this.vaultApp.vault.process(file,content=>content===financeProperties(this.vaultApp).base(atomicBase(this.folder,name))?financeProperties(this.vaultApp).base(name==="Transactions"?transactionsBaseBody(this.folder):holdingsBaseBody(this.folder)):content);
     }
   }
 
@@ -51,7 +52,7 @@ export class AtomicFinanceStore extends FinanceStore {
     for(const account of accounts){
       const file=this.vaultApp.vault.getAbstractFileByPath(paths.get(account.financeAccountId)!);
       if(!(file instanceof TFile))throw new Error("Account note is missing.");
-      await this.vaultApp.fileManager.processFrontMatter(file,fm=>{
+      await financeProperties(this.vaultApp).process(this.vaultApp, file,fm=>{
         if(!fm[this.identityKey()])fm[this.identityKey()]=account.financeAccountId;
         fm.current=account.current;fm.available=account.available;fm.limit=account.limit;
       });
@@ -65,14 +66,14 @@ export class AtomicFinanceStore extends FinanceStore {
     // Updates use processFrontMatter's current content, never this parsed snapshot.
     const content = await (fresh ? this.vaultApp.vault.read(file) : this.vaultApp.vault.cachedRead(file));
     const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    return match ? parseYaml(match[1]) || {} : {};
+    return financeProperties(this.vaultApp).read(match ? parseYaml(match[1]) || {} : {});
   }
 
   private async index(fieldsByFile?: Map<TFile, Fields>): Promise<Map<string, TFile>> {
     const result = new Map<string, TFile>();
     const files = this.vaultApp.vault.getMarkdownFiles().filter(file =>
       (this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
-      || this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId);
+      || financeProperties(this.vaultApp).cache(this.vaultApp, file)?.financeId);
     await boundedWork(files, async file => {
       // Metadata narrows candidates; file content supplies the actual property values.
       const fm = await this.fields(file);
@@ -113,7 +114,7 @@ export class AtomicFinanceStore extends FinanceStore {
       const providerFields = providerTransactionFields(fm, before);
       if (!absentProviderProperties(providerFields, before).length
         && Object.keys(providerFields).every(key => JSON.stringify(before[key]) === JSON.stringify(providerFields[key]))) return file;
-      await this.vaultApp.fileManager.processFrontMatter(file, current => {
+      await financeProperties(this.vaultApp).process(this.vaultApp, file, current => {
         if (String(current.financeId) !== id) throw new Error("Transaction identity changed during sync.");
         const providerFields = providerTransactionFields(fm, current);
         for (const key of absentProviderProperties(providerFields, current)) delete current[key];
@@ -124,7 +125,7 @@ export class AtomicFinanceStore extends FinanceStore {
       const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
       const path = financePath(this.folder, "Transactions", `${safeId}.md`);
       if (this.vaultApp.vault.getAbstractFileByPath(path)) throw new Error(`Transaction destination is occupied: ${path}`);
-      file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml({ ...fm, [this.identityKey()]: fm[this.identityKey()] || id })}---\n`);
+      file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml(financeProperties(this.vaultApp).write({ ...fm, [this.identityKey()]: fm[this.identityKey()] || id }))}---\n`);
       index.set(id, file);
     }
     const verified = await this.fields(file);
@@ -193,7 +194,7 @@ export class AtomicFinanceStore extends FinanceStore {
   async updateTransactionMetadata(id:string, categoryOverride:string, tags:string[]): Promise<boolean> {
     const file = (await this.index()).get(id);
     if (!file) return super.updateTransactionMetadata(id, categoryOverride, tags);
-    await this.vaultApp.fileManager.processFrontMatter(file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
+    await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
     return true;
   }
 
@@ -217,7 +218,7 @@ export class AtomicFinanceStore extends FinanceStore {
   async applyTransactionTitle(change: TransactionTitleChange): Promise<void> {
     const file = this.vaultApp.vault.getAbstractFileByPath(change.path);
     if (!(file instanceof TFile)) throw new Error("Transaction moved or disappeared. Reopen the review.");
-    await this.vaultApp.fileManager.processFrontMatter(file, current => {
+    await financeProperties(this.vaultApp).process(this.vaultApp, file, current => {
       const proposedTitle = proposedTransactionTitle(current) ?? String(current.title ?? "");
       const removeFields = change.removeFields || [];
       if (titleSignature(current) !== change.signature || proposedTitle !== change.after
@@ -275,7 +276,7 @@ export class AtomicFinanceStore extends FinanceStore {
     const holdingFiles = new Map<string, TFile>();
     for (const file of this.vaultApp.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(financePrefix(this.folder, "Holdings"))) continue;
-      if (!this.folder && this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.type !== "holding") continue;
+      if (!this.folder && financeProperties(this.vaultApp).cache(this.vaultApp, file)?.type !== "holding") continue;
       const fm = await this.fields(file);
       if (fm.type !== "holding" || !fm.financeAccountId || !fm.securityId) continue;
       const key = `${fm.financeAccountId}:${fm.securityId}`;
@@ -287,17 +288,17 @@ export class AtomicFinanceStore extends FinanceStore {
       const target=holdingFiles.get(`${holding.financeAccountId}:${holding.securityId}`)?.path || financePath(this.folder, "Holdings", `${id}.md`);
       const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[this.identityKey()]:`holding-${id}`,account:`[[${(accountPaths.get(holding.financeAccountId)||'').replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10)};
       const existing=this.vaultApp.vault.getAbstractFileByPath(target);
-      if(existing instanceof TFile)await this.vaultApp.fileManager.processFrontMatter(existing,current=>{if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");Object.assign(current,fm);});
+      if(existing instanceof TFile)await financeProperties(this.vaultApp).process(this.vaultApp, existing,current=>{if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");Object.assign(current,fm);});
       else if(existing)throw new Error(`Holding destination occupied: ${target}`);
-      else await this.vaultApp.vault.create(target,`---\n${stringifyYaml(fm)}---\n`);
+      else await this.vaultApp.vault.create(target,`---\n${stringifyYaml(financeProperties(this.vaultApp).write(fm))}---\n`);
     }
     // Mark disappeared holdings inactive rather than deleting user-authored content.
     const active=new Set(holdings.map(h=>`${h.financeAccountId}:${h.securityId}`));
     const accountIds=new Set(accounts.map(a=>a.financeAccountId));
     for(const file of this.vaultApp.vault.getMarkdownFiles().filter(f=>f.path.startsWith(financePrefix(this.folder, "Holdings")))){
-      if (!this.folder && this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.type !== "holding") continue;
+      if (!this.folder && financeProperties(this.vaultApp).cache(this.vaultApp, file)?.type !== "holding") continue;
       const fm=await this.fields(file);
-      if(fm.type==='holding'&&accountIds.has(fm.financeAccountId))await this.vaultApp.fileManager.processFrontMatter(file,current=>{current.active=active.has(`${fm.financeAccountId}:${fm.securityId}`);});
+      if(fm.type==='holding'&&accountIds.has(fm.financeAccountId))await financeProperties(this.vaultApp).process(this.vaultApp, file,current=>{current.active=active.has(`${fm.financeAccountId}:${fm.securityId}`);});
     }
     return financePath(this.folder, "", "Holdings.base");
   }

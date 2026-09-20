@@ -1,3 +1,4 @@
+import { financeProperties } from "./finance-properties";
 import { financeDirectory, financePath } from "./finance-paths";
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from "obsidian";
 import { createLocalId } from "./identity";
@@ -49,14 +50,14 @@ export class ManualFinanceStore {
   }
   private async fields(file: TFile): Promise<Record<string, any>> {
     const match = (await this.app.vault.read(file)).match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    return match ? parseYaml(match[1]) || {} : {};
+    return financeProperties(this.app).read(match ? parseYaml(match[1]) || {} : {});
   }
   async updateValue(path: string, value: number, date: string): Promise<void> {
     validateDate(date);
     if (!Number.isFinite(value) || value < 0) throw new Error("Enter a non-negative resale value.");
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) throw new Error("Asset note is missing.");
-    await this.app.fileManager.processFrontMatter(file, fm => {
+    await financeProperties(this.app).process(this.app, file, fm => {
       if (fm.financeSource !== "manual" || fm.accountType !== "other") throw new Error("Choose a manual asset.");
       fm.current = value;
       fm.valuationDate = date;
@@ -78,7 +79,7 @@ export class ManualFinanceStore {
     const fields: Record<string, unknown> = {kind:"account",financeSource:"manual",financeAccountId:id,[this.identityKey()]:id,title:input.name.trim(),accountName:input.name.trim(),accountType:input.kind === "cash" ? "depository" : "other",accountSubtype:input.kind === "cash" ? "cash" : input.assetType.trim() || "personal-property",currency,current:input.value};
     if (input.kind === "cash") { fields.openingBalance = input.value; delete fields.current; }
     else Object.assign(fields,{valuationDate:input.valuationDate,purchaseTransaction,liabilityAccount});
-    return this.app.vault.create(financePath(this.folder, "Accounts", `${name} ${id.slice(-8)}.md`), `---\n${stringifyYaml(fields)}---\n`);
+    return this.app.vault.create(financePath(this.folder, "Accounts", `${name} ${id.slice(-8)}.md`), `---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
   }
   async createCashEntry(input: CashEntryInput): Promise<TFile> {
     if (!input.title.trim() || !Number.isFinite(input.amount) || input.amount <= 0) throw new Error("Enter a description and a positive amount.");
@@ -102,7 +103,7 @@ export class ManualFinanceStore {
     const folder = financeDirectory(this.folder, "Transactions"); await this.ensureFolder(folder);
     const amount = ["expense","transfer-out"].includes(input.kind) ? -input.amount : input.amount;
     const fields = {kind:"transaction",type:"transaction",financeSource:"manual",financeId:id,[this.identityKey()]:id,financeAccountId:fm.financeAccountId,account:this.link(account.path),title:input.title.trim(),date:input.date,amount,currency:fm.currency,pending:false,subtype:input.kind === "expense" ? "purchase" : input.kind,categoryOverride:input.category.trim(),tags:input.tags.map(t=>t.trim().replace(/^#+/,"")).filter(Boolean),transferAccount:counterpart,linkedTransaction};
-    return this.app.vault.create(financePath(this.folder, "Transactions", `${id}.md`),`---\n${stringifyYaml(fields)}---\n`);
+    return this.app.vault.create(financePath(this.folder, "Transactions", `${id}.md`),`---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
   }
 }
 

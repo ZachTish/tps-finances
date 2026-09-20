@@ -7,7 +7,7 @@
   background: var(--background-primary);
 }
 .tps-finances-settings-hub > h3 { margin: 0 0 4px; }
-.tps-finances-settings-routes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.tps-finances-settings-routes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .tps-finances-settings-route {
   height: auto;
   min-height: auto;
@@ -218,3 +218,7 @@
 .tps-finances-title-choice span, .tps-finances-title-choice strong, .tps-finances-title-choice small { display:block; }
 .tps-finances-title-choice small { color:var(--text-muted); margin-top:4px; }
 .tps-finances-title-review :focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; }
+
+.tps-finances-property-confirm { overflow-wrap: anywhere; }
+.tps-finances-property-confirm .tps-finances-title-actions button { height: auto; min-height: 36px; white-space: normal; }
+.tps-finances-property-confirm button:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }

@@ -1,8 +1,10 @@
+import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS } from "./finance-properties";
+import { previewPropertyMigration, propertyChanges } from "./property-migration";
 import { App, ButtonComponent, Modal, Notice, Platform, PluginSettingTab, SecretComponent, Setting } from "obsidian";
 import type TPSFinancesPlugin from "./main";
 import type { PlaidEnvironment, TransactionLogTarget } from "./types";
 
-type FinanceSettingsRoute = "plaid" | "data" | "connections" | "rules";
+type FinanceSettingsRoute = "plaid" | "data" | "connections" | "rules" | "properties";
 
 const FINANCE_SETTINGS_ROUTES: Array<{
   id: FinanceSettingsRoute;
@@ -29,10 +31,14 @@ const FINANCE_SETTINGS_ROUTES: Array<{
     title: "Rules & budgets",
     description: "Open the dashboard or create a rule or monthly budget.",
   },
+  { id: "properties", title: "Properties", description: "Choose the property names written to finance notes." },
 ];
 
 export class TPSFinancesSettingTab extends PluginSettingTab {
   private activeRoute: FinanceSettingsRoute = "plaid";
+  private propertyGroup = "Common";
+  private propertyDraft: Record<string, string> | null = null;
+  private propertyBaseline: FinanceProperties | null = null;
 
   constructor(app: App, private readonly plugin: TPSFinancesPlugin) {
     super(app, plugin);
@@ -89,6 +95,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     if (route.id === "plaid") this.renderPlaidSettings(page);
     else if (route.id === "data") this.renderDataSettings(page);
     else if (route.id === "connections") this.renderConnectionSettings(page);
+    else if (route.id === "properties") this.renderPropertySettings(page);
     else this.renderRulesSettings(page);
 
     if (!focusRouteHeading) containerEl.scrollTop = scrollTop;
@@ -106,6 +113,56 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         }
         pageHeading.focus({ preventScroll: true });
         pageHeading.scrollIntoView({ block: "start" });
+      });
+    }
+  }
+
+  private renderPropertySettings(parent: HTMLElement): void {
+    if (this.plugin.settings.propertyMigration) {
+      new Setting(parent).setName("Property migration paused")
+        .setDesc("Resume to finish renaming properties. Finance writes remain paused until it completes.")
+        .addButton(button => button.setButtonText("Resume migration").onClick(async () => {
+          button.setDisabled(true);
+          try { await this.plugin.resumePropertyMigration(); this.propertyDraft = null; new Notice("Property migration complete."); }
+          catch (error) { new Notice(String(error), 12000); }
+          finally { this.renderSettings(false, "Property migration paused"); }
+        }));
+      return;
+    }
+    if (!this.propertyDraft) {
+      this.propertyBaseline = new FinanceProperties(this.plugin.settings.propertyNames);
+      this.propertyDraft = Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key => [key, this.propertyBaseline!.key(key)]));
+    }
+    new Setting(parent).setName("Property names")
+      .setDesc("Saving asks whether to rename existing properties. IDs stay fixed; atomic-line fields are unchanged.")
+      .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
+        button.setDisabled(true);
+        try {
+          const from = this.propertyBaseline!, to = new FinanceProperties({keys: this.propertyDraft!});
+          to.assertIdentityKey((this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
+          if (!propertyChanges(from, to).length) { new Notice("No property names changed."); return; }
+          const preview = await previewPropertyMigration(this.app, from, to, this.plugin.settings.financeFolder);
+          new PropertyNamesModal(this.app, from, to, preview, async migrate => {
+            await this.plugin.changePropertyNames(from, to, migrate);
+            this.propertyDraft = null;
+          }, () => this.renderSettings(false, "Property names")).open();
+        } catch (error) { new Notice(String(error), 12000); }
+        finally { button.setDisabled(false); }
+      })).addButton(button => button.setButtonText("Discard edits").onClick(() => {
+        this.propertyDraft = null; this.renderSettings(false, "Property names");
+      }));
+    new Setting(parent).setName("Property group").addDropdown(dropdown => {
+      for (const group of Object.keys(PROPERTY_GROUPS)) dropdown.addOption(group, group);
+      dropdown.setValue(this.propertyGroup).onChange(value => {
+        this.propertyGroup = value; this.renderSettings(false, "Property group");
+      });
+      dropdown.selectEl.setAttribute("aria-label", "Property group");
+    });
+    for (const key of PROPERTY_GROUPS[this.propertyGroup]) {
+      new Setting(parent).setName(propertyLabel(key)).addText(text => {
+        text.setValue(this.propertyDraft![key]).onChange(value => { this.propertyDraft![key] = value.trim(); });
+        text.inputEl.setAttribute("aria-label", `${propertyLabel(key)} property name`);
+        text.inputEl.spellcheck = false;
       });
     }
   }
@@ -278,4 +335,57 @@ class DisconnectItemModal extends Modal {
       }
     });
   }
+}
+
+function propertyLabel(key: string): string {
+  if (key === "type") return "Record type";
+  if (key === "kind") return "Record kind";
+  const words = key.replace(/([A-Z])/g, " $1").toLowerCase();
+  return words[0].toUpperCase() + words.slice(1);
+}
+
+class PropertyNamesModal extends Modal {
+  private busy = false;
+  constructor(app: App, private from: FinanceProperties, private to: FinanceProperties,
+    private preview: Awaited<ReturnType<typeof previewPropertyMigration>>,
+    private save: (migrate: boolean) => Promise<void>, private finished: () => void) {
+    super(app);
+    this.scope.register([], "Enter", () => {
+      const focused = this.contentEl.ownerDocument.activeElement;
+      if (focused?.tagName !== "BUTTON" || !this.contentEl.contains(focused)) return true;
+      const button = focused as HTMLButtonElement;
+      if (!button.disabled) button.click();
+      return false;
+    });
+  }
+  onOpen(): void {
+    this.titleEl.setText("Migrate existing properties?");
+    this.contentEl.addClass("tps-finances-property-confirm");
+    this.contentEl.createEl("p", {text: `Rename properties in ${this.preview.journal.notes.length} finance ${this.preview.journal.notes.length === 1 ? "note" : "notes"}?`});
+    const actions = this.contentEl.createDiv({cls: "tps-finances-title-actions"});
+    const migrate = actions.createEl("button", {text: "Migrate and save", cls: "mod-cta", attr: {type: "button"}});
+    migrate.disabled = this.preview.conflicts.length > 0;
+    const skip = actions.createEl("button", {text: "Save without migrating", attr: {type: "button"}});
+    const cancel = actions.createEl("button", {text: "Cancel", attr: {type: "button"}});
+    cancel.onclick = () => this.close();
+    migrate.onclick = () => void this.apply(true);
+    skip.onclick = () => void this.apply(false);
+    this.contentEl.createEl("p", {text: "Without migration, old properties stay in the notes but Finances stops using them. Customized Bases and other plugins must be updated separately."});
+    const list = this.contentEl.createEl("ul");
+    for (const change of propertyChanges(this.from, this.to)) list.createEl("li", {text: `${change.from} → ${change.to}`});
+    if (this.preview.conflicts.length) {
+      const errors = this.contentEl.createDiv({attr: {role: "alert"}});
+      errors.createEl("p", {text: `${this.preview.conflicts.length} conflicts must be resolved before migrating.`});
+      for (const conflict of this.preview.conflicts.slice(0, 10)) errors.createEl("p", {text: conflict});
+    }
+  }
+  private async apply(migrate: boolean): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    this.contentEl.querySelectorAll<HTMLButtonElement>("button").forEach(button => { button.disabled = true; });
+    try { await this.save(migrate); new Notice("Finance property names saved."); }
+    catch (error) { new Notice(String(error), 12000); }
+    finally { this.busy = false; this.close(); }
+  }
+  onClose(): void { this.finished(); }
 }

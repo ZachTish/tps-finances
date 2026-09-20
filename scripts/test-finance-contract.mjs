@@ -2324,11 +2324,11 @@ test("disconnect and logging behavior protect financial integrations", () => {
   assert.doesNotMatch(main, /logger\.[a-z]+\([^\n]*(accessToken|providerItemId)/);
   assert.match(main, /this\.createPlaidClient\(item\.environment, item\.plaidSecretName, item\.plaidClientIdSecretName\)/);
   assert.match(main, /if \(!failures\.length && \(allAccounts\.length \|\| allHoldings\.length\)\)/);
-  assert.match(main, /gcmApi\.frontmatter\.process\(file, mutator\)/);
+  assert.match(main, /gcmApi\.frontmatter\.process\(file,.*financeProperties\(this.app\)\.mutate\(raw, mutator\)/);
   assert.match(main, /externalActions\.register/);
   assert.match(main, /renderHomeSummary/);
   assert.match(main, /openTransactionSource/);
-  assert.match(main, /frontmatter\?\.date/);
+  assert.match(main, /financeProperties\(this.app\)\.cache\(this.app, file\)\?\.date/);
   assert.match(store, /Accounts\.base/);
   assert.match(store, /Transactions\.base/);
   assert.match(store, /Holdings\.base/);
@@ -2379,8 +2379,8 @@ test('posted replacement retains pending identity and avoids deleting local clas
 
 test('sync owns dashboard refresh rather than rescanning after every imported note',()=>{
  const handler=main.slice(main.indexOf('this.app.metadataCache.on("changed"'),main.indexOf('(this as any).api'));
- assert.match(handler,/if \(this\.syncing\) return/);
- assert.ok(handler.indexOf('if (this.syncing) return')<handler.indexOf('this.refreshDashboard()'));
+ assert.match(handler,/if \(this\.syncing \|\| this\.settings\.propertyMigration\) return/);
+ assert.ok(handler.indexOf('if (this.syncing || this.settings.propertyMigration) return')<handler.indexOf('this.refreshDashboard()'));
 });
 
 test('refunds reduce category spending while transfers are excluded',()=>{

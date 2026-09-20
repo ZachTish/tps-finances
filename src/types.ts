@@ -1,7 +1,11 @@
+import type { PropertyMigration } from "./property-migration";
+import type { FinancePropertyNames } from "./finance-properties";
 export type PlaidEnvironment = "sandbox" | "development" | "production";
 export type TransactionLogTarget = "daily-note" | "account-note";
 
 export interface TPSFinancesSettings {
+  propertyNames: FinancePropertyNames;
+  propertyMigration: PropertyMigration | null;
   financeFolder: string;
   recordMode: "atomic-note" | "atomic-line";
   plaidEnvironment: PlaidEnvironment;
@@ -14,6 +18,8 @@ export interface TPSFinancesSettings {
 }
 
 export const DEFAULT_SETTINGS: TPSFinancesSettings = {
+  propertyNames: { keys: {} },
+  propertyMigration: null,
   financeFolder: "Finances",
   recordMode: "atomic-note",
   plaidEnvironment: "sandbox",

@@ -1,3 +1,4 @@
+import { financeProperties } from "./finance-properties";
 import { financeDirectory, financePath, financePrefix } from "./finance-paths";
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from "obsidian";
 import type { DeviceState, FinanceAccount, FinanceBudget, FinanceHolding, FinanceRule, FinanceTransaction } from "./types";
@@ -24,7 +25,7 @@ export class FinanceStore {
   constructor(
     private readonly app: App,
     private readonly rootFolder: string,
-    private readonly processFrontmatter: (file: TFile, mutator: (frontmatter: Record<string, unknown>) => void) => Promise<unknown> = (file, mutator) => app.fileManager.processFrontMatter(file, mutator),
+    private readonly processFrontmatter: (file: TFile, mutator: (frontmatter: Record<string, unknown>) => void) => Promise<unknown> = (file, mutator) => financeProperties(app).process(app, file, mutator),
     private readonly resolveDailyNote: (isoDate: string) => Promise<TFile> = async () => { throw new Error("Daily-note storage is unavailable."); },
     private readonly resolveTransactionTarget: (context: TransactionTargetContext) => Promise<TFile> = (context) => resolveDailyNote(context.date),
   ) {}
@@ -134,7 +135,7 @@ export class FinanceStore {
     } else {
       path = this.uniquePath(path);
       const frontmatter = `---\ntitle: Finance snapshot ${date}\nkind: ledger\ntype: financeSnapshot\ndate: ${date}\n---\n`;
-      await this.app.vault.create(path, `${frontmatter}${generated}\n`);
+      await this.app.vault.create(path, financeProperties(this.app).note(`${frontmatter}${generated}\n`));
     }
     return path;
   }
@@ -146,7 +147,7 @@ export class FinanceStore {
 
   async migrateLegacyTransactionLedgers(): Promise<{ moved: number; skipped: number }> {
     const prefix = financePrefix(this.rootFolder, "Transactions");
-    const legacyFiles = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || this.app.metadataCache.getFileCache(file)?.frontmatter?.type === "financeTransactions"));
+    const legacyFiles = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || financeProperties(this.app).cache(this.app, file)?.type === "financeTransactions"));
     let moved = 0;
     let skipped = 0;
     for (const legacyFile of legacyFiles) {
@@ -195,8 +196,8 @@ export class FinanceStore {
 
   readRules(): FinanceRule[] {
     const prefix = financePrefix(this.rootFolder, "Rules");
-    return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || this.app.metadataCache.getFileCache(file)?.frontmatter?.kind === "financeRule")).map((file) => {
-      const value = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || financeProperties(this.app).cache(this.app, file)?.kind === "financeRule")).map((file) => {
+      const value = financeProperties(this.app).cache(this.app, file) || {};
       return {
         id: String(value.financeRuleId || file.path),
         name: String(value.title || file.basename),
@@ -215,8 +216,8 @@ export class FinanceStore {
 
   readBudgets(): FinanceBudget[] {
     const prefix = financePrefix(this.rootFolder, "Budgets");
-    return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || this.app.metadataCache.getFileCache(file)?.frontmatter?.kind === "financeBudget")).map((file) => {
-      const value = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || financeProperties(this.app).cache(this.app, file)?.kind === "financeBudget")).map((file) => {
+      const value = financeProperties(this.app).cache(this.app, file) || {};
       return {
         id: String(value.financeBudgetId || file.path),
         name: String(value.title || file.basename),
@@ -229,13 +230,13 @@ export class FinanceStore {
   async createRule(rule: FinanceRule): Promise<TFile> {
     const path = this.uniquePath(financePath(this.rootFolder, "Rules", `${safeName(rule.name)}.md`));
     const body = `---\ntitle: ${yamlString(rule.name)}\nkind: financeRule\nfinanceRuleId: ${yamlString(rule.id)}\nenabled: ${rule.enabled ? "true" : "false"}\npriority: ${rule.priority}\naccountContains: ${yamlString(rule.accountContains)}\nnameContains: ${yamlString(rule.nameContains)}\nmerchantContains: ${yamlString(rule.merchantContains)}\nminAmount: ${rule.minAmount == null ? "null" : decimal(rule.minAmount)}\nmaxAmount: ${rule.maxAmount == null ? "null" : decimal(rule.maxAmount)}\ncategory: ${yamlString(rule.category)}\ntags: ${JSON.stringify(normalizeTags(rule.tags))}\n---\n`;
-    return this.app.vault.create(path, body);
+    return this.app.vault.create(path, financeProperties(this.app).note(body));
   }
 
   async createBudget(budget: FinanceBudget): Promise<TFile> {
     const path = this.uniquePath(financePath(this.rootFolder, "Budgets", `${safeName(budget.name)}.md`));
     const body = `---\ntitle: ${yamlString(budget.name)}\nkind: financeBudget\nfinanceBudgetId: ${yamlString(budget.id)}\ncategory: ${yamlString(budget.category)}\nmonthlyLimit: ${decimal(budget.monthlyLimit)}\n---\n`;
-    return this.app.vault.create(path, body);
+    return this.app.vault.create(path, financeProperties(this.app).note(body));
   }
 
   async readBudgetEntries(): Promise<FinanceBudget[]> {
@@ -245,14 +246,14 @@ export class FinanceStore {
     const files = this.app.vault.getMarkdownFiles().filter(file => {
       if (!file.path.startsWith(prefix)) return false;
       if (this.rootFolder) return true;
-      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const fm = financeProperties(this.app).cache(this.app, file);
       return !fm || !Object.keys(fm).length || fm.kind === "financeBudget" || Boolean(fm.financeBudgetId);
     });
     await boundedWork(files, async file => {
       const text = await this.app.vault.cachedRead(file);
       const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
       if (!match || !/financeBudgetId|financeBudget/.test(match[1])) return;
-      const fm = parseYaml(match[1]);
+      const fm = financeProperties(this.app).read(parseYaml(match[1]) || {});
       if (!fm || (!fm.financeBudgetId && fm.kind !== "financeBudget")) return;
       const links = Array.isArray(fm.accounts) ? fm.accounts : fm.accounts ? [fm.accounts] : [];
       const accounts = links.map((value: unknown) => {
@@ -278,7 +279,7 @@ export class FinanceStore {
         if (!(file instanceof TFile)) throw new Error("A selected account moved or was deleted. Reopen the budget editor.");
         const body = await this.app.vault.read(file);
         const match = body.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-        const fm = match ? parseYaml(match[1]) : null;
+        const fm = match ? financeProperties(this.app).read(parseYaml(match[1]) || {}) : null;
         if (!fm?.financeAccountId || !["depository", "investment", "brokerage"].includes(fm.accountType) || (fm.currency || "USD") !== budgetCurrency(budget)) {
           throw new Error("Choose existing savings or investment accounts in this currency.");
         }
@@ -289,7 +290,7 @@ export class FinanceStore {
     if (original?.sourcePath) {
       const file = this.app.vault.getAbstractFileByPath(original.sourcePath);
       if (!(file instanceof TFile)) throw new Error("The budget note moved or was deleted. Reopen it and try again.");
-      await this.app.fileManager.processFrontMatter(file, fm => {
+      await financeProperties(this.app).process(this.app, file, fm => {
         if (!original.revision || budgetRevision(fm) !== original.revision) {
           throw new Error("The budget changed while you were editing. Reopen it to keep the newer values.");
         }
@@ -298,7 +299,7 @@ export class FinanceStore {
       return file;
     }
     const path = this.uniquePath(financePath(this.rootFolder,"Budgets",`${safeName(budget.name)}.md`));
-    return this.app.vault.create(path,`---\n${stringifyYaml({kind:"financeBudget",...fields})}---\n`);
+    return this.app.vault.create(path,`---\n${stringifyYaml(financeProperties(this.app).write({kind:"financeBudget",...fields}))}---\n`);
   }
 
   async updateTransactionMetadata(financeId: string, categoryOverride: string, tags: string[]): Promise<boolean> {
@@ -495,14 +496,14 @@ export class FinanceStore {
   private async removeEmptyLegacyLedger(file: TFile): Promise<void> {
     const content = await this.app.vault.cachedRead(file);
     const body = content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+    const frontmatter = financeProperties(this.app).cache(this.app, file) || {};
     if (!body && String(frontmatter.type || "") === "financeTransactions") await this.app.vault.delete(file);
   }
 
   private findAccountFile(financeAccountId: string): TFile | null {
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(financePrefix(this.rootFolder, "Accounts"))) continue;
-      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const frontmatter = financeProperties(this.app).cache(this.app, file);
       if (!this.rootFolder && frontmatter?.kind !== "account") continue;
       if (String(frontmatter?.financeAccountId || "") === financeAccountId) return file;
     }
@@ -516,7 +517,7 @@ export class FinanceStore {
     const prefix = financePrefix(this.rootFolder, "Accounts");
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(prefix)) continue;
-      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const frontmatter = financeProperties(this.app).cache(this.app, file);
       if (!this.rootFolder && frontmatter?.kind !== "account") continue;
       const financeAccountId = String(frontmatter?.financeAccountId || "");
       if (
@@ -535,7 +536,7 @@ export class FinanceStore {
     financeAccountId: string,
   ): boolean {
     if (this.app.vault.getAbstractFileByPath(file.path) !== file) return false;
-    const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    const frontmatter = financeProperties(this.app).cache(this.app, file);
     return String(frontmatter?.financeAccountId || "") === financeAccountId;
   }
 
@@ -543,7 +544,7 @@ export class FinanceStore {
     const prefix = folder ? normalizePath(folder) : "";
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(prefix)) continue;
-      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter || {};
+      const frontmatter = financeProperties(this.app).cache(this.app, file) || {};
       if (String(frontmatter.type || "") === type && String(frontmatter[key] || "") === value) return file;
     }
     return null;
@@ -555,7 +556,7 @@ export class FinanceStore {
 
   private async createAccountFile(path: string, account: FinanceAccount): Promise<TFile> {
     const uniquePath = this.uniquePath(path);
-    return this.app.vault.create(uniquePath, `---\ntitle: ${yamlString(accountDisplayName(account))}\nkind: account\n---\n`);
+    return this.app.vault.create(uniquePath, financeProperties(this.app).note(`---\ntitle: ${yamlString(accountDisplayName(account))}\nkind: account\n---\n`));
   }
 
   private uniquePath(path: string): string {
@@ -577,7 +578,7 @@ export class FinanceStore {
 
   private async ensureBaseFile(path: string, body: string): Promise<void> {
     const normalized = normalizePath(path);
-    if (!this.app.vault.getAbstractFileByPath(normalized)) await this.app.vault.create(normalized, body);
+    if (!this.app.vault.getAbstractFileByPath(normalized)) await this.app.vault.create(normalized, financeProperties(this.app).base(body));
   }
 }
 
@@ -655,7 +656,7 @@ function replaceGeneratedBlock(content: string, generated: string): string {
   return `${content.replace(/\s+$/, "")}\n${generated}\n`;
 }
 
-function accountsBaseBody(root: string): string {
+export function accountsBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - kind == "account"\n    - ${root ? `file.path.startsWith(${JSON.stringify(financePrefix(root, "Accounts"))})` : 'financeAccountId != null'}\nviews:\n  - type: table\n    name: Accounts\n    order:\n      - institution\n      - accountName\n      - accountType\n      - accountSubtype\n      - accountMask\n      - currency\n      - file.name\n    sort:\n      - property: institution\n        direction: ASC\n      - property: accountName\n        direction: ASC\n`;
 }
 
@@ -667,11 +668,11 @@ export function holdingsBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - ${root ? `file.path.startsWith(${JSON.stringify(financePrefix(root, "Snapshots"))})` : 'type == "financeSnapshot"'}\nviews:\n  - type: tps-table\n    name: Holdings\n    lineFilterKey: securityId\n    order:\n      - account\n      - quantity\n      - price\n      - value\n      - costBasis\n      - currency\n      - asOf\n      - stale\n    sort:\n      - property: value\n        direction: DESC\n`;
 }
 
-function rulesBaseBody(root: string): string {
+export function rulesBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - kind == "financeRule"\n    - ${root ? `file.path.startsWith(${JSON.stringify(financePrefix(root, "Rules"))})` : 'financeRuleId != null'}\nviews:\n  - type: table\n    name: Categorization rules\n    order:\n      - enabled\n      - priority\n      - accountContains\n      - nameContains\n      - merchantContains\n      - minAmount\n      - maxAmount\n      - category\n      - tags\n      - file.name\n    sort:\n      - property: priority\n        direction: ASC\n`;
 }
 
-function budgetsBaseBody(root: string): string {
+export function budgetsBaseBody(root: string): string {
   return `model:\n  version: 1\n  kind: Table\n  columns: []\npluginVersion: 1.0.0\nfilters:\n  and:\n    - kind == "financeBudget"\n    - ${root ? `file.path.startsWith(${JSON.stringify(financePrefix(root, "Budgets"))})` : 'financeBudgetId != null'}\nviews:\n  - type: table\n    name: Monthly budgets\n    order:\n      - category\n      - monthlyLimit\n      - file.name\n    sort:\n      - property: category\n        direction: ASC\n`;
 }
 
