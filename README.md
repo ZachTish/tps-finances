@@ -1,8 +1,56 @@
 # TPS Finances
 
+## Apple Card and Savings — 1.8.0
+
+TishOS 0.17.0 on one iPhone can read the Apple Wallet accounts and history you
+approve, then send encrypted changes to TPS Controller 2.3.0. Enable **Import
+Apple Wallet** in Controller → Advanced → Finance server and enter its private
+pairing code in TishOS → Apple Wallet. The phone separately confirms the named
+vault and requests Apple permission. No Plaid credentials or subscription are
+needed for this connection. The request folder must sync and Controller must run.
+
+Finances remains the only account/transaction note writer. Wallet imports require
+**Atomic note** mode, use the currently configured root/folder and property names,
+and pause during unfinished property migrations. Apple transaction identities
+are stable on the paired phone: retries and pending/posted corrections update
+one note. User transaction titles, categories, tags, extra properties and bodies
+survive updates. Debit spending is negative, credits positive; credit-card
+balances are positive amounts owed, while overpayments may be negative.
+Unavailable balances remain unknown rather than zero. Transfers and known
+purchase/fee/interest types feed the existing classification; ambiguous movements
+remain for review, with no guessed category.
+
+Only explicit FinanceKit history deletions or rejected transactions trash their
+matching records. Missing accounts, narrower permissions and empty results never
+remove notes. One phone exports per collection; phone replacement or lost
+private state needs a deliberate identity migration. The iPhone supports
+foreground/manual and system-granted refresh, with no promise of continuous
+background execution. A Files-accessible vault and ordinary vault synchronization
+are required. Existing Plaid imports and manually maintained assets stay separate.
+
+**Settings inventory:** the five current destinations, default route, property
+editors and commands remain. Connections gains one Apple Card & Savings row with
+an Open Controller settings handoff. There is no duplicated permission or
+credential control, new setting, extra disclosure or hardcoded frontmatter key.
+The existing mobile wrapping controls and native keyboard actions are retained.
+
+**Validation:** parser, hosted-owner and actual atomic-store tests cover omitted
+Swift balances, signs, malformed records, corrections, explicit deletion, root
+storage with renamed properties, preserved user edits, retries and trash errors.
+The complete suite passes 253 tests. A separate production build deploys only
+to the test vault; CLI reload verifies 1.8.0. Actual vault APIs created synthetic
+account and transaction notes under Inbox, applied a posted correction twice
+without duplicates, and preserved a renamed title, tags, category and body.
+Fixtures moved directly to _archive afterward. The reloaded Connections page
+was visually inspected; its five routes and prior actions remain. Settings file
+hashes were unchanged and no real bank/Wallet connection was enabled. Actual Apple balances/history require iPhone
+acceptance. This additive feature is a minor release; minimum Obsidian stays
+1.12.0 (Controller requires 1.12.3). Production installation remains a BRAT pull.
+
+
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.6.0](https://github.com/ZachTish/tps-finances/releases/tag/1.6.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.8.0](https://github.com/ZachTish/tps-finances/releases/tag/1.8.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

@@ -92,3 +92,15 @@ test('host commits its transaction cursor only after every started write drains,
  assert.equal(JSON.parse(h.secrets.get('tps-finances-device-state')).items[0].cursor,'before');
  fail=false;await h.backend.sync();assert.equal(JSON.parse(h.secrets.get('tps-finances-device-state')).items[0].cursor,'after');
 });
+
+test('Wallet imports are host-only, refresh mappings, validate before writes and retain retry identity',async()=>{
+ const h=harness();h.backend.prepareHost();const accountId='11111111-1111-4111-8111-111111111111',transactionId='22222222-2222-4222-8222-222222222222';
+ const parts=[{version:1,accounts:[{id:accountId,name:'Synthetic Card',institution:'Synthetic Wallet',kind:'liability',currency:'USD',current:'25',available:'975',limit:'1000'}],transactions:[{id:transactionId,accountID:accountId,date:'2026-09-21',description:'Synthetic food',merchant:'Shop',amount:'25',direction:'debit',status:'booked',currency:'USD',transactionType:'pointOfSale'}],deletedTransactions:[]}];
+ h.plugin.settings.recordMode='atomic-note';let refreshed=0,writes=0,fail=true;const revisions=[];
+ h.plugin.settingsWriter={save:async()=>{refreshed++;h.plugin.settings.financeFolder='';}};
+ h.plugin.createStore=()=>({upsertAccounts:async accounts=>{writes++;assert.equal(h.plugin.settings.financeFolder,'');return new Map([[accounts[0].financeAccountId,'Card.md']]);},applyTransactions:async(added,modified,removed,state,paths)=>{revisions.push(added[0]);assert.equal(added[0].amount,-25);assert.equal(added[0].subtype,'purchase');assert.equal(paths.get(added[0].financeAccountId),'Card.md');if(fail)throw Error('disk');}});
+ h.plugin.refreshDashboard=async()=>{};
+ await assert.rejects(()=>h.backend.importWallet(parts),/disk/);assert.equal(h.plugin.syncing,false);fail=false;await h.backend.importWallet(parts);assert.deepEqual(revisions[0],revisions[1]);assert.equal(refreshed,2);assert.equal(writes,2);
+ const broken=structuredClone(parts);broken[0].transactions[0].amount='NaN';await assert.rejects(()=>h.backend.importWallet(broken));assert.equal(writes,2);
+ h.relay.getConfiguration=()=>({mode:'client',enabled:true});await assert.rejects(()=>h.backend.importWallet(parts),/Only the paired desktop/);assert.equal(writes,2);assert.equal(h.calls.length,0,'Wallet import never calls Plaid');
+});

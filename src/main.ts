@@ -1,3 +1,4 @@
+import { parseWalletParts, walletTransactionID } from "./finance-wallet";
 import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration } from "./property-migration";
 import { financeProperties, FinanceProperties, normalizePropertyNames } from "./finance-properties";
 import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
@@ -279,6 +280,27 @@ export default class TPSFinancesPlugin extends Plugin {
         this.saveDeviceState(); // Persist the token and receipt before acknowledging the request or importing notes.
       },
       hasCompleted: (requestId: string) => { assertHost(); return this.deviceState.items.some(item=>item.linkRequestId===requestId); },
+      importWallet: async (parts: unknown[]) => {
+        assertHost();
+        if (this.settingsWriter) await this.saveSettings();
+        this.assertPropertyMigrationComplete();
+        if (this.syncing) throw new Error('TPS Finances is already syncing.');
+        if (this.settings.recordMode !== 'atomic-note') throw new Error('Choose Atomic note storage in Finances before importing Apple Wallet.');
+        const batch = parseWalletParts(parts);
+        // Wallet account/transaction identities are stable on the one paired iPhone.
+        // Never infer removal from a missing account or a limited consent window.
+        this.syncing = true;
+        try {
+          const store = this.createStore();
+          const paths = await store.upsertAccounts(batch.accounts);
+          const identityMap: Record<string, string> = {};
+          for (const transaction of batch.transactions) identityMap[`transaction:${transaction.providerTransactionId}`] = transaction.financeId;
+          for (const provider of batch.removed) identityMap[`transaction:${provider}`] = walletTransactionID(provider.slice('financekit:'.length));
+          await store.applyTransactions(batch.transactions, [], batch.removed, {plaidUserId: '', items: [], providerIdentityMap: identityMap}, paths);
+          logger.flow('Wallet', 'import-complete', {accounts: batch.accounts.length, transactions: batch.transactions.length, removed: batch.removed.length});
+        } finally { this.syncing = false; }
+        await this.refreshDashboard();
+      },
       sync: async () => { assertHost(); if (this.settingsWriter) await this.saveSettings(); await this.syncLocal('controller'); },
       disconnect: async (itemId: string) => { assertHost(); await this.disconnectLocal(itemId); },
     };

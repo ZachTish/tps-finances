@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
+import {parse as parseYaml} from 'yaml';
+globalThis.AtomicQAParseYaml=parseYaml;
 class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension=path.split('.').at(-1);}}
 globalThis.AtomicQAFile=File;
-const output=await build({entryPoints:['src/atomic-finance-store.ts'],bundle:true,write:false,platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class App{};export const TFile=globalThis.AtomicQAFile;export const normalizePath=s=>s;export const parseYaml=s=>JSON.parse(s);export const stringifyYaml=s=>JSON.stringify(s)+'\\n';`}));}}]});
+const output=await build({entryPoints:['src/atomic-finance-store.ts'],bundle:true,write:false,platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class App{};export const TFile=globalThis.AtomicQAFile;export const normalizePath=s=>s;export const parseYaml=s=>globalThis.AtomicQAParseYaml(s);export const stringifyYaml=s=>JSON.stringify(s)+'\\n';`}));}}]});
 const {AtomicFinanceStore,transactionFields,legacyFields}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
 function harness(){
  const nodes=new Map(),text=new Map();let failTrash=false,failSource=false;
@@ -330,4 +332,20 @@ test('missing untracked titles can be restored only when a provider description 
  await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).title,'ATM withdrawal');
  await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{delete f.title;delete f.providerTitle;delete f.providerName;});
  assert.deepEqual(await h.store.reviewTransactionTitles(),[]);
+});
+
+test('Wallet history uses current property keys at vault root and preserves user edits on retry',async()=>{
+ const bundle=await build({entryPoints:['src/finance-wallet.ts'],bundle:true,write:false,platform:'node',format:'esm'});
+ const {parseWalletParts,walletTransactionID}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+ const h=harness();h.app.plugins={plugins:{'tps-finances':{settings:{propertyNames:{keys:{type:'transactionType',amount:'money',title:'label',current:'balance'}}}}}};
+ const store=new AtomicFinanceStore(h.app,'');
+ const a='11111111-1111-4111-8111-111111111111',id='22222222-2222-4222-8222-222222222222';
+ const raw={version:1,accounts:[{id:a,name:'Synthetic Savings',institution:'Fixture',kind:'asset',currency:'USD',current:'100'}],transactions:[{id,accountID:a,date:'2026-09-21',description:'SYNTHETIC PURCHASE',merchant:'Synthetic Shop',amount:'10',direction:'debit',status:'pending',currency:'USD',transactionType:'pointOfSale'}],deletedTransactions:[]};
+ async function apply(){const plan=parseWalletParts([raw]);const paths=await store.upsertAccounts(plan.accounts);const state={plaidUserId:'',items:[],providerIdentityMap:{['transaction:financekit:'+id]:walletTransactionID(id)}};await store.applyTransactions(plan.transactions,[],plan.removed,state,paths);return paths;}
+ const paths=await apply(),file=h.nodes.get(walletTransactionID(id)+'.md');
+ assert.equal(h.fm(paths.values().next().value).balance,100);assert.equal(h.fm(file.path).money,-10);assert.equal(h.fm(file.path).transactionType,'transaction');assert.equal(h.fm(file.path).type,undefined);
+ await h.app.fileManager.processFrontMatter(file,fm=>{fm.label='User title';fm.tags=['budget/test'];fm.categoryOverride='Groceries';});h.text.set(file.path,h.text.get(file.path)+'Keep receipt details\n');
+ raw.transactions[0].status='booked';raw.transactions[0].amount='12.25';await apply();await apply();
+ const fm=h.fm(file.path);assert.equal(fm.money,-12.25);assert.equal(fm.label,'User title');assert.deepEqual(fm.tags,['budget/test']);assert.equal(fm.categoryOverride,'Groceries');assert.match(h.text.get(file.path),/Keep receipt details/);
+ raw.transactions=[];raw.deletedTransactions=[id];h.failTrash();await assert.rejects(apply(),/trash failure/);assert.ok(h.nodes.has(file.path));
 });

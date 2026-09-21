@@ -257,6 +257,14 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
           this.renderSettings(!relay);
         }));
 
+    new Setting(parent).setName("Apple Card & Savings")
+      .setDesc("Connect Apple Wallet in TishOS on your iPhone. Enable Import Apple Wallet on the finance Controller; it writes accounts and transactions using your Atomic note and property settings.")
+      .addButton(button => button.setButtonText("Open Controller settings").onClick(() => {
+        const controller = (this.app as any).plugins?.plugins?.['tps-controller']?.api;
+        if (typeof controller?.openPlaidSettings === 'function') { controller.openPlaidSettings(); return; }
+        const settings = (this.app as any).setting; settings?.open(); settings?.openTabById('tps-controller');
+      }));
+
     parent.createEl("h4", { text: relay ? "Shared connections" : "Connections on this device" });
     const items = this.plugin.getConnectedItems();
     if (!items.length) parent.createEl("p", { text: relay ? "No shared connections received yet." : "No Plaid Items are connected on this device.", cls: "setting-item-description" });
