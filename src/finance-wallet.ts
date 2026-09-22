@@ -37,11 +37,15 @@ export function parseWalletParts(parts: unknown[]): { accounts: FinanceAccount[]
         for (const value of part.accounts) {
             const a = object(value), id = identifier(a.id), kind = a.kind;
             if (kind !== 'asset' && kind !== 'liability') throw new Error('Unknown Wallet account type.');
+            // The native Wallet contract reports positive debt owed. TPS stores
+            // liabilities as negative net-worth contributions, just like Plaid.
+            const current = amount(a.current, true);
             const account: FinanceAccount = {
                 financeAccountId: walletAccountID(id), providerAccountId: walletProviderID(id), localItemId: 'financekit',
                 institutionName: text(a.institution), name: text(a.name), officialName: text(a.name), mask: '',
                 type: kind === 'liability' ? 'credit' : 'depository', subtype: '', currency: currency(a.currency),
-                current: amount(a.current, true), available: amount(a.available, true), limit: amount(a.limit, true),
+                current: current === null || kind === 'asset' || current === 0 ? current : -current,
+                available: amount(a.available, true), limit: amount(a.limit, true),
             };
             if (accounts.has(account.financeAccountId)) throw new Error('Duplicate Wallet account.');
             if (accounts.size >= 100) throw new Error('Wallet transfer has too many accounts.');

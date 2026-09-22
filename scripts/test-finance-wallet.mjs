@@ -1,15 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
-const out=await build({entryPoints:['src/finance-wallet.ts'],bundle:true,write:false,platform:'node',format:'esm'});
-const {parseWalletParts}=await import('data:text/javascript;base64,'+Buffer.from(out.outputFiles[0].text).toString('base64'));
+const out=await build({stdin:{contents:'export * from "./src/finance-wallet";export * from "./src/finance-summary";',resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm'});
+const {parseWalletParts,accountSummaries}=await import('data:text/javascript;base64,'+Buffer.from(out.outputFiles[0].text).toString('base64'));
 const a='11111111-1111-4111-8111-111111111111', t='22222222-2222-4222-8222-222222222222';
 const account={id:a,name:'Synthetic Card',institution:'Synthetic Bank',kind:'liability',currency:'USD',current:'100.50',available:'899.50',limit:'1000'};
 const transaction={id:t,accountID:a,date:'2026-09-21',description:'SYNTHETIC PURCHASE',merchant:'Synthetic Shop',amount:'12.50',direction:'debit',status:'pending',currency:'USD',transactionType:'pointOfSale'};
 const part=(transactions=[transaction])=>({version:1,accounts:[account],transactions,deletedTransactions:[]});
 test('Wallet preserves provider identities and converts debit/credit into TPS signs',()=>{
- const debit=parseWalletParts([part()]); assert.equal(debit.transactions[0].amount,-12.5); assert.equal(debit.accounts[0].current,100.5); assert.equal(debit.accounts[0].type,'credit');
+ const debit=parseWalletParts([part()]); assert.equal(debit.transactions[0].amount,-12.5); assert.equal(debit.accounts[0].current,-100.5); assert.equal(debit.accounts[0].type,'credit');
  const credit=parseWalletParts([part([{...transaction,direction:'credit',status:'booked'}])]); assert.equal(credit.transactions[0].amount,12.5); assert.equal(credit.transactions[0].pending,false); assert.equal(credit.transactions[0].financeId,debit.transactions[0].financeId);
+});
+test('Apple Card debt reduces net worth while Savings remains an asset, and credit/zero/unknown balances retain meaning',()=>{
+ const card=parseWalletParts([part([])]).accounts[0];
+ const savings={...card,financeAccountId:'savings',type:'depository',current:1000};
+ assert.deepEqual(accountSummaries([card,savings],[]),[{currency:'USD',netWorth:899.5,cash:1000,investments:0,debt:100.5,assets:0}]);
+ for(const [incoming,expected] of [['-25',25],['0',0],[null,null],[undefined,null]]) {
+  const p=part([]);p.accounts[0]={...account,current:incoming};
+  const a=parseWalletParts([p]).accounts[0];assert.equal(a.current,expected);assert.equal(a.available,899.5);assert.equal(a.limit,1000);
+ }
 });
 test('asset overdrawn and zero balances remain exact, unavailable balances stay null',()=>{
  const input=part([]); input.accounts=[{...account,kind:'asset',current:'-10.01',available:'0',limit:null}];

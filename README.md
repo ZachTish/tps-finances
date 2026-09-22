@@ -1,5 +1,36 @@
 # TPS Finances
 
+## Apple Card import corrections — 1.8.1
+
+Apple Card debt now reduces net worth consistently with Plaid credit accounts.
+The native Wallet message represents money owed as positive; Finances converts
+that to a negative account balance. An overpayment becomes a positive asset,
+while zero and unavailable balances remain zero and unknown. Available credit,
+credit limits, transaction signs and Apple Savings balances are unchanged.
+
+The Wallet importer also prepares the configured finance folder before writing
+notes. A first import into a new folder now works without a prior Plaid sync or
+manual account creation; root storage continues to work.
+
+The next successful Wallet import updates existing account notes in place using
+the configured balance property. No connection reset, ID change, new setting,
+frontmatter key or startup migration is introduced. The five settings routes,
+commands and mobile UI remain unchanged. This is a backward-compatible patch;
+Obsidian 1.12.0+ is still required (Controller requires 1.12.3+).
+
+Regression tests cover Card/Savings net worth, overpayments, zero/unknown balances,
+root storage with a renamed balance key, fresh-folder setup before writes, and repeated corrections preserving
+transaction amounts and user content. Real Apple account authorization and
+reconciliation require TishOS 0.17.0 (147) on the paired iPhone.
+
+Validation: 254/254 tests and typecheck/build pass. The reloaded 1.8.1 test-vault
+backend created a fresh synthetic finance folder, Card/Savings account notes and
+a purchase, then applied an overpayment and corrected purchase twice without
+duplicates. Renamed balance/amount/title keys, user title/tags/category and receipt
+body were preserved. Test fixtures were archived directly; finance settings,
+Controller role and both data.json files were unchanged. No outbound provider was
+enabled. The final separate production build deploys only to the test vault.
+
 ## Apple Card and Savings — 1.8.0
 
 TishOS 0.17.0 on one iPhone can read the Apple Wallet accounts and history you
@@ -15,7 +46,7 @@ and pause during unfinished property migrations. Apple transaction identities
 are stable on the paired phone: retries and pending/posted corrections update
 one note. User transaction titles, categories, tags, extra properties and bodies
 survive updates. Debit spending is negative, credits positive; credit-card
-balances are positive amounts owed, while overpayments may be negative.
+balances are negative amounts owed, while overpayments may be positive.
 Unavailable balances remain unknown rather than zero. Transfers and known
 purchase/fee/interest types feed the existing classification; ambiguous movements
 remain for review, with no guessed category.
@@ -50,7 +81,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.8.0](https://github.com/ZachTish/tps-finances/releases/tag/1.8.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.8.1](https://github.com/ZachTish/tps-finances/releases/tag/1.8.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

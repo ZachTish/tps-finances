@@ -292,6 +292,7 @@ export default class TPSFinancesPlugin extends Plugin {
         this.syncing = true;
         try {
           const store = this.createStore();
+          await store.ensureStructure();
           const paths = await store.upsertAccounts(batch.accounts);
           const identityMap: Record<string, string> = {};
           for (const transaction of batch.transactions) identityMap[`transaction:${transaction.providerTransactionId}`] = transaction.financeId;

@@ -347,5 +347,10 @@ test('Wallet history uses current property keys at vault root and preserves user
  await h.app.fileManager.processFrontMatter(file,fm=>{fm.label='User title';fm.tags=['budget/test'];fm.categoryOverride='Groceries';});h.text.set(file.path,h.text.get(file.path)+'Keep receipt details\n');
  raw.transactions[0].status='booked';raw.transactions[0].amount='12.25';await apply();await apply();
  const fm=h.fm(file.path);assert.equal(fm.money,-12.25);assert.equal(fm.label,'User title');assert.deepEqual(fm.tags,['budget/test']);assert.equal(fm.categoryOverride,'Groceries');assert.match(h.text.get(file.path),/Keep receipt details/);
+ // A fresh Wallet snapshot repairs an old positive-debt record through the
+ // configured balance property, without changing its identity or other notes.
+ raw.accounts[0].kind='liability';await apply();await apply();
+ assert.equal(h.fm(paths.values().next().value).balance,-100);assert.equal(h.fm(paths.values().next().value).current,undefined);
+ assert.equal(h.fm(file.path).money,-12.25);assert.match(h.text.get(file.path),/Keep receipt details/);
  raw.transactions=[];raw.deletedTransactions=[id];h.failTrash();await assert.rejects(apply(),/trash failure/);assert.ok(h.nodes.has(file.path));
 });
