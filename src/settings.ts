@@ -1,10 +1,10 @@
 import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS } from "./finance-properties";
 import { previewPropertyMigration, propertyChanges } from "./property-migration";
-import { App, ButtonComponent, Modal, Notice, Platform, PluginSettingTab, SecretComponent, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type TPSFinancesPlugin from "./main";
-import type { PlaidEnvironment, TransactionLogTarget } from "./types";
+import type { TransactionLogTarget } from "./types";
 
-type FinanceSettingsRoute = "plaid" | "data" | "connections" | "rules" | "properties";
+type FinanceSettingsRoute = "data" | "rules" | "properties";
 
 const FINANCE_SETTINGS_ROUTES: Array<{
   id: FinanceSettingsRoute;
@@ -12,19 +12,9 @@ const FINANCE_SETTINGS_ROUTES: Array<{
   description: string;
 }> = [
   {
-    id: "plaid",
-    title: "Plaid setup",
-    description: "Choose the environment and device-local credentials.",
-  },
-  {
     id: "data",
     title: "Data & routing",
     description: "Choose storage, history, and transaction ownership.",
-  },
-  {
-    id: "connections",
-    title: "Connections",
-    description: "Connect, sync, disconnect, and troubleshoot institutions.",
   },
   {
     id: "rules",
@@ -35,7 +25,7 @@ const FINANCE_SETTINGS_ROUTES: Array<{
 ];
 
 export class TPSFinancesSettingTab extends PluginSettingTab {
-  private activeRoute: FinanceSettingsRoute = "plaid";
+  private activeRoute: FinanceSettingsRoute = "data";
   private propertyGroup = "Common";
   private propertyDraft: Record<string, string> | null = null;
   private propertyBaseline: FinanceProperties | null = null;
@@ -44,11 +34,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  openConnections(): void {
-    this.activeRoute = "connections";
-    const settings = (this.app as any).setting;
-    settings?.open(); settings?.openTabById("tps-finances");
-  }
+  openConnections(): void { this.plugin.openConnectionSettings(); }
 
   display(): void {
     this.renderSettings();
@@ -59,7 +45,9 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     const scrollTop = containerEl.scrollTop;
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Finances" });
-    containerEl.createEl("p", { text: "Bank credentials stay in the Controller’s SecretStorage when devices are paired." });
+    new Setting(containerEl).setName("Bank connections")
+      .setDesc("Managed in TPS Controller.")
+      .addButton(button => button.setButtonText("Open connections").onClick(() => this.openConnections()));
 
     const hub = containerEl.createDiv({ cls: "tps-finances-settings-hub" });
     hub.createEl("h3", { text: "Choose what to configure" });
@@ -92,9 +80,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     const page = containerEl.createDiv({ cls: "tps-finances-settings-page" });
     const pageHeading = page.createEl("h3", { text: route.title, attr: { tabindex: "-1" } });
 
-    if (route.id === "plaid") this.renderPlaidSettings(page);
-    else if (route.id === "data") this.renderDataSettings(page);
-    else if (route.id === "connections") this.renderConnectionSettings(page);
+    if (route.id === "data") this.renderDataSettings(page);
     else if (route.id === "properties") this.renderPropertySettings(page);
     else this.renderRulesSettings(page);
 
@@ -167,17 +153,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     }
   }
 
-  private renderPlaidSettings(parent: HTMLElement): void {
-    new Setting(parent).setName("Plaid connection · This device")
-      .setDesc("TPS Controller owns the environment, credentials, and Plaid requests. Manage your institutions here under Connections.")
-      .addButton(button => button.setButtonText("Open Controller settings").onClick(() => {
-        const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
-        if (typeof controller?.openPlaidSettings === "function") { controller.openPlaidSettings(); return; }
-        const settings = (this.app as any).setting;
-        settings?.open(); settings?.openTabById("tps-controller");
-      }));
-  }
-
   private renderDataSettings(parent: HTMLElement): void {
     new Setting(parent).setName("Record format")
       .addDropdown(dropdown => dropdown.addOption("atomic-note", "Atomic note").addOption("atomic-line", "Atomic line")
@@ -206,12 +181,10 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         } catch (error) { new Notice(String(error)); }
       }));
 
-    new Setting(parent)
-      .setName("Transaction history")
-      .setDesc("Days requested when a new Item is connected (30–730).")
-      .addText((text) => text.setValue(String(this.plugin.settings.transactionHistoryDays)).onChange(async (value) => {
-        const parsed = Number(value);
-        if (Number.isFinite(parsed)) this.plugin.settings.transactionHistoryDays = Math.max(30, Math.min(730, Math.round(parsed)));
+    new Setting(parent).setName("Debug logging")
+      .setDesc("Log record and sync outcomes without tokens or transaction descriptions.")
+      .addToggle(toggle => toggle.setValue(this.plugin.settings.enableLogging).onChange(async value => {
+        this.plugin.settings.enableLogging = value;
         await this.plugin.saveSettings();
       }));
 
@@ -225,78 +198,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           await this.plugin.setDefaultTransactionLogTarget(value as TransactionLogTarget);
         }));
-  }
-
-  private renderConnectionSettings(parent: HTMLElement): void {
-    const plaidSetup = this.plugin.getPlaidSetupStatus();
-    const relay = this.plugin.getRelayStatus();
-    if (relay) new Setting(parent).setName(relay.online ? "Controller connected" : "Waiting for Controller").setDesc(relay.message);
-
-    new Setting(parent)
-      .setName("Connect another institution")
-      .setDesc(relay ? "Sign in through Plaid in your browser. The Controller saves the connection and imports your notes." : Platform.isDesktopApp && !Platform.isMobile
-        ? "Opens Plaid Link in your browser through a temporary localhost callback."
-        : "Connect or reconnect on desktop, then sync the finance notes with your vault. Manual accounts and transactions work here.")
-      .addButton((button) => button
-        .setButtonText("Connect with Plaid")
-        .setCta()
-        .setDisabled(!this.plugin.canConnectPlaid() || plaidSetup.state !== "ready")
-        .onClick(async () => {
-          await this.plugin.runConnectPlaid("settings");
-          this.renderSettings(!relay);
-        }));
-
-    new Setting(parent)
-      .setName("Sync now")
-      .setDesc("Refresh accounts, transactions, investments, and snapshots. Paired devices send the request to the Controller.")
-      .addButton((button) => button
-        .setButtonText("Sync finances")
-        .setDisabled(!relay && this.plugin.getConnectedItems().length === 0)
-        .onClick(async () => {
-          await this.plugin.runSync("settings");
-          this.renderSettings(!relay);
-        }));
-
-    new Setting(parent).setName("Apple Card & Savings")
-      .setDesc("Connect Apple Wallet in TishOS on your iPhone. Enable Import Apple Wallet on the finance Controller; it writes accounts and transactions using your Atomic note and property settings.")
-      .addButton(button => button.setButtonText("Open Controller settings").onClick(() => {
-        const controller = (this.app as any).plugins?.plugins?.['tps-controller']?.api;
-        if (typeof controller?.openPlaidSettings === 'function') { controller.openPlaidSettings(); return; }
-        const settings = (this.app as any).setting; settings?.open(); settings?.openTabById('tps-controller');
-      }));
-
-    parent.createEl("h4", { text: relay ? "Shared connections" : "Connections on this device" });
-    const items = this.plugin.getConnectedItems();
-    if (!items.length) parent.createEl("p", { text: relay ? "No shared connections received yet." : "No Plaid Items are connected on this device.", cls: "setting-item-description" });
-    for (const item of items) {
-      new Setting(parent)
-        .setName(item.institutionName)
-        .setDesc(`${item.environment} · ${item.lastSyncAt ? `Last synced ${new Date(item.lastSyncAt).toLocaleString()}` : "Not synced yet"}`)
-        .addButton((button) => button.setButtonText("Reconnect").setDisabled(!this.plugin.canConnectPlaid()).onClick(async () => {
-          await this.plugin.runReconnectItem(item.localItemId);
-          this.renderSettings(!relay);
-        }))
-        .addButton((button) => button.setButtonText("Disconnect").setWarning().onClick(() => {
-          new DisconnectItemModal(this.app, item.institutionName, async () => {
-            await this.plugin.disconnectItem(item.localItemId);
-            this.renderSettings(true);
-          }).open();
-        }));
-    }
-
-    for (const operation of this.plugin.getRelayOperations().slice(-10).reverse()) {
-      new Setting(parent).setName(`${operation.action[0].toUpperCase()}${operation.action.slice(1)} · ${operation.state}`)
-        .setDesc(operation.message)
-        .addButton(button=>button.setButtonText(operation.url ? "Continue sign-in" : "View request").onClick(()=>this.plugin.showFinanceRequest(operation.id)));
-    }
-
-    new Setting(parent)
-      .setName("Debug logging")
-      .setDesc("Log sync routes and aggregate results. Tokens, raw payloads, and transaction descriptions are never logged.")
-      .addToggle((toggle) => toggle.setValue(this.plugin.settings.enableLogging).onChange(async (value) => {
-        this.plugin.settings.enableLogging = value;
-        await this.plugin.saveSettings();
-      }));
   }
 
   private renderRulesSettings(parent: HTMLElement): void {
@@ -320,28 +221,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       .setDesc("Plan income, fixed expenses, flexible spending, and savings contributions.")
       .addButton((button) => button.setButtonText("Open budget").onClick(() => void this.plugin.openDashboard("budget")))
       .addButton((button) => button.setButtonText("Add budget").onClick(() => this.plugin.addMonthlyBudget()));
-  }
-}
-
-class DisconnectItemModal extends Modal {
-  constructor(app: App, private readonly institution: string, private readonly confirm: () => Promise<void>) {
-    super(app);
-  }
-
-  onOpen(): void {
-    this.modalEl.addClass("tps-keyboard-aware-modal");
-    this.titleEl.setText(`Disconnect ${this.institution}?`);
-    this.contentEl.createEl("p", { text: "This removes the Plaid Item and its local access token. Existing Markdown account, ledger, and snapshot records remain in the vault." });
-    const actions = this.contentEl.createDiv({ cls: "tps-finances-confirm-actions" });
-    new ButtonComponent(actions).setButtonText("Cancel").onClick(() => this.close());
-    new ButtonComponent(actions).setButtonText("Disconnect").setWarning().onClick(async () => {
-      try {
-        await this.confirm();
-        this.close();
-      } catch (error) {
-        new Notice(error instanceof Error ? error.message : String(error), 10000);
-      }
-    });
   }
 }
 

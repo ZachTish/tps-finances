@@ -59,6 +59,7 @@ interface FinancesViewPlugin {
   getDashboardModel(): Promise<DashboardModel>;
   canConnectPlaid?(): boolean;
   connectPlaid(): Promise<void>;
+  openConnectionSettings(): void;
   syncAll(reason: string): Promise<void>;
   openTransactionSource(transaction: DashboardTransaction): Promise<void>;
   editTransactionClassification(transaction: DashboardTransaction): void;
@@ -191,9 +192,7 @@ export class TPSFinancesView extends ItemView {
     });
     actions.appendChild(add);
     actions.appendChild(actionButton("wand-sparkles", "Rule", () => this.plugin.addCategorizationRule()));
-    const connect = actionButton("link", "Connect", () => void this.runAction(() => this.plugin.connectPlaid()));
-    connect.disabled = this.plugin.canConnectPlaid ? !this.plugin.canConnectPlaid() : !Platform.isDesktopApp || Platform.isMobile;
-    if (connect.disabled) connect.title = "Pair with the finance Controller in TPS Controller settings";
+    const connect = actionButton("link", "Connections", () => this.plugin.openConnectionSettings());
     actions.appendChild(connect);
     actions.appendChild(actionButton("refresh-cw", "Sync", () => void this.runAction(() => this.plugin.syncAll("dashboard"))));
   }
@@ -206,15 +205,14 @@ export class TPSFinancesView extends ItemView {
     const detail = this.plugin.canConnectPlaid?.() && (!Platform.isDesktopApp || Platform.isMobile)
       ? "Connect through your paired Controller. Bank sign-in opens in your browser."
       : (!Platform.isDesktopApp || Platform.isMobile)
-      ? "Add cash accounts and transactions here, or connect Plaid on desktop and sync the finance notes with your vault."
+      ? "Add cash accounts and transactions here, or open Controller connections to connect a bank or Apple Wallet."
       : setupState === "conflicting-credentials"
       ? "Plaid client ID and Plaid secret currently use the same Obsidian secret. Select two different secrets in TPS Controller settings before connecting."
       : setupState === "ready"
         ? "Plaid credentials are ready. Connect an institution to begin syncing accounts and transactions."
         : "Add separate Plaid client ID and environment secrets in TPS Controller settings, then connect an institution.";
     welcome.createEl("p", { text: detail });
-    const connect = actionButton("link", "Connect with Plaid", () => void this.runAction(() => this.plugin.connectPlaid()), true);
-    connect.disabled = this.plugin.canConnectPlaid ? !this.plugin.canConnectPlaid() : !Platform.isDesktopApp || Platform.isMobile;
+    const connect = actionButton("link", "Open connections", () => this.plugin.openConnectionSettings(), true);
     welcome.appendChild(connect);
   }
 

@@ -1,5 +1,20 @@
 # TPS Finances
 
+## 1.9.0 — Records here, connections in Controller
+
+Settings now has **Data & routing** (default), **Rules & budgets**, and **Properties**. Record format, root/folder destination, atomic-note conversion, atomic-line routing, logging, rule/budget actions, and property migration remain here. **Open connections** goes directly to Controller → Connections → Banks & Wallet. The dashboard's Connections action does the same, including on unpaired phones. Its quick Sync action and existing command/API IDs remain compatible.
+
+The old Plaid setup and Connections tabs are removed. Controller now presents Connect, Sync, Reconnect, Disconnect confirmation, pending requests/continued sign-in, and transaction-history depth alongside its own credential/pairing controls. Finances supplies the existing adapter and continues importing/categorizing Markdown records. It remains usable for manual cash, assets, transactions, and budgets without Controller. Connection setup requires Controller 2.6.0+; an older/missing Controller gets a clear notice.
+
+New Apple Wallet connections use TishOS 0.18.2+ on the iPhone to choose a vault/accounts and import automatically. The former instruction to enable a Controller Wallet-import toggle is retired. The legacy relay remains solely for existing imports and safe handoff to the phone writer.
+
+The connection editor API is `api.connectionSettings = { version: 1, render(parent): dispose }`. Controller mounts one editor at a time and disposes it on navigation/hide. Provider-specific editors retain the existing save paths, runtime adapters, commands, and device state. No keys, tokens, pairing authority, queued requests, connection IDs, sync cursors, or note mappings are copied or reset. No connection or provider test runs merely from opening settings. Missing/outdated plugins produce an upgrade/enable message instead of a duplicate configuration surface.
+
+There are no new persisted settings or schema migrations. The three routes use native buttons, aria-pressed, focus restoration, and a narrow scrollable strip. Connection operations disable their invoking button while pending, and detached editors do not render after delayed saves. Disconnect remains confirmed and preserves Markdown records. Minimum Obsidian remains 1.12.0 (Controller needs 1.12.3). This is a minor configuration/API release. See [release validation](release-notes/1.9.0.md) for tests, final build, test deployment/reload/UI checks, limitations and hashes.
+
+## Previous releases (historical settings locations)
+
+
 ## Apple Card import corrections — 1.8.1
 
 Apple Card debt now reduces net worth consistently with Plaid credit accounts.

@@ -7,7 +7,7 @@
   background: var(--background-primary);
 }
 .tps-finances-settings-hub > h3 { margin: 0 0 4px; }
-.tps-finances-settings-routes { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.tps-finances-settings-routes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .tps-finances-settings-route {
   height: auto;
   min-height: auto;

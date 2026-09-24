@@ -11,6 +11,7 @@ const financeModals = readFileSync(new URL("../src/finance-modals.ts", import.me
 const dashboard = readFileSync(new URL("../src/dashboard-view.ts", import.meta.url), "utf8");
 const client = readFileSync(new URL("../src/plaid-client.ts", import.meta.url), "utf8");
 const link = readFileSync(new URL("../src/plaid-link.ts", import.meta.url), "utf8");
+const connections = readFileSync(new URL("../src/connection-settings.ts", import.meta.url), "utf8");
 const settings = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const types = readFileSync(new URL("../src/types.ts", import.meta.url), "utf8");
@@ -773,8 +774,6 @@ test("dashboard action wrapper is limited to self-refreshing mutations", () => {
     .sort();
   assert.deepEqual(actionTargets, [
     "addCashTransaction",
-    "connectPlaid",
-    "connectPlaid",
     "setAccountTransactionLogTarget",
     "setAccountTransactionLogTarget",
     "setAccountTransactionLogTarget",
@@ -843,7 +842,7 @@ test("Connect owns exactly one refresh through normal and already-running Sync p
 });
 
 test("finance settings use a shallow routed hub with complete controls and actions", () => {
-  for (const route of ["Plaid setup", "Data & routing", "Connections", "Rules & budgets"]) {
+  for (const route of ["Data & routing", "Rules & budgets", "Properties"]) {
     assert.ok(settings.includes(`title: "${route}"`));
   }
   for (const control of [
@@ -852,19 +851,19 @@ test("finance settings use a shallow routed hub with complete controls and actio
     "Default transaction location",
     "Debug logging",
   ]) {
-    assert.match(settings, new RegExp(`setName\\("${control}"\\)`));
+    assert.match(settings + connections, new RegExp(`setName\\("${control}"\\)`));
   }
   for (const action of ["Connect with Plaid", "Sync finances", "Open finances", "Add rule", "Add budget"]) {
-    assert.match(settings, new RegExp(`setButtonText\\("${action}"\\)`));
+    assert.match(settings + connections, new RegExp(`setButtonText\\("${action}"\\)`));
   }
 
-  assert.match(settings, /private activeRoute: FinanceSettingsRoute = "plaid"/);
+  assert.match(settings, /private activeRoute: FinanceSettingsRoute = "data"/);
   assert.match(settings, /"aria-pressed": String\(isActive\)/);
   assert.match(settings, /pageHeading\.focus\(\{ preventScroll: true \}\)/);
   assert.match(settings, /pageHeading\.scrollIntoView\(\{ block: "start" \}\)/);
   assert.match(settings, /activeRouteButton\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
-  assert.match(settings, /await this\.plugin\.runConnectPlaid\("settings"\);\s*this\.renderSettings\(!relay\)/);
-  assert.match(settings, /await this\.plugin\.runSync\("settings"\);\s*this\.renderSettings\(!relay\)/);
+  assert.match(connections, /await this\.plugin\.runConnectPlaid\("settings"\)/);
+  assert.match(connections, /await this\.plugin\.runSync\("settings"\)/);
   assert.match(main, /runConnectPlaid\(source: "command" \| "settings"\): Promise<void>/);
   assert.match(main, /runSync\(reason: string\): Promise<void>/);
   assert.doesNotMatch(settings, /createEl\("details"/);
@@ -2318,7 +2317,7 @@ test("transaction sync accepts a terminal 100th page and retains all buffered pa
 
 test("disconnect and logging behavior protect financial integrations", () => {
   assert.match(client, /"\/item\/remove"/);
-  assert.match(settings, /DisconnectItemModal/);
+  assert.match(connections, /DisconnectItemModal/);
   assert.match(readme, /subscription charges/);
   assert.match(main, /logger\.flow\("Sync", "item:done"/);
   assert.doesNotMatch(main, /logger\.[a-z]+\([^\n]*(accessToken|providerItemId)/);
@@ -2404,7 +2403,7 @@ test("Plaid requests fail closed without Controller while manual finance remains
  const plugin = new mainActionModule.default({plugins:{plugins:{}}});
  assert.throws(() => plugin.createPlaidClient('sandbox'), /Enable or update TPS Controller/);
  assert.equal(plugin.getPlaidSetupStatus().state, 'missing-credentials');
- assert.match(settings, /Open Controller settings/);
+ assert.match(settings, /Open connections/);
 });
 test("Plaid normalization delegates the transport when supplied", async () => {
  let seen;

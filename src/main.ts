@@ -1,3 +1,4 @@
+import { FinanceConnectionSettings } from "./connection-settings";
 import { parseWalletParts, walletTransactionID } from "./finance-wallet";
 import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration } from "./property-migration";
 import { financeProperties, FinanceProperties, normalizePropertyNames } from "./finance-properties";
@@ -100,8 +101,13 @@ export default class TPSFinancesPlugin extends Plugin {
       if (!this.syncing && !this.settings.propertyMigration && (file.path.startsWith(root) || oldPath.startsWith(root))) void this.refreshDashboard();
     }));
     (this as any).api = {
+      connectionSettings: { version: 1, render: (parent: HTMLElement) => {
+        const panel = new FinanceConnectionSettings(this.app, this, parent);
+        panel.render();
+        return () => panel.dispose();
+      } },
       controllerFinanceBackend: this.createControllerBackend(),
-      openConnectionSettings: () => financeSettingsTab.openConnections(),
+      openConnectionSettings: () => this.openConnectionSettings(),
       openDashboard: () => this.openDashboard(),
       sync: (reason = "api") => this.syncAll(reason),
       getDashboardModel: () => this.getDashboardModel(),
@@ -315,6 +321,12 @@ export default class TPSFinancesPlugin extends Plugin {
     provider.getConfiguration(this.settings);
     return { ...provider.inspect(), connectedItems: this.deviceState.items.length };
 
+  }
+
+  openConnectionSettings(): void {
+    const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
+    if (typeof controller?.openConnectionSettings === "function") controller.openConnectionSettings("finance");
+    else new Notice("Enable or update TPS Controller to 2.6.0+ to manage connections.");
   }
 
   runConnectPlaid(source: "command" | "settings"): Promise<void> {

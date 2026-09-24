@@ -106,7 +106,7 @@ test('migration updates recognized generated Bases but preserves customized defi
  assert.equal(h.contents.get('Accounts.base'),'custom base');assert.equal(parse(h.contents.get('Transactions.base')).views[0].order[1],'custom date');h.plugin.settings.propertyNames=to.names;await h.store.ensureStructure();assert.ok(!h.files.has('Transactions (Atomic notes).base'));
 });
 test('settings expose every group, preserve existing actions, and explicitly ask migration or decline',()=>{
- const source=readFileSync('src/settings.ts','utf8');for(const label of ['Plaid setup','Data & routing','Connections','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
+ const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & routing','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
  const properties=readFileSync('src/finance-properties.ts','utf8');assert.doesNotMatch(properties,/aliases\(/);assert.doesNotMatch(readFileSync('src/types.ts','utf8'),/propertyDraft|propertyGroup/);
 });
 function pluginHarness(h){
