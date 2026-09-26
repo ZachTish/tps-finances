@@ -18,6 +18,65 @@ const tx={financeId:'local-1',providerTransactionId:'provider-1',financeAccountI
 const accounts=new Map([['account-1','Finances/Accounts/Checking.md']]);
 const state={plaidUserId:'qa',items:[],providerIdentityMap:{'transaction:provider-1':'local-1'}};
 const path='Finances/Transactions/local-1.md';
+const holdingAccount={financeAccountId:'account-1',name:'Investing',institutionName:'Example Bank',currency:'USD',current:100,available:100};
+const namedHolding={financeAccountId:'account-1',securityId:'security-1',name:'Example Company',ticker:'EXM',type:'equity',quantity:2,price:50,value:100,costBasis:90,currency:'USD'};
+const holdingDate=new Date('2026-09-26T12:00:00Z');
+
+test('holding import creates a readable ticker/account filename and title at the vault root',async()=>{
+ const h=harness(),store=new AtomicFinanceStore(h.app,'');
+ const accountPaths=new Map([['account-1','Example Bank Investing •1234.md']]);
+ await store.writeSnapshot([holdingAccount],[namedHolding],accountPaths,holdingDate);
+ const file='EXM — Example Bank Investing •1234.md';
+ assert.ok(h.nodes.has(file));assert.equal(h.fm(file).title,'EXM — Example Bank Investing •1234');
+ assert.equal(h.fm(file).name,'Example Company');assert.equal(h.fm(file).tpsId,'holding-account-1%3Asecurity-1');
+ assert.equal(h.fm(file).account,'[[Example Bank Investing •1234]]');assert.equal(h.fm(file).active,true);
+ await store.writeSnapshot([holdingAccount],[{...namedHolding,value:110}],accountPaths,holdingDate);
+ assert.equal(h.fm(file).value,110);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+});
+test('untickered investments use their supplied name and unsafe filename characters are sanitized',async()=>{
+ const h=harness();await h.store.writeSnapshot([holdingAccount],[{...namedHolding,ticker:'',name:'  Example / Fund: A  '}],accounts,holdingDate);
+ const file='Finances/Holdings/Example - Fund- A — Checking.md';assert.ok(h.nodes.has(file));
+ assert.equal(h.fm(file).title,'Example / Fund: A — Checking');
+});
+test('same investment in different accounts remains distinct and readable',async()=>{
+ const h=harness(),other={...holdingAccount,financeAccountId:'account-2'};
+ await h.store.writeSnapshot([holdingAccount,other],[namedHolding,{...namedHolding,financeAccountId:'account-2'}],new Map([...accounts,['account-2','Finances/Accounts/Retirement.md']]),holdingDate);
+ assert.equal(h.fm('Finances/Holdings/EXM — Checking.md').financeAccountId,'account-1');
+ assert.equal(h.fm('Finances/Holdings/EXM — Retirement.md').financeAccountId,'account-2');
+});
+test('readable-name collisions preserve other notes and repeated identities update one holding',async()=>{
+ const h=harness();await h.app.vault.create('Finances/Holdings/EXM — Checking.md','Personal note');
+ await h.store.writeSnapshot([holdingAccount],[namedHolding,{...namedHolding,value:120},{...namedHolding,securityId:'security-2'}],accounts,holdingDate);
+ assert.equal(h.text.get('Finances/Holdings/EXM — Checking.md'),'Personal note');
+ assert.equal(h.fm('Finances/Holdings/EXM — Checking 2.md').value,120);
+ assert.equal(h.fm('Finances/Holdings/EXM — Checking 3.md').securityId,'security-2');
+ await h.store.writeSnapshot([holdingAccount],[namedHolding,{...namedHolding,securityId:'security-2'}],accounts,holdingDate);
+ assert.equal(h.app.vault.getMarkdownFiles().length,3);
+});
+test('root holding imports remain idempotent and active before metadata catches up',async()=>{
+ const h=harness(),store=new AtomicFinanceStore(h.app,'');h.app.metadataCache.getFileCache=()=>null;
+ await h.app.vault.create('EXM — Checking.md','Personal note');
+ for(let n=0;n<2;n++)await store.writeSnapshot([holdingAccount],[namedHolding],accounts,holdingDate);
+ assert.equal(h.fm('EXM — Checking 2.md').active,true);assert.equal(h.app.vault.getMarkdownFiles().length,2);
+ await store.writeSnapshot([holdingAccount],[],accounts,holdingDate);assert.equal(h.fm('EXM — Checking 2.md').active,false);
+});
+test('sync preserves existing holding paths and edited titles while updating values',async()=>{
+ const h=harness();const file='Finances/Holdings/My long-term position.md';
+ await h.app.vault.create(file,'---\n'+JSON.stringify({...namedHolding,type:'holding',title:'Keep my title',tpsId:'holding-account-1%3Asecurity-1',custom:'keep',tags:['watch']})+'\n---\nMy analysis\n');
+ await h.store.writeSnapshot([holdingAccount],[{...namedHolding,value:120}],accounts,holdingDate);
+ assert.equal(h.fm(file).title,'Keep my title');assert.equal(h.fm(file).value,120);assert.equal(h.fm(file).custom,'keep');assert.deepEqual(h.fm(file).tags,['watch']);assert.match(h.text.get(file),/My analysis/);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+});
+test('holding creation requires an account path and a supplied investment label',async()=>{
+ const h=harness();await assert.rejects(h.store.writeSnapshot([holdingAccount],[namedHolding],new Map(),holdingDate),/account note is missing/);
+ await assert.rejects(h.store.writeSnapshot([holdingAccount],[{...namedHolding,name:'',ticker:''}],accounts,holdingDate),/investment name or ticker/);
+ assert.equal(h.app.vault.getMarkdownFiles().length,0);
+});
+test('existing ID-named holdings are updated in place without automatic renaming or title repair',async()=>{
+ const h=harness(),file='Finances/Holdings/account-1%3Asecurity-1.md';
+ await h.app.vault.create(file,'---\n'+JSON.stringify({...namedHolding,type:'holding',tpsId:'holding-account-1%3Asecurity-1'})+'\n---\n');
+ await h.store.writeSnapshot([holdingAccount],[{...namedHolding,value:150}],accounts,holdingDate);
+ assert.equal(h.fm(file).value,150);assert.equal(h.fm(file).title,undefined);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+});
 test('one note per transaction, repeated addition is idempotent',async()=>{const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);await h.store.applyTransactions([tx],[],[],state,accounts);assert.equal(h.fm(path).amount,-12.5);assert.equal(h.app.vault.getMarkdownFiles().length,1);assert.equal((await h.store.readTransactionRecords()).length,1);});
 test('posted corrections preserve body, custom properties, tags and manual category',async()=>{const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);const f=h.nodes.get(path);await h.app.fileManager.processFrontMatter(f,fm=>{fm.tags=['food/healthy'];fm.categoryOverride='Groceries';fm.custom='keep';});h.text.set(path,h.text.get(path)+'My receipt notes\n');await h.store.applyTransactions([],[{...tx,amount:-15,pending:false}],[],state,accounts);assert.equal(h.fm(path).amount,-15);assert.equal(h.fm(path).pending,false);assert.equal(h.fm(path).custom,'keep');assert.deepEqual(h.fm(path).tags,['food/healthy']);assert.match(h.text.get(path),/My receipt notes/);});
 test('provider removal uses trash and propagates trash failure',async()=>{const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);h.failTrash();await assert.rejects(h.store.applyTransactions([],[],['provider-1'],state,accounts),/trash failure/);assert.ok(h.nodes.has(path));});
@@ -31,7 +90,7 @@ test('interrupted source replacement resumes using verified existing destination
 test('ambiguous migrated identity preserves both representations',async()=>{const h=harness();await legacy(h);await h.store.applyTransactions([{...tx,financeId:'old-1'}],[],[],state,accounts);const r=await h.store.migrateLegacyTransactionLedgers();assert.equal(r.skipped,1);assert.match(h.text.get('Day.md'),/financeId:: old-1/);});
 test('missing account and invalid amount fail rather than silently manufacturing data',async()=>{const h=harness();await assert.rejects(h.store.applyTransactions([tx],[],[],state,new Map()),/account note is missing/);assert.throws(()=>transactionFields({...tx,amount:NaN},'Account.md'),/Invalid/);assert.equal(legacyFields(line.replace('-20','nonsense')),null);});
 test('atomic Bases use core table view; customized legacy Base is preserved',async()=>{const h=harness();await h.app.vault.create('Finances/Transactions.base','custom base');await h.store.ensureStructure();assert.equal(h.text.get('Finances/Transactions.base'),'custom base');const base=JSON.parse(h.text.get('Finances/Transactions (Atomic notes).base'));assert.equal(base.views[0].type,'table');assert.match(base.filters.and[0],/Finances\/Transactions/);});
-test('holdings have individual notes and disappeared holdings become inactive',async()=>{const h=harness();const account={financeAccountId:'account-1',name:'Checking',institutionName:'QA',currency:'USD',current:100,available:100};const holding={financeAccountId:'account-1',securityId:'ABC',name:'QA fund',ticker:'ABC',type:'equity',quantity:2,price:50,value:100,costBasis:90,currency:'USD'};await h.store.writeSnapshot([account],[holding],accounts,new Date('2026-09-13T12:00:00Z'));const file='Finances/Holdings/account-1%3AABC.md';assert.equal(h.fm(file).active,true);assert.equal(h.fm(file).quantity,2);await h.store.writeSnapshot([account],[],accounts,new Date('2026-09-14T12:00:00Z'));assert.equal(h.fm(file).active,false);});
+test('holdings have individual notes and disappeared holdings become inactive',async()=>{const h=harness();const account={financeAccountId:'account-1',name:'Checking',institutionName:'QA',currency:'USD',current:100,available:100};const holding={financeAccountId:'account-1',securityId:'ABC',name:'QA fund',ticker:'ABC',type:'equity',quantity:2,price:50,value:100,costBasis:90,currency:'USD'};await h.store.writeSnapshot([account],[holding],accounts,new Date('2026-09-13T12:00:00Z'));const file='Finances/Holdings/ABC — Checking.md';assert.equal(h.fm(file).active,true);assert.equal(h.fm(file).quantity,2);await h.store.writeSnapshot([account],[],accounts,new Date('2026-09-14T12:00:00Z'));assert.equal(h.fm(file).active,false);});
 test('edited destination after interrupted migration prevents source retirement',async()=>{const h=harness();await legacy(h);h.failSource();await assert.rejects(h.store.migrateLegacyTransactionLedgers());h.restoreSource();await h.app.fileManager.processFrontMatter(h.nodes.get('Finances/Transactions/old-1.md'),fm=>{fm.amount=-100;});assert.equal((await h.store.migrateLegacyTransactionLedgers()).skipped,1);assert.match(h.text.get('Day.md'),/financeId:: old-1/);});
 
 test('migration refreshes legacy records created after an earlier dashboard read',async()=>{const h=harness();await h.store.readTransactionRecords();await legacy(h);assert.equal((await h.store.migrateLegacyTransactionLedgers()).moved,1);});
@@ -61,7 +120,7 @@ test('root atomic storage creates no folders and keeps additions, corrections, h
  assert.equal((await root.readTransactionRecords()).length,1);
  const holding={financeAccountId:'account-1',securityId:'ABC',type:'equity',name:'Fund',quantity:2,price:50,value:100,currency:'USD'};
  await root.writeSnapshot([account],[holding],paths,new Date('2026-09-16T12:00:00Z'));
- assert.equal(h.fm('account-1%3AABC.md').active,true);
+ assert.equal(h.fm('Fund — QA Checking •1234.md').active,true);
  assert.ok([...h.nodes.values()].every(n=>n instanceof File));
  assert.ok([...h.nodes.keys()].every(p=>!p.includes('/')));
  const view=JSON.parse(h.text.get('Transactions.base'));assert.ok(view.filters.and.includes('financeId != null'));assert.ok(!JSON.stringify(view).includes('inFolder'));
@@ -71,13 +130,13 @@ test('root atomic storage creates no folders and keeps additions, corrections, h
 test('switching to root keeps existing account, transaction and holding identities in place',async()=>{
  const h=harness(),account={financeAccountId:'account-1',name:'Checking',institutionName:'QA',currency:'USD',current:100,available:100};
  const paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],state,paths);
- const holding={financeAccountId:'account-1',securityId:'ABC',type:'equity',quantity:2,price:50,value:100,currency:'USD'};
+ const holding={financeAccountId:'account-1',securityId:'ABC',ticker:'ABC',name:'QA fund',type:'equity',quantity:2,price:50,value:100,currency:'USD'};
  await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-16T12:00:00Z'));
  const root=new AtomicFinanceStore(h.app,'');assert.deepEqual(await root.upsertAccounts([account]),paths);
  await root.applyTransactions([],[{...tx,amount:-30}],[],state,paths);
  await root.writeSnapshot([account],[{...holding,value:110}],paths,new Date('2026-09-16T12:00:00Z'));
- assert.equal(h.fm(path).amount,-30);assert.equal(h.fm('Finances/Holdings/account-1%3AABC.md').value,110);
- assert.ok(!h.nodes.has('local-1.md'));assert.ok(!h.nodes.has('account-1%3AABC.md'));
+ assert.equal(h.fm(path).amount,-30);assert.equal(h.fm('Finances/Holdings/ABC — QA Checking.md').value,110);
+ assert.ok(!h.nodes.has('local-1.md'));assert.ok(!h.nodes.has('ABC — QA Checking.md'));
 });
 
 test('root ignores unrelated notes and preserves occupied transaction names',async()=>{

@@ -1,7 +1,7 @@
 import { financeProperties } from "./finance-properties";
 import { financeDirectory, financePath, financePrefix } from "./finance-paths";
 import { App, TFile, parseYaml, stringifyYaml } from "obsidian";
-import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody } from "./finance-store";
+import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody, safeName } from "./finance-store";
 import { normalizeTags } from "./classification";
 import { providerIdentityKey } from "./identity";
 import type { DeviceState, FinanceHolding, FinanceAccount, FinanceTransaction } from "./types";
@@ -272,36 +272,52 @@ export class AtomicFinanceStore extends FinanceStore {
 
   async writeSnapshot(accounts:FinanceAccount[], holdings:FinanceHolding[], accountPaths:Map<string,string>, at:Date):Promise<string> {
     // Current balances and positions live on their notes; atomic mode creates no line snapshots.
+    const titles = holdings.map(holding => holdingTitle(holding, accountPaths.get(holding.financeAccountId)));
     await this.ensureStructure();
     const holdingFiles = new Map<string, TFile>();
     for (const file of this.vaultApp.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(financePrefix(this.folder, "Holdings"))) continue;
-      if (!this.folder && financeProperties(this.vaultApp).cache(this.vaultApp, file)?.type !== "holding") continue;
+      // A just-created or renamed note may not have metadata yet. Its actual
+      // contents still establish identity before choosing a readable filename.
+      if (!this.folder && this.vaultApp.metadataCache.getFileCache(file)
+        && financeProperties(this.vaultApp).cache(this.vaultApp, file)?.type !== "holding") continue;
       const fm = await this.fields(file);
       if (fm.type !== "holding" || !fm.financeAccountId || !fm.securityId) continue;
       const key = `${fm.financeAccountId}:${fm.securityId}`;
       if (holdingFiles.has(key)) throw new Error("Duplicate holding identity; resolve the duplicate notes before syncing.");
       holdingFiles.set(key, file);
     }
-    for (const holding of holdings) {
-      const id=encodeURIComponent(`${holding.financeAccountId}:${holding.securityId}`).replace(/\./g,'%2E');
-      const target=holdingFiles.get(`${holding.financeAccountId}:${holding.securityId}`)?.path || financePath(this.folder, "Holdings", `${id}.md`);
-      const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[this.identityKey()]:`holding-${id}`,account:`[[${(accountPaths.get(holding.financeAccountId)||'').replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10)};
-      const existing=this.vaultApp.vault.getAbstractFileByPath(target);
-      if(existing instanceof TFile)await financeProperties(this.vaultApp).process(this.vaultApp, existing,current=>{if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");Object.assign(current,fm);});
-      else if(existing)throw new Error(`Holding destination occupied: ${target}`);
-      else await this.vaultApp.vault.create(target,`---\n${stringifyYaml(financeProperties(this.vaultApp).write(fm))}---\n`);
+    for (const [index, holding] of holdings.entries()) {
+      const key = `${holding.financeAccountId}:${holding.securityId}`;
+      const id=encodeURIComponent(key).replace(/\./g,'%2E');
+      const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[this.identityKey()]:`holding-${id}`,account:`[[${accountPaths.get(holding.financeAccountId)!.replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10),active:true};
+      const existing = holdingFiles.get(key);
+      if (existing) {
+        if (this.vaultApp.vault.getAbstractFileByPath(existing.path) !== existing) throw new Error("Holding moved during sync.");
+        await financeProperties(this.vaultApp).process(this.vaultApp, existing,current=>{if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");Object.assign(current,fm);});
+      } else {
+        const target = this.uniquePath(financePath(this.folder, "Holdings", `${safeName(titles[index])}.md`));
+        const file = await this.vaultApp.vault.create(target,`---\n${stringifyYaml(financeProperties(this.vaultApp).write({...fm,title:titles[index]}))}---\n`);
+        holdingFiles.set(key, file);
+      }
     }
     // Mark disappeared holdings inactive rather than deleting user-authored content.
     const active=new Set(holdings.map(h=>`${h.financeAccountId}:${h.securityId}`));
     const accountIds=new Set(accounts.map(a=>a.financeAccountId));
-    for(const file of this.vaultApp.vault.getMarkdownFiles().filter(f=>f.path.startsWith(financePrefix(this.folder, "Holdings")))){
-      if (!this.folder && financeProperties(this.vaultApp).cache(this.vaultApp, file)?.type !== "holding") continue;
+    for(const file of holdingFiles.values()){
       const fm=await this.fields(file);
       if(fm.type==='holding'&&accountIds.has(fm.financeAccountId))await financeProperties(this.vaultApp).process(this.vaultApp, file,current=>{current.active=active.has(`${fm.financeAccountId}:${fm.securityId}`);});
     }
     return financePath(this.folder, "", "Holdings.base");
   }
+}
+
+export function holdingTitle(holding: FinanceHolding, accountPath: string | undefined): string {
+  const account = accountPath?.split('/').pop()?.replace(/\.md$/i, '').trim();
+  if (!account) throw new Error("Holding account note is missing.");
+  const label = holding.ticker?.replace(/\s+/g, ' ').trim() || holding.name?.replace(/\s+/g, ' ').trim();
+  if (!label) throw new Error("Holding requires an investment name or ticker.");
+  return `${label} — ${account}`;
 }
 
 export function transactionFields(t:FinanceTransaction,accountPath:string):Fields {

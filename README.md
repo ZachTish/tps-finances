@@ -1,5 +1,15 @@
 # TPS Finances
 
+## 1.11.1 — Readable investment holding names
+
+New atomic holding notes use **Ticker — Account note name**, for example `EXM — Example Bank Investing •1234.md`. Investments without a ticker use their supplied investment name. The full investment name remains in the configured `name` property. The same readable label is written to the configured `title` property on creation; IDs remain unchanged in identity properties.
+
+The originating defect was in `AtomicFinanceStore.writeSnapshot`: it deliberately encoded the account/security identity pair into the filename and omitted a title despite having a ticker and account path. Creation now uses those existing labels and the normal finance filename sanitizer/unique-path allocator. An unrelated occupied name receives a numeric suffix, and distinct accounts retain distinct holding notes. Missing account paths or investment labels stop the write rather than inventing a label or an empty account link.
+
+Sync continues locating existing holdings by account/security IDs, preserving their filenames, edited titles, bodies and unrelated properties. Newly created holdings enter that same in-memory identity index immediately and are written active at creation. Root-mode discovery reads unindexed note content when metadata has not caught up; immediate repeated snapshots do not create duplicate holdings. Disappeared positions retain the existing inactive-note behavior. No watcher, background rename, repair sweep, new settings, title-ownership property or automatic migration was added. Existing ID-named notes require a separately requested one-time rename; installing this release does not rename them.
+
+This is a patch for the existing import operation. The three settings destinations (Data & routing default, Rules & budgets, Properties), connection handoff, disclosures, keyboard/mobile layout, commands, configurable fields and minimum Obsidian 1.12.0 remain unchanged. Focused tests exercise the actual holding writer for root/folder imports, untickered securities, unsafe names, name collisions, repeated IDs, metadata delay, custom titles, old ID-named notes and configured property names. See [release validation](release-notes/1.11.1.md) for the full suite, separate final build, test deployment/reload, installed synthetic import checks, limitations and artifact hashes. Production installation remains the user's BRAT pull.
+
 ## 1.9.0 — Records here, connections in Controller
 
 Settings now has **Data & routing** (default), **Rules & budgets**, and **Properties**. Record format, root/folder destination, atomic-note conversion, atomic-line routing, logging, rule/budget actions, and property migration remain here. **Open connections** goes directly to Controller → Connections → Banks & Wallet. The dashboard's Connections action does the same, including on unpaired phones. Its quick Sync action and existing command/API IDs remain compatible.
@@ -96,7 +106,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.8.1](https://github.com/ZachTish/tps-finances/releases/tag/1.8.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.11.1](https://github.com/ZachTish/tps-finances/releases/tag/1.11.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

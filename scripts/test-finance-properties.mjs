@@ -53,8 +53,8 @@ test('provider accounts, transaction updates and holdings use configured propert
  assert.equal(h.fm('tx1.md')['custom amount'],-7);assert.equal(h.fm('tx1.md')['custom categoryOverride'],'Dining');assert.deepEqual(h.fm('tx1.md')['custom tags'],['food']);assert.equal(h.fm('tx1.md').receipt,'keep');assert.match(h.contents.get('tx1.md'),/Receipt body/);
  assert.equal((await h.store.readTransactionRecords()).length,1);
  await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-20T12:00:00Z'));
- assert.equal(h.fm('account1%3AABC.md')['custom type'],'holding');assert.equal(h.fm(paths.get('account1'))['custom accountType'],'depository');
- await h.store.writeSnapshot([account],[],paths,new Date('2026-09-20T12:00:00Z'));assert.equal(h.fm('account1%3AABC.md')['custom active'],false);
+ assert.equal(h.fm('ABC — Bank Checking •1234.md')['custom type'],'holding');assert.equal(h.fm('ABC — Bank Checking •1234.md')['custom title'],'ABC — Bank Checking •1234');assert.equal(h.fm(paths.get('account1'))['custom accountType'],'depository');
+ await h.store.writeSnapshot([account],[],paths,new Date('2026-09-20T12:00:00Z'));assert.equal(h.fm('ABC — Bank Checking •1234.md')['custom active'],false);
  await h.store.applyTransactions([],[],['provider1'],state,paths);assert.ok(!h.files.has('tx1.md'));
  for(const f of h.app.vault.getMarkdownFiles()) for(const key of FINANCE_PROPERTY_KEYS)assert.ok(!(key in h.fm(f.path)),`${f.path}: ${key}`);
 });

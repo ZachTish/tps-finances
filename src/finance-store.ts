@@ -559,7 +559,7 @@ export class FinanceStore {
     return this.app.vault.create(uniquePath, financeProperties(this.app).note(`---\ntitle: ${yamlString(accountDisplayName(account))}\nkind: account\n---\n`));
   }
 
-  private uniquePath(path: string): string {
+  protected uniquePath(path: string): string {
     if (!this.app.vault.getAbstractFileByPath(path)) return path;
     const base = path.replace(/\.md$/i, "");
     let index = 2;
@@ -626,7 +626,7 @@ function accountDisplayName(account: FinanceAccount): string {
   return `${account.institutionName} ${account.name}${suffix}`.trim();
 }
 
-function safeName(value: string): string {
+export function safeName(value: string): string {
   return value.replace(/[\\/:*?"<>|#^[\]]/g, "-").replace(/\s+/g, " ").trim() || "Account";
 }
 
