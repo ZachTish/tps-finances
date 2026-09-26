@@ -28,11 +28,13 @@ export function normalizePropertyNames(value?: Partial<FinancePropertyNames>): F
   return result;
 }
 
+interface KindCodec { encode(fields: Fields): Fields; decode(fields: Fields): Fields; definition(kind: string): { parentKind: string; key: string; value: string } | null; }
+
 export class FinanceProperties {
   readonly names: FinancePropertyNames;
-  constructor(names?: Partial<FinancePropertyNames>) { this.names = normalizePropertyNames(names); }
+  constructor(names?: Partial<FinancePropertyNames>, private readonly kinds?: KindCodec) { this.names = normalizePropertyNames(names); }
   key(canonical: string): string { return this.names.keys[canonical] || canonical; }
-  get customized(): boolean { return Boolean(Object.keys(this.names.keys).length); }
+  get customized(): boolean { return Boolean(this.kinds || Object.keys(this.names.keys).length); }
 
   read(raw: Fields = {}): Fields {
     const fields = {...raw};
@@ -45,12 +47,12 @@ export class FinanceProperties {
       const key = this.key(canonical);
       if (own(raw, key)) fields[canonical] = raw[key];
     }
-    return fields;
+    return this.kinds ? this.kinds.decode(fields) : fields;
   }
 
   write(fields: Fields): Fields {
     const raw: Fields = {};
-    for (const [canonical, value] of Object.entries(fields)) {
+    for (const [canonical, value] of Object.entries(this.kinds ? this.kinds.encode(fields) : fields)) {
       const key = this.key(canonical);
       if (own(raw, key)) throw new Error(`Finance property collision: ${key}.`);
       raw[key] = value;
@@ -94,10 +96,18 @@ export class FinanceProperties {
   base(content: string): string {
     if (!this.customized) return content;
     const definition = parseYaml(content);
-    const expression = (text: string): string => text.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_][A-Za-z0-9_]*\b/g, (token, offset) => {
-      if (!FINANCE_PROPERTY_KEYS.includes(token) || text[offset - 1] === "." || this.key(token) === token) return token;
-      return `note[${JSON.stringify(this.key(token))}]`;
+    const expression = (text: string): string => {
+      const classified = text.replace(/(?<![\w.])(?:note\.)?kind\s*(==|!=)\s*(["'])([^"']+)\2/g, (all, operator, quote, kind) => {
+      const mapping = this.kinds?.definition(kind);
+      if (!mapping) return all;
+      const match = `(kind == ${JSON.stringify(mapping.parentKind)} && note[${JSON.stringify(mapping.key)}] == ${JSON.stringify(mapping.value)})`;
+      return operator === '!=' ? `!${match}` : match;
     });
+      return classified.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_][A-Za-z0-9_]*\b/g, (token, offset) => {
+      if (!FINANCE_PROPERTY_KEYS.includes(token) || classified[offset - 1] === "." || this.key(token) === token) return token;
+      return `note[${JSON.stringify(this.key(token))}]`;
+      });
+    };
     const filter = (value: any): any => typeof value === "string" ? expression(value) : Array.isArray(value) ? value.map(filter)
       : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, filter(item)])) : value;
     if (definition.filters) definition.filters = filter(definition.filters);
@@ -112,9 +122,26 @@ export class FinanceProperties {
   }
 }
 
+export function financeKindCodec(api: KindCodec | undefined): KindCodec | undefined {
+  if (!api) return undefined;
+  const canonical: Record<string, string> = { transaction: 'finance-transaction', investmentTransaction: 'investment-transaction', financeRule: 'finance-rule', financeBudget: 'finance-budget' };
+  const original = Object.fromEntries(Object.entries(canonical).map(([from, to]) => [to, from]));
+  return {
+    definition: kind => api.definition(canonical[kind] || kind),
+    encode: fields => {
+      const kind = canonical[fields.kind] || fields.kind;
+      return api.encode(api.definition(kind) ? { ...fields, kind } : fields);
+    },
+    decode: fields => {
+      const decoded = api.decode(fields);
+      return original[decoded.kind] && api.definition(decoded.kind) ? { ...decoded, kind: original[decoded.kind] } : decoded;
+    },
+  };
+}
+
 export function financeProperties(app: App): FinanceProperties {
   if ((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyMigration) throw new Error("Resume the property migration in Finances → Properties before using finance records.");
-  const properties = new FinanceProperties((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyNames);
+  const properties = new FinanceProperties((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyNames, financeKindCodec((app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds));
   properties.assertIdentityKey((app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
   return properties;
 }

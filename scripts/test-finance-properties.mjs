@@ -152,3 +152,19 @@ test('collision checks distinguish YAML null and non-finite values and compare n
  for(const value of [NaN,Infinity,-Infinity]){const raw={amount:value,total:null};assert.throws(()=>migrateProperties(raw,from,to),/different value/);assert.equal(raw.total,null);assert.ok(Object.is(raw.amount,value));}
  const raw={tags:[{a:1,b:false}],labels:[{b:false,a:1}]};migrateProperties(raw,from,to);assert.ok(!('tags' in raw));assert.deepEqual(raw.labels,[{a:1,b:false}]);
 });
+
+test('GCM kind classifications cover account creation, transaction import/update, manual cash and generated account filters',async()=>{
+ const defs={account:{parentKind:'entity',key:'entityKind',value:'account'},'finance-transaction':{parentKind:'transaction',key:'transactionKind',value:'financial'},'investment-transaction':{parentKind:'transaction',key:'transactionKind',value:'investment'},holding:{parentKind:'entity',key:'entityKind',value:'holding'}};
+ const codec={definition:k=>defs[k]||null,encode:f=>{const d=defs[f.kind];return d?{...f,kind:d.parentKind,[d.key]:d.value}:{...f}},decode:f=>{const entry=Object.entries(defs).find(([,d])=>f.kind===d.parentKind&&f[d.key]===d.value);if(!entry)return {...f};const result={...f,kind:entry[0]};delete result[entry[1].key];return result}};
+ const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const paths=await h.store.upsertAccounts([account]);assert.equal(h.fm(paths.get('account1')).kind,'entity');assert.equal(h.fm(paths.get('account1')).entityKind,'account');
+ await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
+ assert.equal(h.fm('tx1.md').kind,'transaction');assert.equal(h.fm('tx1.md').transactionKind,'financial');
+ await h.store.applyTransactions([],[{...tx,amount:-9}],[],structuredClone(state),paths);
+ assert.equal(h.fm('tx1.md').transactionKind,'financial');assert.equal((await h.store.readTransactionRecords()).length,1);
+ const cash=await h.manual.createAccount({kind:'cash',name:'Wallet',currency:'USD',value:20,valuationDate:'2026-09-26',purchaseTransaction:'',liabilityAccount:'',assetType:''});assert.equal(h.fm(cash.path).entityKind,'account');
+ const props=financeProperties(h.app);
+ assert.deepEqual(props.read(props.write({kind:'investmentTransaction',type:'investmentTransaction',amount:7})),{kind:'investmentTransaction',type:'investmentTransaction',amount:7});
+ const dotted=new FinanceProperties({keys:{kind:'recordKind'}},codec).base('filters:\n  and:\n    - note.kind == "account"\nviews: []\n');assert.doesNotMatch(dotted,/note\.\(/);assert.match(dotted,/recordKind/);
+ const base=new FinanceProperties(undefined,codec).base('filters:\n  and:\n    - kind == "account"\nviews: []\n');assert.match(base,/entityKind/);assert.match(base,/entity/);
+});
