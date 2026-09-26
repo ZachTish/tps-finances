@@ -28,7 +28,7 @@ export function normalizePropertyNames(value?: Partial<FinancePropertyNames>): F
   return result;
 }
 
-interface KindCodec { encode(fields: Fields): Fields; decode(fields: Fields): Fields; definition(kind: string): { parentKind: string; key: string; value: string } | null; }
+interface KindCodec { encode(fields: Fields): Fields; decode(fields: Fields): Fields; definition(kind: string): { parentKind: string; key: string; value: string } | { tag: string } | null; }
 
 export class FinanceProperties {
   readonly names: FinancePropertyNames;
@@ -100,7 +100,7 @@ export class FinanceProperties {
       const classified = text.replace(/(?<![\w.])(?:note\.)?kind\s*(==|!=)\s*(["'])([^"']+)\2/g, (all, operator, quote, kind) => {
       const mapping = this.kinds?.definition(kind);
       if (!mapping) return all;
-      const match = `(kind == ${JSON.stringify(mapping.parentKind)} && note[${JSON.stringify(mapping.key)}] == ${JSON.stringify(mapping.value)})`;
+      const match = "tag" in mapping ? `file.hasTag(${JSON.stringify(mapping.tag)})` : `(kind == ${JSON.stringify(mapping.parentKind)} && note[${JSON.stringify(mapping.key)}] == ${JSON.stringify(mapping.value)})`;
       return operator === '!=' ? `!${match}` : match;
     });
       return classified.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_][A-Za-z0-9_]*\b/g, (token, offset) => {

@@ -168,3 +168,15 @@ test('GCM kind classifications cover account creation, transaction import/update
  const dotted=new FinanceProperties({keys:{kind:'recordKind'}},codec).base('filters:\n  and:\n    - note.kind == "account"\nviews: []\n');assert.doesNotMatch(dotted,/note\.\(/);assert.match(dotted,/recordKind/);
  const base=new FinanceProperties(undefined,codec).base('filters:\n  and:\n    - kind == "account"\nviews: []\n');assert.match(base,/entityKind/);assert.match(base,/entity/);
 });
+
+test('tag mappings support finance import, repeat updates and generated Base predicates',async()=>{
+ const tags={account:'accounts', 'finance-transaction':'kind/financial/transaction'};
+ const codec={definition:k=>tags[k]?{tag:tags[k]}:null,encode:f=>{if(!tags[f.kind])return {...f};const out={...f,tags:[...new Set([...(f.tags||[]),tags[f.kind]])]};delete out.kind;return out;},decode:f=>({...f,...(Object.entries(tags).find(([,tag])=>f.tags?.includes(tag))?{kind:Object.entries(tags).find(([,tag])=>f.tags?.includes(tag))[0]}:{})})};
+ const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const paths=await h.store.upsertAccounts([account]);assert.equal(h.fm(paths.get('account1')).kind,undefined);assert.ok(h.fm(paths.get('account1')).tags.includes('accounts'));
+ await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
+ await h.store.applyTransactions([],[{...tx,amount:-9}],[],structuredClone(state),paths);
+ assert.equal(h.fm('tx1.md').kind,undefined);assert.equal((await h.store.readTransactionRecords()).length,1);
+ const base=financeProperties(h.app).base('filters:\n  and:\n    - kind == "transaction"\n    - note.kind != "account"\nviews: []\n');
+ assert.match(base,/file\.hasTag\("kind\/financial\/transaction"\)/);assert.match(base,/!file\.hasTag\("accounts"\)/);assert.doesNotMatch(base,/undefined/);
+});
