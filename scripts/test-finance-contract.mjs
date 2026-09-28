@@ -1118,14 +1118,14 @@ test("snapshot reads reuse one document and select the latest file in one pass",
   assert.match(balancesImplementation, /lines\.filter/);
   assert.doesNotMatch(balancesImplementation, /latestSnapshotFile|cachedRead/);
 
-  const dashboardStart = main.indexOf("async getDashboardModel()");
+  const dashboardStart = main.indexOf("async getDashboardModel(");
   const dashboardEnd = main.indexOf("\n  addManualAccount(", dashboardStart);
-  assert.ok(dashboardEnd > dashboardStart, "inspect only the dashboard reader, not adjacent form commands");
+  assert.ok(dashboardStart >= 0 && dashboardEnd > dashboardStart, "inspect only the dashboard reader, not adjacent form commands");
   const dashboardImplementation = main.slice(dashboardStart, dashboardEnd);
-  assert.equal((dashboardImplementation.match(/readLatestSnapshotDocument\(\)/g) || []).length, 1);
+  assert.equal((dashboardImplementation.match(/readLatestSnapshotDocument\([^)]*\)/g) || []).length, 1);
   assert.match(dashboardImplementation, /const accountLabels = new Map<string, AccountLabel>\(\)/);
-  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot, accountLabels\)/);
-  assert.match(dashboardImplementation, /parseSnapshotHoldings\(snapshot, accounts\)/);
+  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot, accountLabels, sourcePaths\)/);
+  assert.match(dashboardImplementation, /parseSnapshotHoldings\(snapshot, accounts, sourcePaths\)/);
 
   const syncStart = main.indexOf("async syncAll(");
   const syncImplementation = main.slice(syncStart, dashboardStart);
@@ -2380,8 +2380,8 @@ test('posted replacement retains pending identity and avoids deleting local clas
 
 test('sync owns dashboard refresh rather than rescanning after every imported note',()=>{
  const handler=main.slice(main.indexOf('this.app.metadataCache.on("changed"'),main.indexOf('(this as any).api'));
- assert.match(handler,/if \(this\.syncing \|\| this\.settings\.propertyMigration\) return/);
- assert.ok(handler.indexOf('if (this.syncing || this.settings.propertyMigration) return')<handler.indexOf('this.refreshDashboard()'));
+ assert.equal((handler.match(/if \(!this\.syncing && !this\.settings\.propertyMigration\) void this\.refreshDashboard\(/g)||[]).length,3,
+   'metadata, rename and delete all defer to the owning sync/migration');
 });
 
 test('refunds reduce category spending while transfers are excluded',()=>{

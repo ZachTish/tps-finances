@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
+import {readFileSync} from 'node:fs';
+import ts from 'typescript';
 
 // The actual dashboard and budget renderers run against a small DOM facade.
 // Only Obsidian's view base and icons are replaced; no model reader is hidden.
@@ -24,17 +26,18 @@ class Element {
   querySelectorAll(selector) { assert.equal(selector, '[data-budget-focus]'); return this.all().filter(el => el.attrs['data-budget-focus']); }
 }
 globalThis.__FinanceTestElement = Element;
-const result = await build({entryPoints:['src/dashboard-view.ts'],bundle:true,write:false,platform:'node',format:'esm',plugins:[{
+const result = await build({stdin:{contents:"export * from './src/dashboard-view'; export * from './src/finance-properties';",resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm',plugins:[{
   name:'obsidian-dashboard-test',setup(b) {
     b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'test'}));
     b.onLoad({filter:/.*/,namespace:'test'},()=>({contents:`
       export class ItemView { constructor(leaf) { this.contentEl = leaf.root; } }
       export class Notice {} export class Menu {} export class WorkspaceLeaf {}
+      export class App {} export class TFile {} export const parseYaml=JSON.parse; export const stringifyYaml=JSON.stringify;
       export const Platform = {isDesktopApp:true,isMobile:false}; export const setIcon=()=>{};
     `}));
   },
 }]});
-const {TPSFinancesView} = await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+const {TPSFinancesView,financeProperties} = await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
 const model = (amount = -10) => ({accounts:[{path:'Checking.md',name:'Checking',currency:'USD',type:'depository',subtype:'checking'}],holdings:[],connectedItems:0,plaidSetupState:'missing-credentials',budgets:[],budgetEntries:[
   {id:'food',name:'Food',bucket:'category',monthlyLimit:100,category:'Groceries',currency:'USD'},
   {id:'euro',name:'Euro spending',bucket:'flex',monthlyLimit:100,category:'',currency:'EUR'},
@@ -44,7 +47,7 @@ function harness() {
   const doc={activeElement:null},root=new Element('div',{},doc),counts={models:0,paint:0};
   let current=model(),reader=()=>Promise.resolve(current);
   const actions=[];
-  const plugin={getDashboardModel(){counts.models++;return reader();},addMonthlyBudget(...args){actions.push(['add',...args]);},editMonthlyBudget(value){actions.push(['edit',value.id]);},async openTransactionSource(value){actions.push(['open',value.financeId]);}};
+  const plugin={getDashboardModel(sources){counts.models++;return reader(sources);},addMonthlyBudget(...args){actions.push(['add',...args]);},editMonthlyBudget(value){actions.push(['edit',value.id]);},async openTransactionSource(value){actions.push(['open',value.financeId]);}};
   const view=new TPSFinancesView({root},plugin);
   for(const key of ['renderHeader','renderAccounts','renderHoldings','renderTransactions','renderWelcome'])view[key]=()=>{};
   view.renderSummary=(_root,m)=>{counts.paint++;view.lastOverview=m;};
@@ -106,4 +109,67 @@ test('budget mutating/navigation actions keep their existing owners',async()=>{
 
 test('data-read failures retain the existing error presentation',async()=>{
   const h=harness();h.setReader(()=>Promise.reject(Error('Read failed')));await h.view.onOpen();assert.ok(h.root.all().some(e=>e.className==='tps-finances-error'&&e.textContent==='Read failed'));assert.equal(h.view.renderPromise,null);
+});
+
+
+const mainSource=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+const mainAst=ts.createSourceFile('main.ts',mainSource,ts.ScriptTarget.Latest,true),methods=[],eventSources={};
+function visit(node){
+  if(ts.isMethodDeclaration(node)&&['refreshDashboard','dashboardChangeMayIntroduceRecord','isFinanceRecord'].includes(node.name?.getText(mainAst)))methods.push(node.getText(mainAst));
+  if(ts.isCallExpression(node)&&['this.app.vault.on','this.app.metadataCache.on'].includes(node.expression.getText(mainAst))&&['changed','rename','delete'].includes(node.arguments[0]?.text))eventSources[node.arguments[0].text]=node.arguments[1].getText(mainAst);
+  ts.forEachChild(node,visit);
+}visit(mainAst);
+class EventFile {constructor(path,fm={}){this.path=path;this.extension=path.split('.').at(-1);this.fm=fm;}}
+const exports={};
+new Function('exports','TPSFinancesView','TPS_FINANCES_VIEW_TYPE','TFile','financeProperties','financePrefix',ts.transpileModule('export class Owner {'+methods.join('\n')+'}',{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText)(exports,TPSFinancesView,'tps-finances',EventFile,financeProperties,(root,section='')=>root?[root,section].filter(Boolean).join('/')+'/':'');
+function eventHarness(folder=''){
+  const h=harness();h.sourceNames=['Account.md','Journal.md'];h.setReader(sources=>{for(const path of h.sourceNames)sources?.add(path);return Promise.resolve(model());});
+  const owner=new exports.Owner();owner.settings={financeFolder:folder,propertyNames:{keys:{}}};owner.app={workspace:{getLeavesOfType:()=>h.leaves},metadataCache:{getFileCache:file=>({frontmatter:file.fm})},plugins:{plugins:{'tps-finances':owner}}};h.leaves=[{view:h.view}];
+  const callbacks=Object.fromEntries(Object.entries(eventSources).map(([event,fn])=>[event,new Function('financePrefix',ts.transpileModule('const handler='+fn+';',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText+'return handler;').call(owner,root=>root?root+'/':'')]));
+  return Object.assign(h,{owner,async event(name,file,oldPathOrData){callbacks[name](file,oldPathOrData);await h.settle();}});
+}
+
+test('unrelated rename/edit bursts do no dashboard reads after initial load',async()=>{
+  const h=eventHarness();await h.view.onOpen();
+  for(let i=0;i<50;i++){await h.event('rename',new EventFile('Other.md'),'Previous.md');await h.event('changed',new EventFile('Other.md'),'ordinary body');}
+  assert.equal(h.counts.models,1);assert.equal(h.counts.paint,1);
+});
+test('metadata removal and legacy line removal refresh from the displayed source paths',async()=>{
+  const h=eventHarness();await h.view.onOpen();await h.event('changed',new EventFile('Account.md'),'no finance frontmatter');await h.event('changed',new EventFile('Journal.md'),'legacy line removed');assert.equal(h.counts.models,3);
+});
+test('new inline records outside the finance folder and mapped records invalidate',async()=>{
+  const h=eventHarness('Finances');await h.view.onOpen();await h.event('changed',new EventFile('Daily/New.md'),'[financeId:: new]');
+  h.owner.settings.propertyNames={keys:{type:'recordType'}};await h.event('changed',new EventFile('New.md',{recordType:'holding'}),'');assert.equal(h.counts.models,3);
+});
+test('new reader candidates in a configured section refresh but unrelated folder documents do not',async()=>{
+  const h=eventHarness('Finances');await h.view.onOpen();await h.event('rename',new EventFile('Finances/Readme.md'),'Finances/Old.md');assert.equal(h.counts.models,1);
+  await h.event('rename',new EventFile('Finances/Accounts/New.md'),'Inbox/New.md');assert.equal(h.counts.models,2);
+});
+test('deletes, old rename paths and ancestor folder changes invalidate contributing sources',async()=>{
+  const h=eventHarness();h.sourceNames=['Archive/Account.md'];await h.view.onOpen();await h.event('rename',new EventFile('Elsewhere.md'),'Archive/Account.md');await h.event('delete',new EventFile('Archive/Account.md'));await h.event('rename',{path:'Moved'},'Archive');assert.equal(h.counts.models,4);
+});
+test('attachments never request a model; Markdown extension transitions still do',async()=>{
+  const h=eventHarness();h.sourceNames=['Account.md'];await h.view.onOpen();for(let i=0;i<25;i++)await h.event('rename',new EventFile('New.png'),'Old.png');assert.equal(h.counts.models,1);await h.event('rename',new EventFile('Account.txt'),'Account.md');assert.equal(h.counts.models,2);
+});
+test('in-flight reads conservatively invalidate; their replaced dependency set does not retain old paths',async()=>{
+  const h=eventHarness();await h.view.onOpen();const pending=deferred();let n=0;h.setReader(sources=>{sources?.add('Newest.md');return ++n===1?pending.promise:Promise.resolve(model(-55));});
+  const refresh=h.view.render();await Promise.resolve();const changed=h.event('changed',new EventFile('Unseen.md'),'removed data');pending.resolve(model(-4));await Promise.all([refresh,changed]);assert.equal(h.view.lastOverview.transactions[0].amount,-55);assert.equal(h.counts.models,3);
+  await h.event('delete',new EventFile('Account.md'));assert.equal(h.counts.models,3,'retired dependency is discarded');await h.event('delete',new EventFile('Newest.md'));assert.equal(h.counts.models,4);
+});
+test('closed views and explicit refresh retain lifecycle ownership and do no source writes',async()=>{
+  const h=eventHarness();await h.view.onOpen();h.leaves=[];await h.event('changed',new EventFile('New.md',{financeId:'new'}),'');assert.equal(h.counts.models,1);h.leaves=[{view:h.view}];await h.owner.refreshDashboard();assert.equal(h.counts.models,2);await h.view.onClose();await h.event('delete',new EventFile('Account.md'));assert.equal(h.counts.models,2);
+});
+test('sync/migration still own final refresh and errors remain refreshable',async()=>{
+  const h=eventHarness();await h.view.onOpen();h.owner.syncing=true;await h.event('delete',new EventFile('Account.md'));h.owner.syncing=false;h.owner.settings.propertyMigration={};await h.event('changed',new EventFile('Account.md'),'');assert.equal(h.counts.models,1);h.owner.settings.propertyMigration=null;
+  h.setReader(()=>Promise.reject(Error('invalid record')));await h.view.render();h.setReader(sources=>{sources?.add('Repaired.md');return Promise.resolve(model());});await h.event('changed',new EventFile('Other.md'),'correction');assert.equal(h.counts.models,3);
+});
+
+
+test('root label-only account candidates and moved section ancestors refresh',async()=>{
+  const h=eventHarness();await h.view.onOpen();await h.event('changed',new EventFile('Label.md',{kind:'account',title:'New account label'}),'');assert.equal(h.counts.models,2);
+  const nested=eventHarness('Parent/Finances');await nested.view.onOpen();await nested.event('rename',{path:'Parent'},'Elsewhere');assert.equal(nested.counts.models,2);
+});
+test('metadata bursts during a read coalesce and closing releases the view dependency set',async()=>{
+  const h=eventHarness();await h.view.onOpen();const pending=deferred();let n=0;h.setReader(sources=>{sources?.add('Fresh.md');return ++n===1?pending.promise:Promise.resolve(model(-19));});const load=h.view.render();await Promise.resolve();
+  const work=[];for(let i=0;i<50;i++)work.push(h.event('changed',new EventFile('Account.md'),'changed source'));pending.resolve(model(-2));await Promise.all([load,...work]);assert.equal(h.counts.models,3);assert.equal(h.view.lastOverview.transactions[0].amount,-19);await h.view.onClose();assert.equal(h.view.sourcePaths,null);
 });

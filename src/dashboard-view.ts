@@ -56,7 +56,7 @@ export interface DashboardModel {
 
 interface FinancesViewPlugin {
   settings?: {recordMode: string};
-  getDashboardModel(): Promise<DashboardModel>;
+  getDashboardModel(sourcePaths?: Set<string>): Promise<DashboardModel>;
   canConnectPlaid?(): boolean;
   connectPlaid(): Promise<void>;
   openConnectionSettings(): void;
@@ -77,6 +77,8 @@ export class TPSFinancesView extends ItemView {
   private renderRequested = false;
   private renderPromise: Promise<void> | null = null;
   private closed = false;
+  // Dependencies of the displayed model, replaced on each successful read.
+  private sourcePaths: Set<string> | null = null;
   private route: "overview" | "budget" = "overview";
   private readonly budgetState: BudgetViewState = {month:`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}`,currency:"USD",expanded:new Set()};
 
@@ -106,7 +108,17 @@ export class TPSFinancesView extends ItemView {
 
   async onClose(): Promise<void> {
     this.closed = true;
+    this.sourcePaths = null;
     this.renderRequested = false;
+  }
+
+  dependsOnSource(path: string, isFolder = false): boolean {
+    if (this.closed) return false;
+    // A read in flight (or an error) has no complete dependency boundary yet.
+    if (this.renderPromise || this.sourcePaths === null) return true;
+    if (!isFolder) return this.sourcePaths.has(path);
+    for (const source of this.sourcePaths) if (source.startsWith(`${path}/`)) return true;
+    return false;
   }
 
   render(): Promise<void> {
@@ -123,11 +135,14 @@ export class TPSFinancesView extends ItemView {
       while (!this.closed && this.renderRequested) {
         this.renderRequested = false;
         try {
-          const model = await this.plugin.getDashboardModel();
+          const sourcePaths = new Set<string>();
+          const model = await this.plugin.getDashboardModel(sourcePaths);
           if (this.closed || this.renderRequested) continue;
+          this.sourcePaths = sourcePaths;
           this.renderModel(model);
         } catch (error) {
           if (this.closed || this.renderRequested) continue;
+          this.sourcePaths = null;
           this.contentEl.empty();
           this.contentEl.createDiv({ cls: "tps-finances-error", text: error instanceof Error ? error.message : String(error) });
         }

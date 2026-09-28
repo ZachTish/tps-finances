@@ -6,7 +6,7 @@ import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
 import type { FinanceBudget } from "./types";
 import { FinanceRequestModal, getFinanceRelay, LinkSession, LinkResult, RelayItem } from "./finance-relay";
 import { financePath, financePrefix, normalizeFinanceFolder } from "./finance-paths";
-import { Notice, Platform, Plugin, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
+import { Notice, Platform, Plugin, TAbstractFile, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { normalizeDeviceItems } from "./device-state";
@@ -88,17 +88,14 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "review-transaction-titles", name: "Review transaction titles", callback: () => void this.runUserAction("Titles", "command", () => this.reviewTransactionTitles()) });
     this.addCommand({ id: "review-transaction-records", name: "Review transaction records", callback: () => void this.runUserAction("Titles", "records-command", () => this.reviewTransactionTitles(true)) });
     this.registerGcmIntegration();
-    this.registerEvent(this.app.metadataCache.on("changed", (file) => {
-      if (this.syncing || this.settings.propertyMigration) return; // Sync owns the final dashboard refresh.
-      const root = financePrefix(this.settings.financeFolder);
-      if (file.path.startsWith(root) && this.isFinanceRecord(file)) void this.refreshDashboard();
+    this.registerEvent(this.app.metadataCache.on("changed", (file, data) => {
+      if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, data });
     }));
     this.registerEvent(this.app.vault.on("delete", file => {
-      if (!this.syncing && !this.settings.propertyMigration && file.path.startsWith(financePrefix(this.settings.financeFolder))) void this.refreshDashboard();
+      if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, deleted: true });
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      const root = financePrefix(this.settings.financeFolder);
-      if (!this.syncing && !this.settings.propertyMigration && (file.path.startsWith(root) || oldPath.startsWith(root))) void this.refreshDashboard();
+      if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, oldPath });
     }));
     (this as any).api = {
       connectionSettings: { version: 1, render: (parent: HTMLElement) => {
@@ -571,17 +568,18 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  async getDashboardModel(): Promise<DashboardModel> {
-    const snapshot = await this.readLatestSnapshotDocument();
+  async getDashboardModel(sourcePaths?: Set<string>): Promise<DashboardModel> {
+    const snapshot = await this.readLatestSnapshotDocument(sourcePaths);
     const accountLabels = new Map<string, AccountLabel>();
-    const accounts = this.readAccountsFromVault(snapshot, accountLabels);
-    const holdings = this.parseSnapshotHoldings(snapshot, accounts);
+    const accounts = this.readAccountsFromVault(snapshot, accountLabels, sourcePaths);
+    const holdings = this.parseSnapshotHoldings(snapshot, accounts, sourcePaths);
     const store = this.createStore();
     // Manual records are always atomic notes, also when provider logging uses atomic lines.
     const transactionStore = accounts.some(account => account.manual) && this.settings.recordMode === "atomic-line"
       ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : store;
     const transactionRecords = await transactionStore.readTransactionRecords();
-    const rules = store.readRules();
+    if (sourcePaths) for (const record of transactionRecords) sourcePaths.add(record.path);
+    const rules = store.readRules(sourcePaths);
     const classifyForDashboard = prepareTransactionClassifier(rules);
     const transactions = transactionRecords.map((record) => parseDashboardTransaction(record.line, record.path, record.lineNumber)).filter((value): value is DashboardTransaction => value !== null)
       .map((transaction) => {
@@ -592,7 +590,7 @@ export default class TPSFinancesPlugin extends Plugin {
       }).sort((left, right) => right.date.localeCompare(left.date));
     applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
-    const budgetEntries = await store.readBudgetEntries();
+    const budgetEntries = await store.readBudgetEntries(sourcePaths);
     const budgets = calculateMonthlyBudgetProgress(budgetEntries.filter(budget=>budgetBucket(budget)==="category" && budgetCurrency(budget)==="USD"), transactions, month);
     const lastSyncAt = this.getConnectedItems().map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
@@ -971,16 +969,40 @@ export default class TPSFinancesPlugin extends Plugin {
     this.app.secretStorage.setSecret(DEVICE_STATE_SECRET, JSON.stringify(this.deviceState));
   }
 
-  private async refreshDashboard(): Promise<void> {
+  private async refreshDashboard(change?: { file: TAbstractFile; oldPath?: string; data?: string; deleted?: boolean }): Promise<void> {
+    const isFolder = change && !(change.file instanceof TFile);
+    if (change && !isFolder && ![change.file.path, change.oldPath || ""].some(path => /\.md$/i.test(path))) return;
     for (const leaf of this.app.workspace.getLeavesOfType(TPS_FINANCES_VIEW_TYPE)) {
       const view = leaf.view;
-      if (view instanceof TPSFinancesView) await view.render();
+      if (!(view instanceof TPSFinancesView)) continue;
+      if (change && !view.dependsOnSource(change.file.path, isFolder)
+        && !(change.oldPath && view.dependsOnSource(change.oldPath, isFolder))
+        && (change.deleted || !this.dashboardChangeMayIntroduceRecord(change.file, change.data))) continue;
+      await view.render();
     }
+  }
+
+  private dashboardChangeMayIntroduceRecord(file: TAbstractFile, data?: string): boolean {
+    if (file instanceof TFile) {
+      // Legacy transactions may live in ordinary daily notes outside the destination.
+      if (data?.includes("[financeId::")) return true;
+      const fm = financeProperties(this.app).cache(this.app, file);
+      if (fm.financeAccountId || fm.financeId || fm.financeRuleId || fm.financeBudgetId
+        || ["account", "financeRule", "financeBudget"].includes(fm.kind)
+        || ["holding", "financeSnapshot", "financeTransactions"].includes(fm.type)) return true;
+    }
+    if (!this.settings.financeFolder) return false;
+    return ["Accounts", "Transactions", "Rules", "Budgets", "Holdings", "Snapshots"].some(section => {
+      const prefix = financePrefix(this.settings.financeFolder, section);
+      return file.path.startsWith(prefix) || (!(file instanceof TFile)
+        && (file.path === prefix.slice(0, -1) || prefix.startsWith(`${file.path}/`)));
+    });
   }
 
   private readAccountsFromVault(
     snapshot: StoredFinanceSnapshot | null,
     accountLabels?: Map<string, AccountLabel>,
+    sourcePaths?: Set<string>,
   ): FinanceAccount[] {
     const prefix = financePrefix(this.settings.financeFolder, "Accounts");
     const balances = this.parseSnapshotBalanceMap(snapshot?.lines || []);
@@ -989,6 +1011,7 @@ export default class TPSFinancesPlugin extends Plugin {
       if (!file.path.startsWith(prefix)) continue;
       const frontmatter = financeProperties(this.app).cache(this.app, file) || {};
       if (!this.settings.financeFolder && frontmatter.kind !== "account") continue;
+      sourcePaths?.add(file.path);
       if (accountLabels) {
         const institution = String(frontmatter.institution || "");
         const name = String(frontmatter.accountName || frontmatter.title || file.basename);
@@ -1030,10 +1053,14 @@ export default class TPSFinancesPlugin extends Plugin {
       || left.name.localeCompare(right.name));
   }
 
-  private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[]): FinanceHolding[] {
+  private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[], sourcePaths?: Set<string>): FinanceHolding[] {
     if(this.settings.recordMode === "atomic-note") {
       const notes=this.app.vault.getMarkdownFiles().filter(file=>file.path.startsWith(financePrefix(this.settings.financeFolder, "Holdings")))
-        .map(file=>financeProperties(this.app).cache(this.app, file)||{}).filter(fm=>fm.type==="holding");
+        .map(file => {
+          const fm = financeProperties(this.app).cache(this.app, file) || {};
+          if (fm.type === "holding") sourcePaths?.add(file.path);
+          return fm;
+        }).filter(fm=>fm.type==="holding");
       if(notes.length) return notes.filter(fm=>fm.active===true).map(fm=>({
         financeAccountId:String(fm.financeAccountId),securityId:String(fm.securityId),name:String(fm.name||""),ticker:String(fm.ticker||""),type:String(fm.holdingType||""),quantity:Number(fm.quantity)||0,price:Number(fm.price)||0,value:Number(fm.value)||0,costBasis:atomicNumber(fm.costBasis),currency:String(fm.currency||"USD"),asOf:String(fm.asOf||""),stale:fm.stale===true
       }));
@@ -1065,9 +1092,10 @@ export default class TPSFinancesPlugin extends Plugin {
     });
   }
 
-  private async readLatestSnapshotDocument(): Promise<StoredFinanceSnapshot | null> {
+  private async readLatestSnapshotDocument(sourcePaths?: Set<string>): Promise<StoredFinanceSnapshot | null> {
     const file = this.latestSnapshotFile();
     if (!file) return null;
+    sourcePaths?.add(file.path);
     const date = String(financeProperties(this.app).cache(this.app, file)?.date || file.basename);
     const content = await this.app.vault.cachedRead(file);
     return {

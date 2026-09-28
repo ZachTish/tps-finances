@@ -194,9 +194,10 @@ export class FinanceStore {
     return { moved, skipped };
   }
 
-  readRules(): FinanceRule[] {
+  readRules(sourcePaths?: Set<string>): FinanceRule[] {
     const prefix = financePrefix(this.rootFolder, "Rules");
     return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || financeProperties(this.app).cache(this.app, file)?.kind === "financeRule")).map((file) => {
+      sourcePaths?.add(file.path);
       const value = financeProperties(this.app).cache(this.app, file) || {};
       return {
         id: String(value.financeRuleId || file.path),
@@ -239,7 +240,7 @@ export class FinanceStore {
     return this.app.vault.create(path, financeProperties(this.app).note(body));
   }
 
-  async readBudgetEntries(): Promise<FinanceBudget[]> {
+  async readBudgetEntries(sourcePaths?: Set<string>): Promise<FinanceBudget[]> {
     const records: FinanceBudget[] = [];
     const prefix = financePrefix(this.rootFolder, "Budgets");
     // Read current content, including newly-created notes whose metadata is not indexed yet.
@@ -255,6 +256,7 @@ export class FinanceStore {
       if (!match || !/financeBudgetId|financeBudget/.test(match[1])) return;
       const fm = financeProperties(this.app).read(parseYaml(match[1]) || {});
       if (!fm || (!fm.financeBudgetId && fm.kind !== "financeBudget")) return;
+      sourcePaths?.add(file.path);
       const links = Array.isArray(fm.accounts) ? fm.accounts : fm.accounts ? [fm.accounts] : [];
       const accounts = links.map((value: unknown) => {
         const raw = String(value), link = raw.replace(/^\[\[|\]\]$/g, "").split("|")[0];

@@ -180,3 +180,17 @@ test('tag mappings support finance import, repeat updates and generated Base pre
  const base=financeProperties(h.app).base('filters:\n  and:\n    - kind == "transaction"\n    - note.kind != "account"\nviews: []\n');
  assert.match(base,/file\.hasTag\("kind\/financial\/transaction"\)/);assert.match(base,/!file\.hasTag\("accounts"\)/);assert.doesNotMatch(base,/undefined/);
 });
+
+
+test('dashboard collects exact contributing paths during existing reads, including mapped and legacy records',async()=>{
+ for(const properties of [new FinanceProperties(),mapped()]){
+  const h=harness(properties),paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],state,paths);await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-20T12:00:00Z'));
+  const ledger=new FinanceStore(h.app,'');const snapshot=await ledger.writeSnapshot([],[],new Map(),new Date('2026-09-20T12:00:00Z'));
+  await h.store.createRule({id:'rule',name:'Rule',enabled:true,priority:1,accountContains:'',nameContains:'Coffee',merchantContains:'',minAmount:null,maxAmount:null,category:'Food',tags:[]});await h.store.createBudget({id:'budget',name:'Budget',category:'Food',monthlyLimit:100});
+  await h.app.vault.create('Journal.md',`- Old [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[${paths.get('account1').slice(0,-3)}]]] [amount:: -2] [currency:: USD]`);await h.add('Unrelated.md',{title:'Unrelated'});
+  const p=new FinancePlugin(h.app);p.settings={...h.plugin.settings,financeFolder:'',recordMode:'atomic-note'};p.getConnectedItems=()=>[];p.getRelayStatus=()=>null;p.getPlaidSetupStatus=()=>({state:'ready'});
+  let reads=0,scans=0;const read=h.app.vault.cachedRead,list=h.app.vault.getMarkdownFiles;h.app.vault.cachedRead=async f=>{reads++;return read(f)};h.app.vault.getMarkdownFiles=()=>{scans++;return list()};
+  const without=await p.getDashboardModel(),baseline={reads,scans};reads=0;scans=0;const sources=new Set(),withSources=await p.getDashboardModel(sources);assert.deepEqual(withSources,without);assert.deepEqual({reads,scans},baseline,'dependency collection adds no I/O');
+  const expected=h.app.vault.getMarkdownFiles().map(f=>f.path).filter(path=>path!=='Unrelated.md');assert.deepEqual([...sources].sort(),expected.sort());assert.ok(sources.has(snapshot));assert.ok(sources.has('Journal.md'));
+ }
+});
