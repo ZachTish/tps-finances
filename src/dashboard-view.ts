@@ -125,46 +125,7 @@ export class TPSFinancesView extends ItemView {
         try {
           const model = await this.plugin.getDashboardModel();
           if (this.closed || this.renderRequested) continue;
-          const scroll = this.contentEl.scrollTop;
-          const focused = this.contentEl.ownerDocument?.activeElement;
-          const focusKey = focused?.getAttribute("data-budget-focus");
-          this.contentEl.empty();
-          const root = this.contentEl.createDiv({ cls: `tps-finances-root${this.route === "budget" ? " tps-finances-root--budget" : ""}` });
-          this.renderHeader(root, model);
-          const navigation = root.createDiv({cls:"tps-finances-view-routes",attr:{"aria-label":"Finance pages"}});
-          for (const [route,label] of [["overview","Overview"],["budget","Budget"]] as const) {
-            const button=navigation.createEl("button",{type:"button",text:label,attr:{"aria-pressed":String(this.route===route),"data-budget-focus":route}});
-            button.addEventListener("click",()=>{this.route=route;void this.render();});
-          }
-          if (model.relayMessage) root.createDiv({cls:"tps-finances-status",text:model.relayMessage});
-          if (this.route === "budget") {
-            renderBudgetView(root,model,this.budgetState,{
-              render:()=>void this.render(),add:(bucket,currency)=>this.plugin.addMonthlyBudget(bucket,currency),
-              edit:budget=>this.plugin.editMonthlyBudget(budget),open:transaction=>void this.runAction(()=>this.plugin.openTransactionSource(transaction)),
-            });
-          } else if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
-          else {
-            if (model.connectedItems && !model.accounts.length) {
-              root.createDiv({
-                cls: "tps-finances-status is-warning",
-                text: "Plaid is connected, but no account snapshot has synced yet. Run Sync; any provider or credential error will be shown here in Obsidian.",
-              });
-            }
-            const staleHoldings = model.holdings.filter((holding) => holding.stale);
-            if (staleHoldings.length) {
-              const oldest = staleHoldings.map((holding) => holding.asOf || "").filter(Boolean).sort()[0] || "an earlier sync";
-              root.createDiv({
-                cls: "tps-finances-status is-warning",
-                text: `Investment values include ${staleHoldings.length} last-known holding${staleHoldings.length === 1 ? "" : "s"} as of ${oldest}; core accounts and Transactions are current, and Investments will retry on the next sync.`,
-              });
-            }
-            this.renderSummary(root, model);
-            this.renderAccounts(root, model.accounts);
-            this.renderHoldings(root, model.holdings);
-            this.renderTransactions(root, model.transactions);
-          }
-          if(focusKey) Array.from(this.contentEl.querySelectorAll<HTMLElement>("[data-budget-focus]")).find(element=>element.getAttribute("data-budget-focus")===focusKey)?.focus({preventScroll:true});
-          this.contentEl.scrollTop=scroll;
+          this.renderModel(model);
         } catch (error) {
           if (this.closed || this.renderRequested) continue;
           this.contentEl.empty();
@@ -174,6 +135,52 @@ export class TPSFinancesView extends ItemView {
     } finally {
       this.renderPromise = null;
     }
+  }
+
+  // Local display controls reuse the model they already show. Vault changes
+  // and explicit data refreshes continue through render() and its existing queue.
+  private renderModel(model: DashboardModel): void {
+    if (this.closed) return;
+    const scroll = this.contentEl.scrollTop;
+    const focused = this.contentEl.ownerDocument?.activeElement;
+    const focusKey = focused?.getAttribute("data-budget-focus");
+    this.contentEl.empty();
+    const root = this.contentEl.createDiv({ cls: `tps-finances-root${this.route === "budget" ? " tps-finances-root--budget" : ""}` });
+    this.renderHeader(root, model);
+    const navigation = root.createDiv({cls:"tps-finances-view-routes",attr:{"aria-label":"Finance pages"}});
+    for (const [route,label] of [["overview","Overview"],["budget","Budget"]] as const) {
+      const button=navigation.createEl("button",{type:"button",text:label,attr:{"aria-pressed":String(this.route===route),"data-budget-focus":route}});
+      button.addEventListener("click",()=>{this.route=route;this.renderModel(model);});
+    }
+    if (model.relayMessage) root.createDiv({cls:"tps-finances-status",text:model.relayMessage});
+    if (this.route === "budget") {
+      renderBudgetView(root,model,this.budgetState,{
+        render:()=>this.renderModel(model),add:(bucket,currency)=>this.plugin.addMonthlyBudget(bucket,currency),
+        edit:budget=>this.plugin.editMonthlyBudget(budget),open:transaction=>void this.runAction(()=>this.plugin.openTransactionSource(transaction)),
+      });
+    } else if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
+    else {
+      if (model.connectedItems && !model.accounts.length) {
+        root.createDiv({
+          cls: "tps-finances-status is-warning",
+          text: "Plaid is connected, but no account snapshot has synced yet. Run Sync; any provider or credential error will be shown here in Obsidian.",
+        });
+      }
+      const staleHoldings = model.holdings.filter((holding) => holding.stale);
+      if (staleHoldings.length) {
+        const oldest = staleHoldings.map((holding) => holding.asOf || "").filter(Boolean).sort()[0] || "an earlier sync";
+        root.createDiv({
+          cls: "tps-finances-status is-warning",
+          text: `Investment values include ${staleHoldings.length} last-known holding${staleHoldings.length === 1 ? "" : "s"} as of ${oldest}; core accounts and Transactions are current, and Investments will retry on the next sync.`,
+        });
+      }
+      this.renderSummary(root, model);
+      this.renderAccounts(root, model.accounts);
+      this.renderHoldings(root, model.holdings);
+      this.renderTransactions(root, model.transactions);
+    }
+    if(focusKey) Array.from(this.contentEl.querySelectorAll<HTMLElement>("[data-budget-focus]")).find(element=>element.getAttribute("data-budget-focus")===focusKey)?.focus({preventScroll:true});
+    this.contentEl.scrollTop=scroll;
   }
 
   private renderHeader(root: HTMLElement, model: DashboardModel): void {
