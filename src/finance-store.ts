@@ -472,6 +472,10 @@ export class FinanceStore {
       index.fileOrder.set(path, index.nextFileOrder);
       index.nextFileOrder += 1;
     }
+    if (!content.includes("[financeId::")) {
+      index.idsByPath.delete(path);
+      return;
+    }
     const recordsById = new Map<string, TransactionRecord[]>();
     content.split("\n").forEach((line, lineNumber) => {
       if (!/^-\s/.test(line) || !line.includes("[financeId::")) return;

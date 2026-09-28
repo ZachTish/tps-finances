@@ -413,3 +413,58 @@ test('Wallet history uses current property keys at vault root and preserves user
  assert.equal(h.fm(file.path).money,-12.25);assert.match(h.text.get(file.path),/Keep receipt details/);
  raw.transactions=[];raw.deletedTransactions=[id];h.failTrash();await assert.rejects(apply(),/trash failure/);assert.ok(h.nodes.has(file.path));
 });
+
+test('candidate discovery validates configuration once without decoding unrelated notes',async()=>{
+ const h=harness();let decoded=0,configurationReads=0,reads=0,scans=0;
+ h.app.plugins={plugins:{'tps-finances':{settings:{get propertyNames(){configurationReads++;return {keys:{amount:'money'}};}}},'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'tpsId'},api:{frontmatterKinds:{definition:()=>null,encode:f=>f,decode:f=>{decoded++;return f;}}}}}};
+ for(let i=0;i<512;i++)await h.app.vault.create(`Inbox/Ordinary ${i}.md`,'---\n'+JSON.stringify({title:`Ordinary ${i}`,tags:['ordinary']})+'\n---\nBody\n');
+ const getFiles=h.app.vault.getMarkdownFiles;h.app.vault.getMarkdownFiles=()=>{scans++;return getFiles();};
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async f=>{reads++;return read(f);};
+ assert.equal((await h.store.index()).size,0);assert.equal((await h.store.index()).size,0);
+ assert.equal(scans,2);assert.equal(reads,0);assert.equal(decoded,0);assert.equal(configurationReads,2);
+});
+
+test('fixed identity candidates still read current mapped fields and ignore stale metadata values',async()=>{
+ const h=harness();h.app.plugins={plugins:{'tps-finances':{settings:{propertyNames:{keys:{type:'recordType',amount:'money'}}}}}};
+ const file=await h.app.vault.create('Inbox/Mapped.md','---\n'+JSON.stringify({financeId:'current-id',recordType:'transaction',money:-7,account:'[[Finances/Accounts/Checking]]'})+'\n---\nKeep body\n');
+ h.app.metadataCache.getFileCache=()=>({frontmatter:{financeId:'old-id',recordType:'other',money:999}});
+ const fields=new Map(),index=await h.store.index(fields);
+ assert.equal(index.get('current-id'),file);assert.equal(index.has('old-id'),false);assert.equal(fields.get(file).amount,-7);
+ assert.equal(fields.get(file).type,'transaction');assert.match(h.text.get(file.path),/Keep body/);
+});
+
+test('transaction-folder candidates remain readable before metadata indexing',async()=>{
+ const h=harness();const file=await h.app.vault.create(path,'---\n'+JSON.stringify({financeId:'fresh',type:'transaction',account:'[[Finances/Accounts/Checking]]'})+'\n---\n');
+ h.app.metadataCache.getFileCache=()=>null;
+ assert.equal((await h.store.index()).get('fresh'),file);
+});
+
+test('candidate discovery retains configuration and mid-read migration guards',async()=>{
+ const h=harness(),settings={propertyNames:{keys:{}},propertyMigration:null};h.app.plugins={plugins:{'tps-finances':{settings}}};
+ await h.app.vault.create('Inbox/Ordinary.md','Body');settings.propertyMigration={pending:true};
+ await assert.rejects(h.store.index(),/Resume the property migration/);settings.propertyMigration=null;
+ settings.propertyNames={keys:{type:'financeId'}};await assert.rejects(h.store.index(),/plain, nonempty property name/);
+ settings.propertyNames={keys:{}};await h.app.vault.create(path,'---\n'+JSON.stringify({financeId:'fresh',type:'transaction'})+'\n---\n');
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async f=>{const source=await read(f);settings.propertyMigration={pending:true};return source;};
+ await assert.rejects(h.store.index(),/Resume the property migration/);
+});
+
+test('legacy inspection avoids line splitting for repeated marker-free bodies',()=>{
+ const h=harness(),index={recordsById:new Map(),idsByPath:new Map(),fileOrder:new Map(),nextFileOrder:0};
+ const source=Array.from({length:1000},(_,i)=>`Ordinary paragraph ${i}`).join('\n');let splits=0;
+ const split=String.prototype.split;
+ String.prototype.split=function(...args){if(String(this)===source)splits++;return split.apply(this,args);};
+ try{for(let i=0;i<100;i++)h.store.indexTransactionFile(index,`Inbox/Note ${i}.md`,source);}finally{String.prototype.split=split;}
+ assert.equal(splits,0);assert.equal(index.recordsById.size,0);assert.equal(index.idsByPath.size,0);assert.equal(index.fileOrder.size,100);
+});
+
+test('marker-free replacement removes old legacy ownership while preserving duplicate order',()=>{
+ const h=harness(),index={recordsById:new Map(),idsByPath:new Map(),fileOrder:new Map(),nextFileOrder:0};
+ h.store.indexTransactionFile(index,'First.md',`Introduction\n${line}\n`);
+ h.store.indexTransactionFile(index,'Second.md',`${line}\n`);
+ assert.deepEqual(index.recordsById.get('old-1').map(r=>[r.path,r.lineNumber]),[['First.md',1],['Second.md',0]]);
+ h.store.indexTransactionFile(index,'First.md','No transaction remains\n');
+ assert.deepEqual(index.recordsById.get('old-1').map(r=>r.path),['Second.md']);assert.equal(index.idsByPath.has('First.md'),false);
+ h.store.indexTransactionFile(index,'First.md',`${line}\n`);
+ assert.deepEqual(index.recordsById.get('old-1').map(r=>r.path),['First.md','Second.md']);
+});

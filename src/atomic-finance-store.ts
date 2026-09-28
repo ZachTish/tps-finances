@@ -70,10 +70,12 @@ export class AtomicFinanceStore extends FinanceStore {
   }
 
   private async index(fieldsByFile?: Map<TFile, Fields>): Promise<Map<string, TFile>> {
+    // Keep the configuration gate; financeId itself is fixed and never mapped.
+    financeProperties(this.vaultApp);
     const result = new Map<string, TFile>();
     const files = this.vaultApp.vault.getMarkdownFiles().filter(file =>
       (this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
-      || financeProperties(this.vaultApp).cache(this.vaultApp, file)?.financeId);
+      || this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId);
     await boundedWork(files, async file => {
       // Metadata narrows candidates; file content supplies the actual property values.
       const fm = await this.fields(file);

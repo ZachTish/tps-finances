@@ -1,5 +1,14 @@
 # TPS Finances
 
+
+## 1.11.3 — Less work during transaction discovery
+
+Atomic transaction candidate discovery checks the fixed `financeId` metadata field directly, instead of validating and decoding every configurable finance property on every unrelated note. Configuration/migration and identity-key validation still runs before discovery; each candidate's current source still goes through the existing property decoder and write guards. Folder candidates remain discoverable before metadata arrives, and metadata never authorizes a write.
+
+Legacy discovery now skips line splitting when the current source contains no `[financeId::` marker. It still reads the same files, preserves legacy lines anywhere in the vault, removes obsolete index entries, and retains duplicate/line ordering and atomic-record precedence. This adds no cache, watcher, timer, retry, schema or setting. Initial filesystem reads, actual transaction parsing and real refreshes remain necessary work; this is not a claim that dashboard opening is instantaneous.
+
+Six focused regressions cover unchanged candidate bursts, mapped current-source fields versus stale metadata, folder metadata delay, configuration/mid-read migration guards, marker-free body operation counts and removal/reinstatement of legacy ownership. Two failed before the fix. Validation and artifact hashes are recorded in [1.11.3 release notes](release-notes/1.11.3.md). The three settings destinations, existing commands, record formats and minimum Obsidian 1.12.0 remain unchanged. Production installation remains the user's BRAT pull. All 107 focused and 280 declared checks pass, with no failures/skips. The separate production build deployed to Test; named plugin reload verified 1.11.3 with unchanged settings. With the full suite enabled, two foreground warm dashboard opens took 784–869 ms versus 1,067–1,129 ms before. Synchronous atomic candidate discovery fell from 140 ms to 18–19 ms; summed synchronous legacy indexing time from 65–66 ms to 12–13 ms. The same approximately 14,700 cached reads remain, plus one new release-note Markdown file. Budget selection took 49 ms without a model load or cached read. Five monitored settings and runtime artifact hashes were preserved across each run; views and window geometry were restored. These small instrumented desktop samples do not establish cold startup, physical iPhone performance or native parity. No provider or note mutation was triggered. The final README-only build was byte-identical to the installed, tested artifacts.
+
 ## 1.11.2 — Keep display controls out of the vault reader
 
 Dashboard Overview/Budget switches and budget month, currency and transaction-expansion controls now redraw the model already displayed. They previously called the same data-loading operation used after record changes, causing each local interaction to rebuild the transaction index and read every Markdown body for legacy finance lines. The existing render queue still owns fresh model reads on open, explicit refresh and data invalidation; a pending refresh applies its newest model to the current route. Local controls do not create another data request. New model rendering replaces the old controls and their model closures.
@@ -114,7 +123,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.11.1](https://github.com/ZachTish/tps-finances/releases/tag/1.11.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.11.3](https://github.com/ZachTish/tps-finances/releases/tag/1.11.3) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 
