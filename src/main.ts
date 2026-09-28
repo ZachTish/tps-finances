@@ -618,12 +618,14 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async addCashTransaction(): Promise<void> {
-    const model = await this.getDashboardModel();
-    if (!model.accounts.some(a => a.manual && a.type === "depository" && a.subtype === "cash")) {
+    financeProperties(this.app);
+    // The form needs account choices, not transaction balances or a dashboard.
+    const accounts = this.readAccountsFromVault(await this.readLatestSnapshotDocument());
+    if (!accounts.some(a => a.manual && a.type === "depository" && a.subtype === "cash")) {
       new Notice("Create a cash account first using Add → Cash account.");
       return;
     }
-    new CashTransactionModal(this.app, model.accounts, async input => {
+    new CashTransactionModal(this.app, accounts, async input => {
       await new ManualFinanceStore(this.app, this.settings.financeFolder).createCashEntry(input);
       logger.flow("Manual", "cash-entry-created", {kind: input.kind});
       new Notice("Cash transaction recorded.");

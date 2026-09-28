@@ -1119,7 +1119,9 @@ test("snapshot reads reuse one document and select the latest file in one pass",
   assert.doesNotMatch(balancesImplementation, /latestSnapshotFile|cachedRead/);
 
   const dashboardStart = main.indexOf("async getDashboardModel()");
-  const dashboardImplementation = main.slice(dashboardStart, main.indexOf("addCategorizationRule()", dashboardStart));
+  const dashboardEnd = main.indexOf("\n  addManualAccount(", dashboardStart);
+  assert.ok(dashboardEnd > dashboardStart, "inspect only the dashboard reader, not adjacent form commands");
+  const dashboardImplementation = main.slice(dashboardStart, dashboardEnd);
   assert.equal((dashboardImplementation.match(/readLatestSnapshotDocument\(\)/g) || []).length, 1);
   assert.match(dashboardImplementation, /const accountLabels = new Map<string, AccountLabel>\(\)/);
   assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot, accountLabels\)/);

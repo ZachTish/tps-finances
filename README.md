@@ -1,6 +1,14 @@
 # TPS Finances
 
 
+## 1.11.4 — Prepare cash forms from account data
+
+Log cash transaction now uses the existing snapshot/account readers to populate account choices. It previously loaded the complete dashboard, including every transaction, holdings, rules, budgets and derived cash balances, although the form only displays account names, paths, currencies and eligibility. Snapshot fallback for account currency and account ordering are preserved. Existing property/migration validation runs before discovery; the existing manual writer and its fresh-source validation still own Record. Canceling/opening a form writes nothing, and successful recording still refreshes the dashboard.
+
+No new cache, state, listener, timer, retry, setting, schema or API. Full dashboard reads remain unchanged where that complete model is required. Minimum Obsidian remains 1.12.0. Six focused regressions execute the real command method with mocked account/modal boundaries and the real manual writer; four fail before the correction. Final validation and installed counts are documented in [1.11.4 release notes](release-notes/1.11.4.md). Production installation remains the user's BRAT pull.
+
+Validation: 45 focused checks and all 286 declared tests pass, with zero failures or skips; TypeScript, the separate production build and named test-vault reload pass. The installed command preserved the same 16 account choices and their order/currencies while eliminating its dashboard model load: 14,730 cached note reads → 0 and seven Markdown enumerations → two. Five monitored plugin settings files were unchanged and no note writes occurred. This API probe used the actual readers but replaced their account result with an empty list at the presentation boundary to suppress the modal; it is operation-count evidence, not actual modal UI or latency acceptance. All consumers remained enabled. Minimum compatibility, manual write validation and successful-save refresh are unchanged; physical iPhone, cold-process and production performance remain unverified.
+
 ## 1.11.3 — Less work during transaction discovery
 
 Atomic transaction candidate discovery checks the fixed `financeId` metadata field directly, instead of validating and decoding every configurable finance property on every unrelated note. Configuration/migration and identity-key validation still runs before discovery; each candidate's current source still goes through the existing property decoder and write guards. Folder candidates remain discoverable before metadata arrives, and metadata never authorizes a write.

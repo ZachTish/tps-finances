@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
+import {readFileSync} from 'node:fs';
+import ts from 'typescript';
 class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension='md';}}
 globalThis.ManualQAFile=File;
 const output=await build({stdin:{contents:'export * from "./src/manual-finance";export * from "./src/atomic-finance-store";export * from "./src/finance-summary";',resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class App{};export const TFile=globalThis.ManualQAFile;export const normalizePath=s=>s;export const parseYaml=s=>JSON.parse(s);export const stringifyYaml=s=>JSON.stringify(s)+'\\n';`}));}}]});
@@ -14,6 +16,80 @@ function harness(){
 }
 const input={name:'Wallet',kind:'cash',value:100,currency:'USD',valuationDate:'2026-09-13',assetType:'car',purchaseTransaction:'',liabilityAccount:''};
 const entry={title:'Lunch',amount:12.5,date:'2026-09-13',kind:'expense',category:'Food',tags:['#food'],counterpart:'',linkedTransaction:''};
+
+function cashFormHarness() {
+ const h=harness(),forms=[],notices=[],counts={models:0,snapshots:0,accounts:0,refreshes:0};
+ const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
+ const ast=ts.createSourceFile('main.ts',source,ts.ScriptTarget.Latest,true);
+ let method;
+ const visit=node=>{if(ts.isMethodDeclaration(node)&&node.name?.getText(ast)==='addCashTransaction')method=node.getText(ast);ts.forEachChild(node,visit);};visit(ast);
+ assert.ok(method);
+ const code=ts.transpileModule(`export class Owner { ${method} }`,{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText;
+ const exports={};
+ class CashTransactionModal {constructor(app,accounts,save){this.accounts=accounts;this.save=save;}open(){forms.push(this);}}
+ class Notice {constructor(message){notices.push(message);}}
+ const validate=()=>{if(h.blocked)throw Error('property configuration blocked');};
+ new Function('exports','CashTransactionModal','ManualFinanceStore','Notice','logger','financeProperties',code)(exports,CashTransactionModal,ManualFinanceStore,Notice,{flow(){}},validate);
+ const snapshot={date:'2026-09-28',lines:['snapshot preserved']};
+ const owner=Object.assign(new exports.Owner(),{
+  app:h.app,settings:{financeFolder:'Inbox/Finance QA'},
+  async readLatestSnapshotDocument(){counts.snapshots++;if(h.snapshotError)throw h.snapshotError;return snapshot;},
+  readAccountsFromVault(value){counts.accounts++;assert.equal(value,snapshot,'preserve snapshot fallback for account currencies');return h.accounts;},
+  async getDashboardModel(){counts.models++;validate();if(h.dashboardError)throw h.dashboardError;return {accounts:this.readAccountsFromVault(await this.readLatestSnapshotDocument())};},
+  async refreshDashboard(){counts.refreshes++;},
+ });
+ h.accounts=[{path:'Wallet.md',name:'Wallet',currency:'EUR',manual:true,type:'depository',subtype:'cash'},
+  {path:'Bank.md',name:'Bank',currency:'EUR',manual:false,type:'depository',subtype:'checking'},
+  {path:'Asset.md',name:'Asset',currency:'USD',manual:true,type:'other',subtype:'car'}];
+ return Object.assign(h,{owner,forms,notices,counts});
+}
+
+test('cash form reads accounts with their snapshot but does not load the dashboard',async()=>{
+ const h=cashFormHarness();await h.owner.addCashTransaction();
+ assert.equal(h.forms.length,1);assert.equal(h.forms[0].accounts,h.accounts);
+ assert.deepEqual(h.counts,{models:0,snapshots:1,accounts:1,refreshes:0});
+ assert.equal(h.nodes.size,0,'opening a form does not create storage');
+});
+
+test('repeated cash form opens and cancellation never request transactions or writes',async()=>{
+ const h=cashFormHarness();for(let i=0;i<20;i++)await h.owner.addCashTransaction();
+ assert.equal(h.counts.models,0);assert.equal(h.counts.accounts,20);
+ assert.equal(h.forms.length,20);assert.equal(h.nodes.size,0);assert.equal(h.counts.refreshes,0);
+});
+
+test('missing cash account reports the existing notice without reading a dashboard',async()=>{
+ const h=cashFormHarness();h.accounts=h.accounts.filter(a=>!a.manual);await h.owner.addCashTransaction();
+ assert.equal(h.forms.length,0);assert.match(h.notices[0],/Create a cash account first/);
+ assert.equal(h.counts.models,0);assert.equal(h.nodes.size,0);
+});
+
+test('unrelated transaction model failures cannot block opening the cash form',async()=>{
+ const h=cashFormHarness();h.dashboardError=Error('Unrelated invalid transaction');
+ await h.owner.addCashTransaction();assert.equal(h.forms.length,1);assert.equal(h.counts.models,0);
+});
+
+test('cash form configuration and snapshot failures do not open a partial form',async()=>{
+ const h=cashFormHarness();h.blocked=true;
+ await assert.rejects(h.owner.addCashTransaction(),/configuration blocked/);
+ assert.equal(h.counts.snapshots+h.counts.accounts,0);assert.equal(h.forms.length,0);
+ h.blocked=false;h.snapshotError=Error('snapshot unavailable');
+ await assert.rejects(h.owner.addCashTransaction(),/snapshot unavailable/);
+ assert.equal(h.counts.accounts,0);assert.equal(h.forms.length,0);assert.equal(h.nodes.size,0);
+});
+
+test('cash form keeps the actual validated writer and refreshes only after a successful record',async()=>{
+ const h=cashFormHarness(),account=await h.store.createAccount(input);
+ h.accounts=[{...h.accounts[0],path:account.path,currency:'USD'}];
+ await h.owner.addCashTransaction();const save=h.forms[0].save;
+ const before=h.app.vault.getMarkdownFiles().length;
+ await save({...entry,accountPath:account.path});
+ assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,1);
+ const tx=h.app.vault.getMarkdownFiles().find(f=>f.path!==account.path);
+ assert.equal(h.fm(tx.path).amount,-12.5);assert.equal(h.fm(tx.path).currency,'USD');
+ assert.deepEqual(h.fm(tx.path).tags,['food']);assert.equal(h.fm(account.path).openingBalance,100);
+ await assert.rejects(save({...entry,accountPath:account.path,amount:-1}),/positive amount/);
+ assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,1);
+});
 const wallet=(path='Wallet',openingBalance=100,currency='USD')=>({path:path+'.md',manual:true,type:'depository',subtype:'cash',currency,openingBalance,current:999});
 const tx=(amount,other={})=>({manual:true,accountPath:'Wallet',amount,currency:'USD',subtype:amount<0?'purchase':'income',...other});
 test('expense/income derive balances; editing, deleting, and retrying model reads do not accumulate',()=>{const a=[wallet()];applyManualCashBalances(a,[tx(-10),tx(5)]);assert.equal(a[0].current,95);applyManualCashBalances(a,[tx(-20),tx(5)]);assert.equal(a[0].current,85);applyManualCashBalances(a,[tx(5)]);assert.equal(a[0].current,105);applyManualCashBalances(a,[tx(5)]);assert.equal(a[0].current,105);});
