@@ -12,7 +12,7 @@ import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassi
 import { normalizeDeviceItems } from "./device-state";
 import { AtomicFinanceStore } from "./atomic-finance-store";
 import { TransactionTitleModal } from "./transaction-title-modal";
-import { FinanceStore } from "./finance-store";
+import { FinanceStore, type TransactionReadSource } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
 import { ManualFinanceStore, applyManualCashBalances } from "./manual-finance";
 import { ManualAccountModal, CashTransactionModal, AssetValueModal } from "./finance-modals";
@@ -568,7 +568,7 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  async getDashboardModel(sourcePaths?: Set<string>): Promise<DashboardModel> {
+  async getDashboardModel(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<DashboardModel> {
     const snapshot = await this.readLatestSnapshotDocument(sourcePaths);
     const accountLabels = new Map<string, AccountLabel>();
     const accounts = this.readAccountsFromVault(snapshot, accountLabels, sourcePaths);
@@ -577,7 +577,7 @@ export default class TPSFinancesPlugin extends Plugin {
     // Manual records are always atomic notes, also when provider logging uses atomic lines.
     const transactionStore = accounts.some(account => account.manual) && this.settings.recordMode === "atomic-line"
       ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : store;
-    const transactionRecords = await transactionStore.readTransactionRecords();
+    const transactionRecords = await transactionStore.readTransactionRecords(source);
     if (sourcePaths) for (const record of transactionRecords) sourcePaths.add(record.path);
     const rules = store.readRules(sourcePaths);
     const classifyForDashboard = prepareTransactionClassifier(rules);

@@ -468,3 +468,47 @@ test('marker-free replacement removes old legacy ownership while preserving dupl
  h.store.indexTransactionFile(index,'First.md',`${line}\n`);
  assert.deepEqual(index.recordsById.get('old-1').map(r=>r.path),['First.md','Second.md']);
 });
+
+test('indexed display bursts read atomic properties without source reparsing',async()=>{
+ const h=harness();await h.store.applyTransactions(Array.from({length:32},(_,i)=>({...tx,financeId:`display-${i}`,providerTransactionId:`display-provider-${i}`})),[],[],state,accounts);
+ const expected=await h.store.readTransactionRecords();let reads=0,parses=0,writes=0;
+ const read=h.app.vault.cachedRead,parse=globalThis.AtomicQAParseYaml,process=h.app.vault.process;
+ h.app.vault.cachedRead=async f=>{reads++;return read(f);};globalThis.AtomicQAParseYaml=s=>{parses++;return parse(s);};h.app.vault.process=async(...a)=>{writes++;return process(...a);};
+ try{for(let i=0;i<25;i++)assert.deepEqual(await h.store.readTransactionRecords('metadata'),expected);}
+ finally{globalThis.AtomicQAParseYaml=parse;}
+ assert.equal(reads,32*25,'legacy bodies remain discoverable, with no duplicate atomic source reads');assert.equal(parses,0);assert.equal(writes,0);
+});
+
+test('display uses indexed values while ordinary readers and writes retain current-source authority',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);const cached=structuredClone(h.fm(path));
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),fm=>{fm.amount=-47;fm.custom='Preserve current source';});
+ h.app.metadataCache.getFileCache=()=>({frontmatter:cached});
+ const displayed=await h.store.readTransactionRecords('metadata'),current=await h.store.readTransactionRecords();
+ assert.equal(legacyFields(displayed[0].line).amount,-12.5);assert.equal(legacyFields(current[0].line).amount,-47);
+ await h.store.updateTransactionMetadata(tx.financeId,'Food',['personal']);assert.equal(h.fm(path).amount,-47);assert.equal(h.fm(path).custom,'Preserve current source');
+});
+
+test('indexed creation and classification removal follow metadata publication without a second index',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);let cached=null;
+ h.app.metadataCache.getFileCache=()=>cached;
+ assert.equal((await h.store.readTransactionRecords('metadata')).length,0);assert.equal((await h.store.readTransactionRecords()).length,1);
+ cached={frontmatter:structuredClone(h.fm(path))};assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
+ cached={frontmatter:{title:'Ordinary note'}};assert.equal((await h.store.readTransactionRecords('metadata')).length,0);
+ cached={frontmatter:structuredClone(h.fm(path))};assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
+});
+
+test('indexed display keeps legacy bodies, atomic precedence and duplicate identity guards',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ h.text.set(path,h.text.get(path)+'\n'+line);await h.app.vault.create('Journal.md',line.replace('old-1','local-1'));
+ const records=await h.store.readTransactionRecords('metadata');assert.equal(records.length,2);assert.equal(records[0].path,path);assert.equal(records[1].path,path);assert.equal(legacyFields(records[0].line).amount,-12.5);
+ await h.app.vault.create('Finances/Transactions/Duplicate.md',h.text.get(path));
+ await assert.rejects(h.store.readTransactionRecords('metadata'),/Duplicate atomic transaction identity/);
+ await assert.rejects(h.store.readTransactionRecords(),/Duplicate atomic transaction identity/);
+});
+
+test('indexed display retains migration and invalid-mapping guards',async()=>{
+ const h=harness(),settings={propertyNames:{keys:{}},propertyMigration:{pending:true}};h.app.plugins={plugins:{'tps-finances':{settings}}};
+ await assert.rejects(h.store.readTransactionRecords('metadata'),/Resume the property migration/);
+ settings.propertyMigration=null;settings.propertyNames={keys:{amount:'financeId'}};
+ await assert.rejects(h.store.readTransactionRecords('metadata'),/plain, nonempty property name/);
+});

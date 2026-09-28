@@ -173,3 +173,8 @@ test('metadata bursts during a read coalesce and closing releases the view depen
   const h=eventHarness();await h.view.onOpen();const pending=deferred();let n=0;h.setReader(sources=>{sources?.add('Fresh.md');return ++n===1?pending.promise:Promise.resolve(model(-19));});const load=h.view.render();await Promise.resolve();
   const work=[];for(let i=0;i<50;i++)work.push(h.event('changed',new EventFile('Account.md'),'changed source'));pending.resolve(model(-2));await Promise.all([load,...work]);assert.equal(h.counts.models,3);assert.equal(h.view.lastOverview.transactions[0].amount,-19);await h.view.onClose();assert.equal(h.view.sourcePaths,null);
 });
+
+test('dashboard explicitly requests indexed properties on open and data refresh',async()=>{
+ const h=harness(),sources=[];h.view.plugin.getDashboardModel=async(paths,source)=>{sources.push(source);paths.add('Account.md');return model();};
+ await h.view.onOpen();await h.view.render();assert.deepEqual(sources,['metadata','metadata']);assert.ok(h.view.dependsOnSource('Account.md'));
+});

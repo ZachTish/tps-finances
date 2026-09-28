@@ -1,5 +1,17 @@
 # TPS Finances
 
+## 1.11.6 — Dashboard display uses Obsidian's property index
+
+The Finances dashboard now reads atomic transaction properties from Obsidian's existing metadata index. Previously, opening or refreshing the dashboard reparsed the source YAML of every atomic candidate, duplicating work already owned by Obsidian. The existing view refresh queue responds when metadata is published, renamed or removed; local route/month controls continue reusing their displayed model.
+
+This makes display freshness explicit: newly created notes appear after Obsidian indexes their properties, and edits appear on its metadata event. No fallback parser, additional cache, watcher, timer or persisted state is added. Current mappings and complete kind tags still govern interpretation. Duplicate identity/configuration errors remain errors. Legacy inline transactions still use their existing body reader, including lines inside atomic notes, with atomic records retaining identity precedence.
+
+Sync, edits, migrations, title review, and zero-argument `api.getDashboardModel()` retain their current-source checks. The dashboard alone requests the internal `metadata` read mode; that result never supplies mutation authority. Snapshot and budget body reads remain unchanged. No configuration, note migration, default or minimum-version change; Obsidian 1.12.0 remains required.
+
+Seven new regressions cover unchanged display bursts, no atomic YAML parses, indexed creation/removal, stale indexed display versus current-source reads and edits, duplicates/legacy precedence, mappings, migration guards and explicit view routing. Final validation and installed measurements are recorded in [1.11.6 release notes](release-notes/1.11.6.md). Production installation remains the user's BRAT pull.
+
+Validation passed 115 focused and all 305 declared checks, with zero failures/skips, TypeScript and the separate Test build. A named Finances-only reload preserved the concurrent authentication panel. Installed API/real-dashboard tests verified creation after metadata publication, amount edits, rename, classification removal/restoration and legacy removal/restoration; each data change produced one model and correct DOM rows. An unrelated rename still produced no model. Ten fixtures across before/after were directly archived with exact source bytes preserved. In a separate comparison on the final installed build, the same 1,694 transactions/16 accounts/13 holdings had identical model hashes; display removed 3,566 atomic source reads/parses per model (14,803 cached reads → 11,237), while the default API retained them. Legacy body discovery remains. Those samples were hidden/unfocused, and the dashboard was covered by a separate authentication panel: no foreground input, physical iPhone, cold-process, production or native-parity speed claim. Five settings hashes were verified during each fixture run and seven settings files at final validation. No runtime-owned state was replaced.
+
 
 ## 1.11.5 — Refresh dashboards only for relevant changes
 
@@ -141,7 +153,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.11.3](https://github.com/ZachTish/tps-finances/releases/tag/1.11.3) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.11.6](https://github.com/ZachTish/tps-finances/releases/tag/1.11.6) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

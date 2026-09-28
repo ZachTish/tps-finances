@@ -176,7 +176,7 @@ test('tag mappings support finance import, repeat updates and generated Base pre
  const paths=await h.store.upsertAccounts([account]);assert.equal(h.fm(paths.get('account1')).kind,undefined);assert.ok(h.fm(paths.get('account1')).tags.includes('accounts'));
  await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
  await h.store.applyTransactions([],[{...tx,amount:-9}],[],structuredClone(state),paths);
- assert.equal(h.fm('tx1.md').kind,undefined);assert.equal((await h.store.readTransactionRecords()).length,1);
+ assert.equal(h.fm('tx1.md').kind,undefined);assert.equal((await h.store.readTransactionRecords()).length,1);assert.deepEqual(await h.store.readTransactionRecords('metadata'),await h.store.readTransactionRecords());
  const base=financeProperties(h.app).base('filters:\n  and:\n    - kind == "transaction"\n    - note.kind != "account"\nviews: []\n');
  assert.match(base,/file\.hasTag\("kind\/financial\/transaction"\)/);assert.match(base,/!file\.hasTag\("accounts"\)/);assert.doesNotMatch(base,/undefined/);
 });
@@ -192,5 +192,15 @@ test('dashboard collects exact contributing paths during existing reads, includi
   let reads=0,scans=0;const read=h.app.vault.cachedRead,list=h.app.vault.getMarkdownFiles;h.app.vault.cachedRead=async f=>{reads++;return read(f)};h.app.vault.getMarkdownFiles=()=>{scans++;return list()};
   const without=await p.getDashboardModel(),baseline={reads,scans};reads=0;scans=0;const sources=new Set(),withSources=await p.getDashboardModel(sources);assert.deepEqual(withSources,without);assert.deepEqual({reads,scans},baseline,'dependency collection adds no I/O');
   const expected=h.app.vault.getMarkdownFiles().map(f=>f.path).filter(path=>path!=='Unrelated.md');assert.deepEqual([...sources].sort(),expected.sort());assert.ok(sources.has(snapshot));assert.ok(sources.has('Journal.md'));
+ }
+});
+
+test('indexed dashboard preserves mapped results while default API remains source-backed',async()=>{
+ for(const properties of [new FinanceProperties(),mapped()]){
+  const h=harness(properties),paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],state,paths);
+  const p=new FinancePlugin(h.app);p.settings={...h.plugin.settings,financeFolder:'',recordMode:'atomic-note'};p.getConnectedItems=()=>[];p.getRelayStatus=()=>null;p.getPlaidSetupStatus=()=>({state:'ready'});
+  let reads=0;const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async f=>{reads++;return read(f);};
+  const current=await p.getDashboardModel(),sourceReads=reads;reads=0;const sources=new Set(),indexed=await p.getDashboardModel(sources,'metadata');
+  assert.deepEqual(indexed,current);assert.equal(reads,sourceReads-1);assert.ok(sources.has('tx1.md'));assert.ok(sources.has(paths.get('account1')));
  }
 });

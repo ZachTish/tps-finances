@@ -1,3 +1,4 @@
+import type { TransactionReadSource } from "./finance-store";
 import { ItemView, Menu, Notice, Platform, WorkspaceLeaf, setIcon } from "obsidian";
 import { renderBudgetView, type BudgetViewState } from "./budget-view";
 import type { BudgetBucket } from "./flex-budget";
@@ -56,7 +57,7 @@ export interface DashboardModel {
 
 interface FinancesViewPlugin {
   settings?: {recordMode: string};
-  getDashboardModel(sourcePaths?: Set<string>): Promise<DashboardModel>;
+  getDashboardModel(sourcePaths?: Set<string>, source?: TransactionReadSource): Promise<DashboardModel>;
   canConnectPlaid?(): boolean;
   connectPlaid(): Promise<void>;
   openConnectionSettings(): void;
@@ -136,7 +137,7 @@ export class TPSFinancesView extends ItemView {
         this.renderRequested = false;
         try {
           const sourcePaths = new Set<string>();
-          const model = await this.plugin.getDashboardModel(sourcePaths);
+          const model = await this.plugin.getDashboardModel(sourcePaths, "metadata");
           if (this.closed || this.renderRequested) continue;
           this.sourcePaths = sourcePaths;
           this.renderModel(model);

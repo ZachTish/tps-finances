@@ -1,7 +1,7 @@
 import { financeProperties } from "./finance-properties";
 import { financeDirectory, financePath, financePrefix } from "./finance-paths";
 import { App, TFile, parseYaml, stringifyYaml } from "obsidian";
-import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody, safeName } from "./finance-store";
+import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody, safeName, type TransactionReadSource } from "./finance-store";
 import { normalizeTags } from "./classification";
 import { providerIdentityKey } from "./identity";
 import type { DeviceState, FinanceHolding, FinanceAccount, FinanceTransaction } from "./types";
@@ -69,7 +69,7 @@ export class AtomicFinanceStore extends FinanceStore {
     return financeProperties(this.vaultApp).read(match ? parseYaml(match[1]) || {} : {});
   }
 
-  private async index(fieldsByFile?: Map<TFile, Fields>): Promise<Map<string, TFile>> {
+  private async index(fieldsByFile?: Map<TFile, Fields>, source: TransactionReadSource = "source"): Promise<Map<string, TFile>> {
     // Keep the configuration gate; financeId itself is fixed and never mapped.
     financeProperties(this.vaultApp);
     const result = new Map<string, TFile>();
@@ -77,8 +77,11 @@ export class AtomicFinanceStore extends FinanceStore {
       (this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
       || this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId);
     await boundedWork(files, async file => {
-      // Metadata narrows candidates; file content supplies the actual property values.
-      const fm = await this.fields(file);
+      // The view follows Obsidian's index. Mutation/ordinary API callers still
+      // verify source contents; display reads must never authorize their writes.
+      const fm = source === "metadata"
+        ? financeProperties(this.vaultApp).cache(this.vaultApp, file)
+        : await this.fields(file);
       const accountPath = String(fm.account || "").replace(/^\[\[|\]\]$/g, "");
       if (!file.path.startsWith(financePrefix(this.folder, "Transactions")) && !accountPath.startsWith(financePrefix(this.folder, "Accounts"))) return;
       if (!fm.financeId || !["transaction", "investmentTransaction"].includes(fm.type)) return;
@@ -176,10 +179,10 @@ export class AtomicFinanceStore extends FinanceStore {
     await this.applyTransactions(transactions, [], [], {plaidUserId:"",items:[],providerIdentityMap:{}}, accountPaths);
   }
 
-  async readTransactionRecords(): Promise<{line:string;path:string;lineNumber:number}[]> {
+  async readTransactionRecords(source: TransactionReadSource = "source"): Promise<{line:string;path:string;lineNumber:number}[]> {
     const records = [];
     const fieldsByFile = new Map<TFile, Fields>();
-    const index = await this.index(fieldsByFile);
+    const index = await this.index(fieldsByFile, source);
     for (const file of index.values()) {
       const fm = fieldsByFile.get(file)!;
       records.push({line: fieldsLine(fm), path:file.path, lineNumber:0});
