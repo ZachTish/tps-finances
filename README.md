@@ -1,5 +1,15 @@
 # TPS Finances
 
+## 1.12.0 — Private amounts on Overview
+
+The main dashboard’s **Hide amounts** eye button masks summary totals, account balances, holding share quantities/prices/values and recent transaction amounts. Tap a masked value to reveal just that value; tap again to hide it. **Show amounts** restores the normal display. Percentages, dates, account labels and identifiers remain visible. Budget, the home summary, Bases, notes, forms and other views are unchanged.
+
+The mode belongs to the open dashboard view only. It stays on across Overview/Budget navigation and data refreshes, which remask individually revealed values; closing/reopening the view or reloading the plugin starts with the normal visible display. There is no persisted setting or data migration. Masked numeric values are absent from the rendered text, tooltips and accessibility labels until explicitly revealed. The underlying finance data remains unchanged.
+
+Native buttons support touch, Enter/Space, accessible labels and visible focus; amount targets are at least 44 px. Revealing an amount never triggers the surrounding transaction’s navigation. The global toggle reuses the currently displayed model and preserves dashboard scroll/focus; individual reveals update only their button. No additional data read, scan, write, background listener, cache or timer is added. This additive feature uses a minor version; minimum Obsidian remains 1.12.0.
+
+The compact 44 px eye control sits beside the title to avoid adding a mobile toolbar row. Four actual-renderer regressions cover field coverage and accessibility, individual disclosure and transaction event propagation, refresh/route/reset behavior, view isolation and operation counts. Validation: 24 focused and 309 full tests passed, with no failures or skips; TypeScript and the separate final production build passed. The named Test plugin reload loaded 1.12.0. Installed pointer/keyboard checks covered 13 masked fields, single-value reveal without note navigation, Budget isolation, refresh remasking and Show amounts. The 320 px panel had no horizontal overflow and all new targets were at least 44 px. Synthetic model/open-source adapters were restored; no notes or provider calls were made, and seven runtime settings files remained byte-identical. Physical iPhone acceptance is still needed. Detailed test-vault UI boundaries and artifact hashes are recorded in [1.12.0 release notes](release-notes/1.12.0.md).
+
 ## 1.11.6 — Dashboard display uses Obsidian's property index
 
 The Finances dashboard now reads atomic transaction properties from Obsidian's existing metadata index. Previously, opening or refreshing the dashboard reparsed the source YAML of every atomic candidate, duplicating work already owned by Obsidian. The existing view refresh queue responds when metadata is published, renamed or removed; local route/month controls continue reusing their displayed model.
@@ -153,7 +163,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.11.6](https://github.com/ZachTish/tps-finances/releases/tag/1.11.6) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.12.0](https://github.com/ZachTish/tps-finances/releases/tag/1.12.0) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

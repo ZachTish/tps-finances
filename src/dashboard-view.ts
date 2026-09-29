@@ -78,6 +78,7 @@ export class TPSFinancesView extends ItemView {
   private renderRequested = false;
   private renderPromise: Promise<void> | null = null;
   private closed = false;
+  private amountsHidden = false;
   // Dependencies of the displayed model, replaced on each successful read.
   private sourcePaths: Set<string> | null = null;
   private route: "overview" | "budget" = "overview";
@@ -109,6 +110,7 @@ export class TPSFinancesView extends ItemView {
 
   async onClose(): Promise<void> {
     this.closed = true;
+    this.amountsHidden = false;
     this.sourcePaths = null;
     this.renderRequested = false;
   }
@@ -203,6 +205,18 @@ export class TPSFinancesView extends ItemView {
     const header = root.createDiv({ cls: "tps-finances-header" });
     const title = header.createDiv({ cls: "tps-finances-title" });
     title.createEl("h1", { text: "Finances" });
+    if (this.route === "overview") {
+      const label = this.amountsHidden ? "Show amounts" : "Hide amounts";
+      const privacy = title.createEl("button", {
+        cls: "tps-finances-button tps-finances-privacy-toggle",
+        attr: { type: "button", "aria-label": label, title: label, "aria-pressed": String(this.amountsHidden), "data-budget-focus": "amount-privacy" },
+      });
+      setIcon(privacy, this.amountsHidden ? "eye-off" : "eye");
+      privacy.addEventListener("click", () => {
+        this.amountsHidden = !this.amountsHidden;
+        this.renderModel(model);
+      });
+    }
     title.createEl("small", { text: model.lastSyncAt ? `Updated ${friendlyTime(model.lastSyncAt)}` : "Not synced yet" });
     const actions = header.createDiv({ cls: "tps-finances-actions" });
     const add = actionButton("plus", "Add", () => {
@@ -244,14 +258,14 @@ export class TPSFinancesView extends ItemView {
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     for (const summary of accountSummaries(model.accounts, model.holdings)) {
       const grid = root.createDiv({ cls: "tps-finances-summary" });
-      metric(grid, "Net worth", summary.netWorth, "wallet-cards", summary.currency);
-      metric(grid, "Cash", summary.cash, "banknote", summary.currency);
-      metric(grid, "Investments", summary.investments, "chart-no-axes-combined", summary.currency);
-      if (summary.assets) metric(grid, "Resale assets", summary.assets, "house", summary.currency);
-      metric(grid, "Debt", summary.debt, "credit-card", summary.currency);
+      this.metric(grid, "Net worth", summary.netWorth, "wallet-cards", summary.currency);
+      this.metric(grid, "Cash", summary.cash, "banknote", summary.currency);
+      this.metric(grid, "Investments", summary.investments, "chart-no-axes-combined", summary.currency);
+      if (summary.assets) this.metric(grid, "Resale assets", summary.assets, "house", summary.currency);
+      this.metric(grid, "Debt", summary.debt, "credit-card", summary.currency);
       const transactions = model.transactions.filter(t => t.currency === summary.currency && t.date.startsWith(month));
-      metric(grid, "Spent this month", -transactions.filter(t => isSpendingTransaction(t)).reduce((n,t) => n+t.amount,0), "arrow-up-right", summary.currency);
-      metric(grid, "Income this month", transactions.filter(t => t.amount > 0 && t.type === "transaction" && t.subtype === "income").reduce((n,t) => n+t.amount,0), "arrow-down-left", summary.currency);
+      this.metric(grid, "Spent this month", -transactions.filter(t => isSpendingTransaction(t)).reduce((n,t) => n+t.amount,0), "arrow-up-right", summary.currency);
+      this.metric(grid, "Income this month", transactions.filter(t => t.amount > 0 && t.type === "transaction" && t.subtype === "income").reduce((n,t) => n+t.amount,0), "arrow-down-left", summary.currency);
     }
   }
 
@@ -262,7 +276,7 @@ export class TPSFinancesView extends ItemView {
       const card = grid.createDiv({ cls: "tps-finances-account-card" });
       card.createEl("small", { text: account.institutionName });
       card.createEl("strong", { text: `${account.name}${account.mask ? ` •${account.mask}` : ""}` });
-      card.createDiv({ cls: "tps-finances-account-balance", text: money(account.current || 0, account.currency) });
+      this.renderAmount(card.createDiv({ cls: "tps-finances-account-balance" }), money(account.current || 0, account.currency), `balance for ${account.name}`);
       card.createEl("span", { text: [account.type, account.subtype].filter(Boolean).join(" · ") });
       if (account.manual) {
         card.createEl("small", {text: account.type === "other" ? `Valued ${account.valuationDate || "—"}` : "Opening balance + cash transactions"});
@@ -306,12 +320,13 @@ export class TPSFinancesView extends ItemView {
       const row = list.createDiv({ cls: "tps-finances-row" });
       const main = row.createDiv({ cls: "tps-finances-row-main" });
       main.createEl("strong", { text: holding.ticker || holding.name });
-      main.createEl("small", { text: [
-        `${trimNumber(holding.quantity)} shares`,
-        money(holding.price, holding.currency),
-        holding.stale ? `Last known as of ${holding.asOf || "an earlier sync"}` : "",
-      ].filter(Boolean).join(" · ") });
-      row.createDiv({ cls: "tps-finances-row-amount", text: money(holding.value, holding.currency) });
+      const details = main.createEl("small", { cls: "tps-finances-holding-details" });
+      const label = holding.ticker || holding.name;
+      this.renderAmount(details.createSpan(), `${trimNumber(holding.quantity)} shares`, `share quantity for ${label}`);
+      details.createSpan({ text: " · " });
+      this.renderAmount(details.createSpan(), money(holding.price, holding.currency), `price for ${label}`);
+      if (holding.stale) details.createSpan({ text: ` · Last known as of ${holding.asOf || "an earlier sync"}` });
+      this.renderAmount(row.createDiv({ cls: "tps-finances-row-amount" }), money(holding.value, holding.currency), `value for ${label}`);
     }
   }
 
@@ -339,7 +354,7 @@ export class TPSFinancesView extends ItemView {
       if (transaction.pending) name.createEl("span", { cls: "tps-finances-pending", text: "Pending" });
       main.createEl("small", { text: [transaction.date, transaction.account, humanCategory(transaction.subtype), humanCategory(transaction.category), ...transaction.tags].filter(Boolean).join(" · ") });
       const amount = row.createDiv({ cls: `tps-finances-row-amount ${transaction.amount >= 0 ? "is-positive" : "is-negative"}` });
-      amount.setText(money(transaction.amount, transaction.currency, true));
+      this.renderAmount(amount, money(transaction.amount, transaction.currency, true), `amount for ${transaction.name}`);
       const edit = row.createEl("button", { cls: "tps-finances-classify-button", attr: { type: "button", "aria-label": `Categorize ${transaction.name}`, title: "Categorize and tag" } });
       setIcon(edit, "tag");
       edit.addEventListener("click", (event) => {
@@ -348,6 +363,37 @@ export class TPSFinancesView extends ItemView {
       });
     }
     if (!transactions.length) list.createDiv({ cls: "tps-finances-empty", text: "No transactions have been synced yet." });
+  }
+
+  private metric(parent: HTMLElement, label: string, value: number, iconName: string, currency = "USD"): void {
+    const card = parent.createDiv({ cls: "tps-finances-metric" });
+    const icon = card.createDiv({ cls: "tps-finances-metric-icon" });
+    setIcon(icon, iconName);
+    card.createEl("small", { text: label });
+    this.renderAmount(card.createEl("strong"), money(value, currency), label);
+  }
+
+  private renderAmount(parent: HTMLElement, value: string, label: string): void {
+    if (!this.amountsHidden) {
+      parent.setText(value);
+      return;
+    }
+    // Keep masked amounts out of text, tooltips and accessibility labels.
+    const button = parent.createEl("button", { cls: "tps-finances-private-value", text: "••••", attr: {
+      type: "button", "aria-label": `Reveal ${label}`, "aria-pressed": "false",
+    } });
+    let revealed = false;
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      revealed = !revealed;
+      button.setText(revealed ? value : "••••");
+      button.setAttr("aria-pressed", String(revealed));
+      button.setAttr("aria-label", revealed ? `${value}. Hide ${label}` : `Reveal ${label}`);
+    });
+    button.addEventListener("keydown", event => {
+      // The transaction row owns navigation; Enter/Space on this button only reveals.
+      if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+    });
   }
 
   private async runAction(action: () => Promise<void>): Promise<void> {
@@ -370,14 +416,6 @@ function actionButton(iconName: string, label: string, action: () => void, prima
   button.append(icon, document.createTextNode(label));
   button.addEventListener("click", action);
   return button;
-}
-
-function metric(parent: HTMLElement, label: string, value: number, iconName: string, currency = "USD"): void {
-  const card = parent.createDiv({ cls: "tps-finances-metric" });
-  const icon = card.createDiv({ cls: "tps-finances-metric-icon" });
-  setIcon(icon, iconName);
-  card.createEl("small", { text: label });
-  card.createEl("strong", { text: money(value, currency) });
 }
 
 function sectionEl(parent: HTMLElement, title: string, iconName: string): HTMLElement {

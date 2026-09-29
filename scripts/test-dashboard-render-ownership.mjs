@@ -12,15 +12,27 @@ class Element {
     this.textContent = options.text || ''; this.value = options.value || ''; this.scrollTop = 0;
     this.ownerDocument = doc; this.className = options.cls || ''; this.type = options.type;
   }
-  createEl(tag, options = {}) { const child = new Element(tag, options, this.ownerDocument); this.children.push(child); return child; }
+  createEl(tag, options = {}) { const child = new Element(tag, options, this.ownerDocument); this.children.push(child); child.parentElement = this; return child; }
   createDiv(options = {}) { return this.createEl('div', options); }
   createSpan(options = {}) { return this.createEl('span', options); }
   addClass(cls) { this.className += ` ${cls}`; }
   empty() { this.children = []; }
+  setText(value) { this.textContent = value; this.children = []; }
+  setAttr(key, value) { this.setAttribute(key, value); }
+  appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
+  append(...children) { for (const child of children) this.appendChild(child); }
   getAttribute(key) { return this.attrs[key] ?? null; }
   setAttribute(key, value) { this.attrs[key] = String(value); }
   addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
-  fire(name) { for (const fn of this.listeners[name] || []) fn({stopPropagation() {}}); }
+  fire(name, properties = {}) {
+    const event = { ...properties, defaultPrevented: false, stopped: false,
+      stopPropagation() { this.stopped = true; }, preventDefault() { this.defaultPrevented = true; } };
+    for (let target = this; target; target = target.parentElement) {
+      for (const fn of target.listeners[name] || []) fn(event);
+      if (event.stopped) break;
+    }
+    return event;
+  }
   focus() { this.ownerDocument.activeElement = this; }
   all() { return this.children.flatMap(child => [child, ...child.all()]); }
   querySelectorAll(selector) { assert.equal(selector, '[data-budget-focus]'); return this.all().filter(el => el.attrs['data-budget-focus']); }
@@ -41,16 +53,18 @@ const {TPSFinancesView,financeProperties} = await import('data:text/javascript;b
 const model = (amount = -10) => ({accounts:[{path:'Checking.md',name:'Checking',currency:'USD',type:'depository',subtype:'checking'}],holdings:[],connectedItems:0,plaidSetupState:'missing-credentials',budgets:[],budgetEntries:[
   {id:'food',name:'Food',bucket:'category',monthlyLimit:100,category:'Groceries',currency:'USD'},
   {id:'euro',name:'Euro spending',bucket:'flex',monthlyLimit:100,category:'',currency:'EUR'},
-],transactions:[{financeId:'fixture',name:'Purchase',date:'2026-09-18',amount,currency:'USD',category:'Groceries',subtype:'purchase',type:'transaction',accountPath:'Checking',account:'Checking',pending:false}],lastSyncAt:''});
+],transactions:[{financeId:'fixture',name:'Purchase',date:'2026-09-18',amount,currency:'USD',category:'Groceries',subtype:'purchase',type:'transaction',accountPath:'Checking',account:'Checking',pending:false,tags:[]}],lastSyncAt:''});
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
-function harness() {
+function harness(full = false) {
   const doc={activeElement:null},root=new Element('div',{},doc),counts={models:0,paint:0};
   let current=model(),reader=()=>Promise.resolve(current);
+  if (full) globalThis.document = {createElement:tag=>new Element(tag,{},doc),createTextNode:text=>new Element('#text',{text},doc)};
   const actions=[];
   const plugin={getDashboardModel(sources){counts.models++;return reader(sources);},addMonthlyBudget(...args){actions.push(['add',...args]);},editMonthlyBudget(value){actions.push(['edit',value.id]);},async openTransactionSource(value){actions.push(['open',value.financeId]);}};
   const view=new TPSFinancesView({root},plugin);
-  for(const key of ['renderHeader','renderAccounts','renderHoldings','renderTransactions','renderWelcome'])view[key]=()=>{};
-  view.renderSummary=(_root,m)=>{counts.paint++;view.lastOverview=m;};
+  if (!full) for(const key of ['renderHeader','renderAccounts','renderHoldings','renderTransactions','renderWelcome'])view[key]=()=>{};
+  const summary=view.renderSummary.bind(view);
+  view.renderSummary=(_root,m)=>{counts.paint++;view.lastOverview=m;if(full)summary(_root,m);};
   view.budgetState.month='2026-09';
   const control=key=>{const el=root.all().find(e=>e.attrs['data-budget-focus']===key);assert.ok(el,`Control ${key}`);return el;};
   return {view,root,doc,counts,actions,control,setModel(m){current=m;},setReader(fn){reader=fn;},click(key){const el=control(key);el.focus();el.fire('click');},change(key,value){const el=control(key);el.value=value;el.focus();el.fire('change');},settle:()=>view.renderPromise||Promise.resolve()};
@@ -177,4 +191,78 @@ test('metadata bursts during a read coalesce and closing releases the view depen
 test('dashboard explicitly requests indexed properties on open and data refresh',async()=>{
  const h=harness(),sources=[];h.view.plugin.getDashboardModel=async(paths,source)=>{sources.push(source);paths.add('Account.md');return model();};
  await h.view.onOpen();await h.view.render();assert.deepEqual(sources,['metadata','metadata']);assert.ok(h.view.dependsOnSource('Account.md'));
+});
+
+
+function privacyHarness() {
+  const h = harness(true), m = model(-43.21);
+  m.accounts[0].current = 12345.67;
+  m.accounts[0].mask = '1234';
+  m.accounts[0].institutionName = 'Example Bank';
+  m.holdings = [{ticker:'EXM',name:'Example holding',quantity:12.3456,price:78.91,value:974.56,currency:'USD'}];
+  m.transactions.push({...m.transactions[0],financeId:'income',name:'Income',amount:876.54,subtype:'income',tags:['increase 12.5%']});
+  h.setModel(m);
+  h.text = () => h.root.all().map(el => el.textContent).join(' ');
+  h.masked = () => h.root.all().filter(el => el.className.includes('tps-finances-private-value'));
+  return h;
+}
+
+test('Overview privacy hides all amount categories from text and accessibility attributes', async () => {
+  const h = privacyHarness(); await h.view.onOpen();
+  assert.match(h.text(), /12,345.67/); assert.match(h.text(), /12.3456 shares/);
+  h.click('amount-privacy');
+  assert.equal(h.control('amount-privacy').getAttribute('aria-pressed'), 'true');
+  assert.ok(h.masked().length >= 12, 'summary, balance, quantity, price, holding value and both transactions are covered');
+  const serialized = JSON.stringify(h.root.all().map(el => ({text:el.textContent,attrs:el.attrs,title:el.title})));
+  for (const value of ['12,345.67','12.3456','78.91','974.56','43.21','876.54']) assert.ok(!serialized.includes(value), value);
+  for (const button of h.masked()) {
+    assert.equal(button.tagName,'button');
+    assert.equal(button.textContent,'••••');
+    assert.equal(button.getAttribute('aria-pressed'),'false');
+    assert.match(button.getAttribute('aria-label'),/^Reveal /);
+  }
+  assert.match(h.text(), /2026-09-18/); assert.match(h.text(), /12.5%/); assert.match(h.text(), /Checking •1234/);
+  assert.equal(h.counts.models,1);
+});
+
+test('individual reveal uses only that value and never opens its transaction source', async () => {
+  const h=privacyHarness();await h.view.onOpen();h.click('amount-privacy');
+  const button=h.masked().find(el=>el.getAttribute('aria-label')==='Reveal amount for Purchase');
+  assert.ok(button);button.fire('click');
+  assert.match(button.textContent,/43.21/);assert.equal(button.getAttribute('aria-pressed'),'true');
+  assert.equal(h.masked().filter(el=>el.getAttribute('aria-pressed')==='true').length,1);
+  assert.deepEqual(h.actions,[]);
+  for (const key of ['Enter',' ']) {
+    const event=button.fire('keydown',{key});assert.equal(event.stopped,true);assert.equal(event.defaultPrevented,false,'native button activation remains available');
+    button.fire('click');assert.deepEqual(h.actions,[]);
+  }
+  button.fire('click');assert.equal(button.textContent,'••••');
+  const row=button.parentElement.parentElement;
+  row.fire('click');assert.deepEqual(h.actions,[['open','fixture']]);
+  assert.equal(h.counts.models,1);
+});
+
+test('privacy is Overview-only, survives refreshes while open and remasks individual reveals', async () => {
+  const h=privacyHarness();await h.view.onOpen();h.click('amount-privacy');h.masked()[0].fire('click');
+  h.click('budget');assert.equal(h.masked().length,0);assert.ok(!h.root.all().some(el=>el.getAttribute('data-budget-focus')==='amount-privacy'));assert.match(h.text(),/100.00/);
+  h.click('overview');assert.ok(h.masked().every(el=>el.textContent==='••••'));
+  h.masked()[0].fire('click');await h.view.render();assert.ok(h.masked().every(el=>el.textContent==='••••'));assert.equal(h.counts.models,2);
+  h.click('amount-privacy');assert.equal(h.masked().length,0);assert.match(h.text(),/12,345.67/);
+  for(let i=0;i<20;i++){h.click('amount-privacy');h.click('amount-privacy');}
+  assert.equal(h.counts.models,2,'privacy bursts do not repeat model reads');
+  assert.equal(h.doc.activeElement,h.control('amount-privacy'));
+});
+
+test('privacy is scoped to each open view and has accessible mobile controls', async () => {
+  const h=privacyHarness();await h.view.onOpen();h.click('amount-privacy');
+  const toggle=h.control('amount-privacy');
+  assert.equal(toggle.textContent,'','compact icon control uses its accessible label');
+  assert.equal(toggle.getAttribute('aria-label'),'Show amounts');
+  assert.equal(toggle.parentElement.className,'tps-finances-title');
+  const other=privacyHarness();await other.view.onOpen();assert.equal(other.masked().length,0);
+  await h.view.onClose();await h.view.onOpen();assert.equal(h.masked().length,0,'closing the view ends its temporary privacy mode');
+  const css=readFileSync(new URL('../styles.css',import.meta.url),'utf8');
+  assert.match(css,/\.tps-finances-private-value[^}]*min-height: 44px/);
+  assert.match(css,/\.tps-finances-private-value:focus-visible/);
+  assert.match(css,/\.tps-finances-privacy-toggle[^}]*min-height: 44px/);
 });
