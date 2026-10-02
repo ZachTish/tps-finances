@@ -700,9 +700,9 @@ export default class TPSFinancesPlugin extends Plugin {
 
   editTransactionClassification(transaction: DashboardTransaction): void {
     new TransactionClassificationModal(this.app, transaction, async (category, tags) => {
-      const store = transaction.manual ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : this.createStore();
+      const store = transaction.manual ? new AtomicFinanceStore(this.app, this.settings.financeFolder, this.settings.legacyTransactionDiscovery) : this.createStore();
       const updated = await store.updateTransactionMetadata(transaction.financeId, category, tags);
-      if (!updated) throw new Error("The transaction could not be found in its daily note.");
+      if (!updated) throw new Error("The transaction could not be found.");
       logger.flow("Classification", "transaction-updated", { source: category ? "manual" : "automatic", tagCount: tags.length });
       new Notice(category || tags.length ? "Transaction classification saved." : "Transaction returned to automatic classification.");
       await this.refreshDashboard();

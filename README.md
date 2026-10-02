@@ -1,5 +1,11 @@
 # TPS Finances
 
+## 1.15.1 — Manual classification follows transaction discovery
+
+Categorizing a manual transaction uses the selected **Transaction discovery** mode. If its atomic note has disappeared, **Atomic notes only** reports the missing record without searching or editing inline entries; **Include inline entries** retains the existing fallback. The missing-record message no longer assumes a daily note. No setting, note, or migration is changed by this correction. A focused regression exercises the real classification action and counts legacy reads and writes in both modes, including a successful atomic-note edit. Atomic notes only still permits explicit conversion checks and may read ambiguous root budget notes during dashboard loading.
+
+The final 1.15.1 suite passed 345 checks (2 connection and 343 plugin), with no failures or skips. A separate TypeScript-checked production build deployed the tested bundle only to this test vault. Obsidian's third-party-plugin reload showed TPS Finances 1.15.1 enabled; Overview and Budget rendered, and Finance `data.json` remained byte-identical. The installed vault still uses Include inline entries, so the Atomic notes only behavior is verified by the regression rather than a live setting change; activation requires its fresh marker audit. No conversion, provider sync, or production installation was performed. Minimum Obsidian remains 1.12.0. Artifact hashes and validation boundaries are in [1.15.1 release notes](release-notes/1.15.1.md).
+
 ## 1.15.0 — Record classification settings handoff
 
 **Settings → Properties → Record classification → Configure in GCM** opens GCM's Custom fields page, where each existing mapped type can be stored as a complete tag or a `kind`/subkind property pair. Finance field-name inputs still configure field names; they do not duplicate GCM's classification mode. Finances continues using GCM's live `frontmatterKinds` mapping for imports, manual records, reads, updates and generated Base predicates. Its additive `api.classificationBases` preview includes only Bases whose complete contents still match a Finance-generated definition; GCM 4.1.0 converts those alongside reviewed notes. Customized Bases remain user-owned. Existing note IDs, account matching and atomic-line fields are unchanged.

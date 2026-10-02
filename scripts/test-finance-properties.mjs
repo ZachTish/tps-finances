@@ -5,7 +5,7 @@ import {parse, stringify} from 'yaml';
 import {readFileSync} from 'node:fs';
 class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension=path.split('.').at(-1);this.stat={mtime:1,size:0};}}
 globalThis.PropertyQA={File,parse,stringify};
-const output=await build({stdin:{contents:['finance-properties','property-migration','atomic-finance-store','manual-finance','finance-store','settings-persistence'].map(name=>`export * from './src/${name}.ts';`).join('\n')+`\nexport {default as FinancePlugin} from './src/main.ts';\nexport {setLoggingEnabled} from './src/logger.ts';`,resolveDir:process.cwd()},bundle:true,write:false,external:['electron'],platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class Plugin{constructor(app){this.app=app}};export class PluginSettingTab{};export class ButtonComponent{};export class Modal{};export class Setting{};export class Notice{};export class SecretComponent{};export class ItemView{};export class Menu{};export class WorkspaceLeaf{};export const setIcon=()=>{};export const Platform={isDesktopApp:true};export const requestUrl=()=>{throw Error("Unexpected provider request")};export class App{};export const TFile=globalThis.PropertyQA.File;export const normalizePath=s=>s;export const parseYaml=globalThis.PropertyQA.parse;export const stringifyYaml=globalThis.PropertyQA.stringify;`}));}}]});
+const output=await build({stdin:{contents:['finance-properties','property-migration','atomic-finance-store','manual-finance','finance-store','settings-persistence'].map(name=>`export * from './src/${name}.ts';`).join('\n')+`\nexport {default as FinancePlugin} from './src/main.ts';\nexport {setLoggingEnabled} from './src/logger.ts';`,resolveDir:process.cwd()},bundle:true,write:false,external:['electron'],platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class Plugin{constructor(app){this.app=app}};export class PluginSettingTab{};export class ButtonComponent{};export class Modal{open(){globalThis.PropertyQAModal=this}};export class Setting{};export class Notice{};export class SecretComponent{};export class ItemView{};export class Menu{};export class WorkspaceLeaf{};export const setIcon=()=>{};export const Platform={isDesktopApp:true};export const requestUrl=()=>{throw Error("Unexpected provider request")};export class App{};export const TFile=globalThis.PropertyQA.File;export const normalizePath=s=>s;export const parseYaml=globalThis.PropertyQA.parse;export const stringifyYaml=globalThis.PropertyQA.stringify;`}));}}]});
 const {FinancePlugin,FinanceProperties,financeProperties,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,previewGeneratedBaseClassificationChange,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,auditLegacyTransactionMarkers,CoalescedSnapshotWriter,reconcilePersistedSnapshot,setLoggingEnabled,atomicBase,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
 const mapped=()=>new FinanceProperties({keys:Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key=>[key,`custom ${key}`]))});
 function harness(properties=new FinanceProperties()){
@@ -260,6 +260,39 @@ test('atomic-only dashboard and API ignore externally added inline entries until
  await p.plugin.setLegacyTransactionDiscovery('discover');
  const restored=await p.plugin.getDashboardModel();assert.deepEqual(restored.transactions.map(t=>t.financeId).sort(),['later','tx1']);
  reads.length=0;await p.plugin.createStore().readTransactionRecords();assert.ok(reads.includes('Day.md'));
+});
+test('manual classification respects atomic-only discovery when its note disappears',async()=>{
+ const h=harness(),p=pluginHarness(h);
+ await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const original='- Cash purchase [type:: transaction] [financeId:: missing-manual] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ await h.app.vault.create('Day.md',original);
+ let reads=0,writes=0;
+ const cachedRead=h.app.vault.cachedRead,process=h.app.vault.process;
+ h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file)};
+ h.app.vault.process=async(...args)=>{writes++;return process(...args)};
+ const save=(financeId='missing-manual')=>{
+  globalThis.PropertyQAModal=null;
+  p.plugin.editTransactionClassification({financeId,manual:true});
+  assert.ok(globalThis.PropertyQAModal,'the real classification action opens a modal');
+  return globalThis.PropertyQAModal.save('Food',['cash']);
+ };
+ await assert.rejects(save(),/The transaction could not be found\./);
+ assert.equal(reads,0,'atomic-only must not scan legacy note bodies for a missing atomic ID');
+ assert.equal(writes,0,'atomic-only must not write a matching inline record');
+ assert.equal(h.contents.get('Day.md'),original);
+ await h.add('Cash.md',{financeId:'atomic-manual',type:'transaction',financeSource:'manual',account:'[[Checking]]',date:'2026-09-20',amount:-3,currency:'USD'});
+ await save('atomic-manual');
+ assert.equal(h.fm('Cash.md').categoryOverride,'Food','an existing atomic note still saves classification');
+ assert.deepEqual(h.fm('Cash.md').tags,['cash']);
+ assert.equal(reads,1,'atomic-only reads the atomic note without scanning legacy bodies');
+ assert.equal(writes,0);
+ assert.equal(h.contents.get('Day.md'),original);
+ reads=0;
+ await p.plugin.setLegacyTransactionDiscovery('discover');
+ await save();
+ assert.equal(reads,3,'discover mode retains the intentional inline fallback across both Markdown notes');
+ assert.equal(writes,1);
+ assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
 });
 test('saving with migration renames first, then commits settings; no previous names are retained',async()=>{
  const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction',amount:-4});
