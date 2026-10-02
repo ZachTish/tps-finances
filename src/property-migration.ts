@@ -1,6 +1,6 @@
 import { boundedWork } from "./bounded-work";
 import { App, TFile, parseYaml } from "obsidian";
-import { FinanceProperties, FINANCE_PROPERTY_KEYS, FinancePropertyNames, normalizePropertyNames } from "./finance-properties";
+import { FinanceProperties, FINANCE_PROPERTY_KEYS, FinancePropertyNames, normalizePropertyNames, financeKindCodec, financeProperties } from "./finance-properties";
 import { accountsBaseBody, transactionsBaseBody, holdingsBaseBody, rulesBaseBody, budgetsBaseBody } from "./finance-store";
 import { atomicBase } from "./atomic-finance-store";
 import { financePath } from "./finance-paths";
@@ -100,15 +100,53 @@ export async function applyPropertyMigration(app: App, journal: PropertyMigratio
   await remapGeneratedBases(app, journal.root, from, to);
 }
 
-export async function remapGeneratedBases(app: App, root: string, from: FinanceProperties, to: FinanceProperties): Promise<void> {
-  const definitions: Record<string, string[]> = {
+function generatedBaseDefinitions(root: string): Record<string, string[]> {
+  return {
     Accounts: [accountsBaseBody(root)], Rules: [rulesBaseBody(root)], Budgets: [budgetsBaseBody(root)],
     Transactions: [transactionsBaseBody(root), atomicBase(root, "Transactions")],
     Holdings: [holdingsBaseBody(root), atomicBase(root, "Holdings")],
     "Transactions (Atomic notes)": [atomicBase(root, "Transactions")],
     "Holdings (Atomic notes)": [atomicBase(root, "Holdings")],
   };
-  for (const [name, bodies] of Object.entries(definitions)) {
+}
+
+export async function previewGeneratedBaseClassificationChange(app: App, root: string,
+  change: {recordKind: string; from: {tag: string} | {parentKind: string; key: string; value: string}; to: {tag: string} | {parentKind: string; key: string; value: string}}): Promise<Array<{path: string; before: string; after: string}>> {
+  if (!["account", "finance-transaction", "investment-transaction", "holding", "ledger", "finance-rule", "finance-budget"].includes(change.recordKind)) return [];
+  const gcm = (app as any).plugins?.plugins?.["tps-global-context-menu"];
+  const api = gcm?.api?.frontmatterKinds;
+  if (!api?.definition) throw new Error("Enable TPS Global Context Menu before changing finance record classifications.");
+  const from = financeProperties(app);
+  if ("key" in change.to) {
+    const targetKey = change.to.key;
+    const occupied = [
+      ...FINANCE_PROPERTY_KEYS, ...FINANCE_PROPERTY_KEYS.map(key => from.key(key)),
+      "tpsId", gcm?.settings?.nativeRecordIdentityPropertyKey || "tpsId",
+      "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId",
+    ];
+    if (occupied.some(key => key.toLowerCase() === targetKey.toLowerCase())) {
+      throw new Error(`Subkind property “${targetKey}” conflicts with a Finance field or record ID. Choose another name.`);
+    }
+  }
+  if (("tag" in change.from || "tag" in change.to) && from.key("tags") !== "tags") throw new Error("Migrate the Finance Tags property name back to tags before changing this record classification.");
+  if (("key" in change.from || "key" in change.to) && from.key("kind") !== "kind") throw new Error("Migrate the Finance Record kind property name back to kind before changing this record classification.");
+  const to = new FinanceProperties((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyNames,
+    financeKindCodec({ ...api, definition: (kind: string) => kind === change.recordKind ? change.to : api.definition(kind) }));
+  const changes: Array<{path: string; before: string; after: string}> = [];
+  for (const [name, bodies] of Object.entries(generatedBaseDefinitions(root))) {
+    const file = app.vault.getAbstractFileByPath(financePath(root, "", `${name}.base`));
+    if (!(file instanceof TFile)) continue;
+    const before = await app.vault.read(file);
+    const body = bodies.find(candidate => from.base(candidate) === before);
+    if (!body) continue; // A customized Base remains user-owned.
+    const after = to.base(body);
+    if (after !== before) changes.push({path: file.path, before, after});
+  }
+  return changes;
+}
+
+export async function remapGeneratedBases(app: App, root: string, from: FinanceProperties, to: FinanceProperties): Promise<void> {
+  for (const [name, bodies] of Object.entries(generatedBaseDefinitions(root))) {
     const file = app.vault.getAbstractFileByPath(financePath(root, "", `${name}.base`));
     if (!(file instanceof TFile)) continue;
     const content = await app.vault.read(file), body = bodies.find(body => from.base(body) === content);

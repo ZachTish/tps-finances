@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension=path.split('.').at(-1);this.stat={mtime:1,size:0};}}
 globalThis.PropertyQA={File,parse,stringify};
 const output=await build({stdin:{contents:['finance-properties','property-migration','atomic-finance-store','manual-finance','finance-store','settings-persistence'].map(name=>`export * from './src/${name}.ts';`).join('\n')+`\nexport {default as FinancePlugin} from './src/main.ts';\nexport {setLoggingEnabled} from './src/logger.ts';`,resolveDir:process.cwd()},bundle:true,write:false,external:['electron'],platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class Plugin{constructor(app){this.app=app}};export class PluginSettingTab{};export class ButtonComponent{};export class Modal{};export class Setting{};export class Notice{};export class SecretComponent{};export class ItemView{};export class Menu{};export class WorkspaceLeaf{};export const setIcon=()=>{};export const Platform={isDesktopApp:true};export const requestUrl=()=>{throw Error("Unexpected provider request")};export class App{};export const TFile=globalThis.PropertyQA.File;export const normalizePath=s=>s;export const parseYaml=globalThis.PropertyQA.parse;export const stringifyYaml=globalThis.PropertyQA.stringify;`}));}}]});
-const {FinancePlugin,FinanceProperties,financeProperties,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,auditLegacyTransactionMarkers,CoalescedSnapshotWriter,reconcilePersistedSnapshot,setLoggingEnabled,atomicBase,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
+const {FinancePlugin,FinanceProperties,financeProperties,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,previewGeneratedBaseClassificationChange,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,auditLegacyTransactionMarkers,CoalescedSnapshotWriter,reconcilePersistedSnapshot,setLoggingEnabled,atomicBase,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
 const mapped=()=>new FinanceProperties({keys:Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key=>[key,`custom ${key}`]))});
 function harness(properties=new FinanceProperties()){
  const files=new Map(),contents=new Map();let failPath='';
@@ -106,7 +106,7 @@ test('migration updates recognized generated Bases but preserves customized defi
  assert.equal(h.contents.get('Accounts.base'),'custom base');assert.equal(parse(h.contents.get('Transactions.base')).views[0].order[1],'custom date');h.plugin.settings.propertyNames=to.names;await h.store.ensureStructure();assert.ok(!h.files.has('Transactions (Atomic notes).base'));
 });
 test('settings expose every group, preserve existing actions, and explicitly ask migration or decline',()=>{
- const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & routing','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
+ const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & routing','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Configure in GCM','Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/api\?\.ui\?\.openCustomPropertySettings/);assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
  const properties=readFileSync('src/finance-properties.ts','utf8');assert.doesNotMatch(properties,/aliases\(/);assert.doesNotMatch(readFileSync('src/types.ts','utf8'),/propertyDraft|propertyGroup/);
 });
 function pluginHarness(h){
@@ -326,6 +326,31 @@ test('tag mappings support finance import, repeat updates and generated Base pre
  assert.equal(h.fm('tx1.md').kind,undefined);assert.equal((await h.store.readTransactionRecords()).length,1);assert.deepEqual(await h.store.readTransactionRecords('metadata'),await h.store.readTransactionRecords());
  const base=financeProperties(h.app).base('filters:\n  and:\n    - kind == "transaction"\n    - note.kind != "account"\nviews: []\n');
  assert.match(base,/file\.hasTag\("kind\/financial\/transaction"\)/);assert.match(base,/!file\.hasTag\("accounts"\)/);assert.doesNotMatch(base,/undefined/);
+});
+test('classification change previews only exact generated Bases and leaves customized Bases alone',async()=>{
+ const h=harness();
+ const definitions={account:{tag:'kind/finance/account'}};
+ h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:{definition:k=>definitions[k]||null,encode:f=>f,decode:f=>f}}};
+ await h.store.ensureStructure();
+ assert.match(h.contents.get('Accounts.base'),/file\.hasTag\("kind\/finance\/account"\)/);
+ h.contents.set('Transactions.base','user-authored Base');
+ const changes=await previewGeneratedBaseClassificationChange(h.app,'',{recordKind:'account',from:definitions.account,to:{parentKind:'entity',key:'entityKind',value:'account'}});
+ const account=changes.find(change=>change.path==='Accounts.base');
+ assert.ok(account);assert.equal(account.before,h.contents.get('Accounts.base'));
+ assert.match(account.after,/entityKind/);assert.doesNotMatch(account.after,/file\.hasTag\("kind\/finance\/account"\)/);
+ assert.ok(!changes.some(change=>change.path==='Transactions.base'));
+ assert.equal(h.contents.get('Transactions.base'),'user-authored Base');
+});
+test('finance classification rejects subkind keys owned by finance fields or record IDs',async()=>{
+ const h=harness(new FinanceProperties({keys:{amount:'totalAmount'}}));
+ const from={tag:'kind/finance/transaction'};
+ h.app.plugins.plugins['tps-global-context-menu']={settings:{nativeRecordIdentityPropertyKey:'recordId'},api:{frontmatterKinds:{definition:k=>k==='finance-transaction'?from:null,encode:f=>f,decode:f=>f}}};
+ const change=key=>({recordKind:'finance-transaction',from,to:{parentKind:'transaction',key,value:'financial'}});
+ for(const key of ['AMOUNT','totalamount','FINANCEID','financeaccountid','FINANCEBUDGETID','FINANCERULEID','SECURITYID','recordID','TPSID']){
+  await assert.rejects(previewGeneratedBaseClassificationChange(h.app,'',change(key)),/conflicts with a Finance field or record ID/,key);
+ }
+ assert.deepEqual(await previewGeneratedBaseClassificationChange(h.app,'',change('transactionKind')),[]);
+ assert.deepEqual(await previewGeneratedBaseClassificationChange(h.app,'',{...change('AMOUNT'),recordKind:'other'}),[]);
 });
 
 

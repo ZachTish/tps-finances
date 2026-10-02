@@ -1,5 +1,11 @@
 # TPS Finances
 
+## 1.15.0 — Record classification settings handoff
+
+**Settings → Properties → Record classification → Configure in GCM** opens GCM's Custom fields page, where each existing mapped type can be stored as a complete tag or a `kind`/subkind property pair. Finance field-name inputs still configure field names; they do not duplicate GCM's classification mode. Finances continues using GCM's live `frontmatterKinds` mapping for imports, manual records, reads, updates and generated Base predicates. Its additive `api.classificationBases` preview includes only Bases whose complete contents still match a Finance-generated definition; GCM 4.1.0 converts those alongside reviewed notes. Customized Bases remain user-owned. Existing note IDs, account matching and atomic-line fields are unchanged.
+
+Install Finances 1.15.0 before applying a Finance classification conversion in GCM 4.1.0. Finance mappings that use tags require the core `tags` key; property pairs require the core `kind` key. If either Finance field name was customized, migrate it back in Finances before switching its classification format. A Finance subkind property cannot reuse a Finance field name, its configured name, or a record identity key, regardless of case; this prevents later writes from replacing record data. Arbitrary Base formulas and custom rules require manual review. No startup migration, new persisted Finance setting or automatic repair is added. The three settings destinations and responsive mobile layout remain unchanged. Minimum Obsidian remains 1.12.0. Validation, test-vault reload, and artifact hashes are in [1.15.0 release notes](release-notes/1.15.0.md). Physical iPhone acceptance and production BRAT installation remain separate.
+
 ## 1.14.1 — Read indexed budgets without opening note bodies
 
 The dashboard's Budget and Overview displays now use Obsidian's decoded property index for indexed budget notes. Indexed ordinary notes are still excluded before content reads. In a 1,025-note root fixture, 20 display loads read zero note bodies instead of 20 budget bodies; 20 source/API loads still read the budget body 20 times. Notes with missing or ambiguous metadata still receive content reads, and every display still enumerates the vault and checks candidate metadata. These operation counts are synthetic, not an installed-vault speed claim.

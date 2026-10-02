@@ -1,6 +1,6 @@
 import { FinanceConnectionSettings } from "./connection-settings";
 import { parseWalletParts, walletTransactionID } from "./finance-wallet";
-import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration } from "./property-migration";
+import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration, previewGeneratedBaseClassificationChange } from "./property-migration";
 import { financeProperties, FinanceProperties, normalizePropertyNames } from "./finance-properties";
 import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
 import type { FinanceBudget } from "./types";
@@ -114,6 +114,9 @@ export default class TPSFinancesPlugin extends Plugin {
         return this.settings.recordMode === "atomic-note" && this.app.vault.getAbstractFileByPath(alternate) ? alternate : financePath(this.settings.financeFolder, "", "Transactions.base");
       },
       getDailyNotePathForIsoDate: (isoDate: string) => this.getDailyNotePathForIsoDate(isoDate),
+      classificationBases: { version: 1, preview: (change: {recordKind: string; from: {tag: string} | {parentKind: string; key: string; value: string}; to: {tag: string} | {parentKind: string; key: string; value: string}}) =>
+        previewGeneratedBaseClassificationChange(this.app, this.settings.financeFolder, change),
+        settingsSignature: () => JSON.stringify([this.settings.financeFolder, this.settings.propertyNames]) },
     };
     this.app.workspace.onLayoutReady(() => void this.prepareFinanceStorage());
     logger.flow("Lifecycle", "load", {
