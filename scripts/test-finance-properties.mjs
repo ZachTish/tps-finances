@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {parse, stringify} from 'yaml';
 import {readFileSync} from 'node:fs';
-class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension=path.split('.').at(-1);}}
+class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension=path.split('.').at(-1);this.stat={mtime:1,size:0};}}
 globalThis.PropertyQA={File,parse,stringify};
-const output=await build({stdin:{contents:['finance-properties','property-migration','atomic-finance-store','manual-finance','finance-store'].map(name=>`export * from './src/${name}.ts';`).join('\n')+`\nexport {default as FinancePlugin} from './src/main.ts';`,resolveDir:process.cwd()},bundle:true,write:false,external:['electron'],platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class Plugin{constructor(app){this.app=app}};export class PluginSettingTab{};export class ButtonComponent{};export class Modal{};export class Setting{};export class Notice{};export class SecretComponent{};export class ItemView{};export class Menu{};export class WorkspaceLeaf{};export const setIcon=()=>{};export const Platform={isDesktopApp:true};export const requestUrl=()=>{throw Error("Unexpected provider request")};export class App{};export const TFile=globalThis.PropertyQA.File;export const normalizePath=s=>s;export const parseYaml=globalThis.PropertyQA.parse;export const stringifyYaml=globalThis.PropertyQA.stringify;`}));}}]});
-const {FinancePlugin,FinanceProperties,financeProperties,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,atomicBase,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
+const output=await build({stdin:{contents:['finance-properties','property-migration','atomic-finance-store','manual-finance','finance-store','settings-persistence'].map(name=>`export * from './src/${name}.ts';`).join('\n')+`\nexport {default as FinancePlugin} from './src/main.ts';\nexport {setLoggingEnabled} from './src/logger.ts';`,resolveDir:process.cwd()},bundle:true,write:false,external:['electron'],platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class Plugin{constructor(app){this.app=app}};export class PluginSettingTab{};export class ButtonComponent{};export class Modal{};export class Setting{};export class Notice{};export class SecretComponent{};export class ItemView{};export class Menu{};export class WorkspaceLeaf{};export const setIcon=()=>{};export const Platform={isDesktopApp:true};export const requestUrl=()=>{throw Error("Unexpected provider request")};export class App{};export const TFile=globalThis.PropertyQA.File;export const normalizePath=s=>s;export const parseYaml=globalThis.PropertyQA.parse;export const stringifyYaml=globalThis.PropertyQA.stringify;`}));}}]});
+const {FinancePlugin,FinanceProperties,financeProperties,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,auditLegacyTransactionMarkers,CoalescedSnapshotWriter,reconcilePersistedSnapshot,setLoggingEnabled,atomicBase,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
 const mapped=()=>new FinanceProperties({keys:Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key=>[key,`custom ${key}`]))});
 function harness(properties=new FinanceProperties()){
  const files=new Map(),contents=new Map();let failPath='';
  const fm=p=>{const match=contents.get(p)?.match(/^---\n([\s\S]*?)\n---/);return match?parse(match[1])||{}:{}};
- const vault={getAbstractFileByPath:p=>files.get(p),getMarkdownFiles:()=>[...files.values()].filter(f=>f instanceof File && f.extension==='md'),createFolder:async p=>files.set(p,{path:p}),create:async(p,c)=>{assert.ok(!files.has(p),'occupied');const f=new File(p);files.set(p,f);contents.set(p,c);return f;},read:async f=>contents.get(f.path),cachedRead:async f=>contents.get(f.path),process:async(f,fn)=>{if(f.path===failPath)throw Error('disk failure');const next=fn(contents.get(f.path));contents.set(f.path,next);return next;}};
+ const vault={getAbstractFileByPath:p=>files.get(p),getMarkdownFiles:()=>[...files.values()].filter(f=>f instanceof File && f.extension==='md'),createFolder:async p=>files.set(p,{path:p}),create:async(p,c)=>{assert.ok(!files.has(p),'occupied');const f=new File(p);f.stat.size=c.length;files.set(p,f);contents.set(p,c);return f;},read:async f=>contents.get(f.path),cachedRead:async f=>contents.get(f.path),process:async(f,fn)=>{if(f.path===failPath)throw Error('disk failure');const next=fn(contents.get(f.path));contents.set(f.path,next);f.stat.mtime++;f.stat.size=next.length;return next;}};
  const plugin={settings:{propertyNames:properties.names,propertyMigration:null}};
  const app={vault,plugins:{plugins:{'tps-finances':plugin}},metadataCache:{getFileCache:f=>({frontmatter:fm(f.path)})},fileManager:{processFrontMatter:async(f,fn)=>{if(f.path===failPath)throw Error('disk failure');const raw=fm(f.path);fn(raw);contents.set(f.path,'---\n'+stringify(raw)+'---\n'+contents.get(f.path).replace(/^---\n[\s\S]*?\n---\n/,''));},trashFile:async f=>{files.delete(f.path);contents.delete(f.path);}}};
  return {app,plugin,files,contents,fm,store:new AtomicFinanceStore(app,''),manual:new ManualFinanceStore(app,''),add:async(path,raw,body='Personal body\n')=>vault.create(path,'---\n'+stringify(raw)+'---\n'+body),fail:path=>failPath=path};
@@ -110,10 +110,157 @@ test('settings expose every group, preserve existing actions, and explicitly ask
  const properties=readFileSync('src/finance-properties.ts','utf8');assert.doesNotMatch(properties,/aliases\(/);assert.doesNotMatch(readFileSync('src/types.ts','utf8'),/propertyDraft|propertyGroup/);
 });
 function pluginHarness(h){
- const plugin=new FinancePlugin(h.app);plugin.settings={propertyNames:h.plugin.settings.propertyNames,propertyMigration:null,financeFolder:'',recordMode:'atomic-note'};h.app.plugins.plugins['tps-finances']=plugin;
+ const plugin=new FinancePlugin(h.app);plugin.settings={propertyNames:h.plugin.settings.propertyNames,propertyMigration:null,financeFolder:'',recordMode:'atomic-note',legacyTransactionDiscovery:'discover'};h.app.plugins.plugins['tps-finances']=plugin;
  let disk=structuredClone(plugin.settings),failAt=0,saves=0;plugin.settingsWriter={save:async settings=>{saves++;if(saves===failAt)throw Error('settings write failure');disk=structuredClone(settings)}};plugin.refreshDashboard=async()=>{};
+ plugin.loadData=async()=>structuredClone(disk);
  return {plugin,disk:()=>disk,failSave:n=>failAt=n};
 }
+test('atomic-only activation reads fresh vault bodies once and persists only after a clean audit',async()=>{
+ const h=harness(),p=pluginHarness(h);for(let n=0;n<200;n++)await h.app.vault.create(`Archive/${n}.md`,'Ordinary note');
+ let fresh=0,cached=0;const read=h.app.vault.read,cachedRead=h.app.vault.cachedRead;
+ h.app.vault.read=async file=>{fresh++;return read(file)};h.app.vault.cachedRead=async file=>{cached++;return cachedRead(file)};
+ await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ assert.equal(fresh,200);assert.equal(cached,0);assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
+ assert.equal(p.plugin.settings.legacyTransactionDiscovery,'atomic-only');
+});
+test('already-converted notes retain migration provenance without blocking atomic-only activation',async()=>{
+ const h=harness(new FinanceProperties({keys:{migrationSource:'originalEntry'}}));
+ const paths=await h.store.upsertAccounts([account]);
+ const source=`- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[${paths.get('account1').replace(/\.md$/,'')}]]] [amount:: -2] [currency:: USD]`;
+ await h.app.vault.create('Day.md',source);
+ assert.deepEqual(await h.store.migrateLegacyTransactionLedgers(),{moved:1,skipped:0});
+ assert.equal(h.fm('legacy.md').originalEntry,source,'provenance remains available for interrupted-conversion retries');
+ assert.equal(h.contents.get('Day.md'),'- [[legacy]]');
+ const p=pluginHarness(h); // A fresh plugin instance sees notes converted by an earlier version.
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:0,firstPath:''});
+ await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
+ await p.plugin.setLegacyTransactionDiscovery('discover');
+ await h.app.vault.create('Later.md',source.replace('legacy','later'));
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Later.md'});
+ await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/1 inline financeId marker remain; first file: Later\.md/);
+});
+test('audit preserves extra YAML, code and body markers beside valid migration provenance',async()=>{
+ const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ for(const extra of ['yaml','code','body']){
+  const h=harness();
+  const file=await h.add('Converted.md',{type:'transaction',financeId:'legacy',date:'2026-09-20',account:'[[Checking]]',amount:-2,migrationSource:source});
+  if(extra==='yaml')await h.app.fileManager.processFrontMatter(file,raw=>{raw.example='[financeId:: extra]'});
+  else h.contents.set(file.path,h.contents.get(file.path)+(extra==='code'?'```text\n[financeId:: extra]\n```\n':'[financeId:: extra]\n'));
+  assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Converted.md'},extra);
+ }
+});
+test('encoded provenance cannot exempt a separate YAML comment marker',async()=>{
+ const h=harness();
+ const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ const encoded=source.replace('[financeId::','\\u005bfinanceId::');
+ await h.app.vault.create('Escaped.md',`---\ntype: transaction\nfinanceId: legacy\ndate: 2026-09-20\naccount: "[[Checking]]"\namount: -2\nmigrationSource: "${encoded}" # [financeId:: extra]\n---\n`);
+ assert.equal(h.fm('Escaped.md').migrationSource,source);
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Escaped.md'});
+});
+test('a previously converted folded YAML provenance value is exempt without editing it',async()=>{
+ const h=harness();
+ const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ const content=`---\ntype: transaction\nfinanceId: legacy\ndate: 2026-09-20\naccount: "[[Checking]]"\namount: -2\nmigrationSource: >-\n  ${source}\n---\n`;
+ await h.app.vault.create('Prior.md',content);
+ assert.equal(h.fm('Prior.md').migrationSource,source);
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:0,firstPath:''});
+ assert.equal(h.contents.get('Prior.md'),content);
+});
+test('audit does not exempt migration provenance on a malformed atomic transaction',async()=>{
+ const h=harness();
+ const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ await h.add('Incomplete.md',{type:'transaction',financeId:'legacy',date:'bad-date',account:'[[Checking]]',amount:-2,migrationSource:source});
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Incomplete.md'});
+});
+test('atomic-only activation blocks all raw financeId markers, even malformed, duplicated, or in YAML and code',async()=>{
+ const h=harness(),p=pluginHarness(h);
+ await h.app.vault.create('Day.md','- [financeId:: broken]\n- [financeId:: broken]');
+ await h.app.vault.create('Frontmatter.md','---\nitems:\n  - "[financeId:: hidden]"\n---\n```\n[financeId:: example]\n```');
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:4,firstPath:'Day.md'});
+ await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/4 inline financeId markers remain; first file: Day\.md/);
+ assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
+});
+test('atomic-only activation refuses a vault changed during its fresh read',async()=>{
+ const h=harness(),p=pluginHarness(h);const file=await h.app.vault.create('Journal.md','No markers');
+ const read=h.app.vault.read;h.app.vault.read=async current=>{const content=await read(current);if(current===file)file.stat.mtime++;return content};
+ await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/vault changed during transaction verification/);
+ assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
+});
+test('an interrupted conversion cannot certify atomic-only discovery even when its atomic note exists',async()=>{
+ const h=harness(),p=pluginHarness(h),paths=await h.store.upsertAccounts([account]);
+ const source=`- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[${paths.get('account1').replace(/\.md$/,'')}]]] [amount:: -2] [currency:: USD]`;
+ await h.app.vault.create('Day.md',source);h.fail('Day.md');
+ await assert.rejects(h.store.migrateLegacyTransactionLedgers(),/disk failure/);
+ assert.ok(h.app.vault.getMarkdownFiles().some(file=>h.fm(file.path).financeId==='legacy'));
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Day.md'});
+ await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/first file: Day\.md/);
+ assert.equal(p.disk().legacyTransactionDiscovery,'discover');assert.equal(h.contents.get('Day.md'),source);
+});
+test('a failed settings save rolls back discovery, and switching to line records clears atomic-only discovery',async()=>{
+ const h=harness(),p=pluginHarness(h);p.failSave(1);
+ await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/settings write failure/);
+ assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
+ p.failSave(0);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ await p.plugin.setRecordMode('atomic-line');
+ assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
+ assert.equal(p.plugin.settings.recordMode,'atomic-line');
+});
+test('a failed record-format save preserves the previously certified atomic-only mode',async()=>{
+ const h=harness(),p=pluginHarness(h);await h.store.ensureStructure();
+ const base=h.contents.get('Transactions.base');
+ await p.plugin.setLegacyTransactionDiscovery('atomic-only');p.failSave(2);
+ await assert.rejects(p.plugin.setRecordMode('atomic-line'),/settings write failure/);
+ assert.equal(p.plugin.settings.recordMode,'atomic-note');assert.equal(p.plugin.settings.legacyTransactionDiscovery,'atomic-only');
+ assert.equal(p.disk().recordMode,'atomic-note');assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
+ assert.equal(h.contents.get('Transactions.base'),base,'a failed settings save does not alter the generated Base');
+});
+test('a later coalesced settings failure cannot roll back a discovery mode already saved to disk',async()=>{
+ const h=harness(),p=pluginHarness(h);let disk=structuredClone(p.disk()),writes=0,later;
+ let refreshes=0;p.plugin.refreshDashboard=async()=>{refreshes++};
+ p.plugin.settingsWriter=new CoalescedSnapshotWriter({
+  initialSnapshot:structuredClone(p.plugin.settings),
+  readLatest:async()=>structuredClone(disk),
+  writeMerged:async value=>{
+   writes++;
+   if(writes===1){
+    disk=structuredClone(value);
+    p.plugin.settings.enableLogging=true;
+    later=p.plugin.saveSettings().then(()=>null,error=>error);
+   }else throw Error('debug settings write failure');
+  },
+  normalize:value=>structuredClone(value),
+  reconcile:(requested,persisted)=>{p.plugin.settings=reconcilePersistedSnapshot(p.plugin.settings,requested,persisted)},
+ });
+ p.plugin.loadData=async()=>structuredClone(disk);
+ await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/debug settings write failure/);
+ assert.match(String(await later),/debug settings write failure/);
+ assert.equal(writes,2);assert.equal(disk.legacyTransactionDiscovery,'atomic-only');
+ assert.equal(p.plugin.settings.legacyTransactionDiscovery,'atomic-only','memory follows persisted discovery after shared-cycle rejection');
+ assert.equal(refreshes,1,'the visible dashboard adopts the already-persisted mode');
+ setLoggingEnabled(false);
+});
+test('atomic-only dashboard and API ignore externally added inline entries until discovery is restored',async()=>{
+ const h=harness(),p=pluginHarness(h),paths=await h.store.upsertAccounts([account]);
+ await h.store.applyTransactions([tx],[],[],state,paths);
+ p.plugin.getConnectedItems=()=>[];p.plugin.getRelayStatus=()=>null;p.plugin.getPlaidSetupStatus=()=>({state:'ready'});
+ await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ assert.equal(p.plugin.createStore().legacyDiscovery,'atomic-only');
+ const source=`- Old purchase [type:: transaction] [financeId:: later] [date:: 2026-09-20] [account:: [[${paths.get('account1').replace(/\.md$/,'')}]]] [amount:: -2] [currency:: USD]`;
+ await h.app.vault.create('Day.md',source);
+ const reads=[];const cachedRead=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads.push(file.path);return cachedRead(file)};
+ const store=p.plugin.createStore();
+ assert.deepEqual((await store.readTransactionRecords()).map(t=>t.path),['tx1.md']);
+ assert.ok(!reads.includes('Day.md'),'atomic source API skips the legacy transaction scan');
+ reads.length=0;assert.deepEqual((await store.readTransactionRecords('metadata')).map(t=>t.path),['tx1.md']);
+ assert.ok(!reads.includes('Day.md'),'atomic display skips the legacy transaction scan');
+ reads.length=0;const atomic=await p.plugin.getDashboardModel();assert.deepEqual(atomic.transactions.map(t=>t.financeId),['tx1']);
+ assert.ok(reads.includes('Day.md'),'an independent root-folder budget reader still inspects ambiguous files');
+ const indexed=await p.plugin.getDashboardModel(new Set(),'metadata');assert.deepEqual(indexed.transactions.map(t=>t.financeId),['tx1']);
+ await p.plugin.setLegacyTransactionDiscovery('discover');
+ const restored=await p.plugin.getDashboardModel();assert.deepEqual(restored.transactions.map(t=>t.financeId).sort(),['later','tx1']);
+ reads.length=0;await p.plugin.createStore().readTransactionRecords();assert.ok(reads.includes('Day.md'));
+});
 test('saving with migration renames first, then commits settings; no previous names are retained',async()=>{
  const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction',amount:-4});
  await p.plugin.changePropertyNames(from,to,true);assert.equal(h.fm('A.md').transactionType,'transaction');assert.ok(!('type' in h.fm('A.md')));assert.deepEqual(p.disk().propertyNames,to.names);assert.equal(p.disk().propertyMigration,null);assert.ok(!('previous' in p.disk().propertyNames));

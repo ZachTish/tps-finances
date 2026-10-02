@@ -170,6 +170,17 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
           catch (error) { new Notice(String(error)); }
           finally { button.setDisabled(false); }
         }));
+      const discovery = new Setting(parent).setName("Transaction discovery")
+        .setDesc("Atomic notes only skips the vault-wide inline transaction scan on dashboards and sync. Enabling checks every note for remaining financeId markers. If an external tool later adds inline entries, choose Include inline entries again to see them.")
+        .addDropdown(dropdown => dropdown.addOption("discover", "Include inline entries").addOption("atomic-only", "Atomic notes only")
+          .setValue(this.plugin.settings.legacyTransactionDiscovery).onChange(async value => {
+            dropdown.setDisabled(true);
+            discovery.setDesc(value === "atomic-only" ? "Checking all Markdown notes for inline financeId markers…" : "Restoring inline transaction discovery…");
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            try { await this.plugin.setLegacyTransactionDiscovery(value === "atomic-only" ? "atomic-only" : "discover"); }
+            catch (error) { new Notice(String(error)); }
+            this.display();
+          }));
     }
 
     new Setting(parent)

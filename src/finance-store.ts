@@ -20,6 +20,79 @@ type TransactionIndex = {
 };
 export type TransactionTargetContext = { date: string; accountPath: string; line: string };
 
+/** Fresh, explicit certification before retiring inline transaction discovery. */
+export async function auditLegacyTransactionMarkers(app: App): Promise<{ markers: number; firstPath: string }> {
+  const files = app.vault.getMarkdownFiles();
+  const starting = new Map(files.map(file => [file.path, { file, mtime: file.stat.mtime, size: file.stat.size }]));
+  const counts = new Array<number>(files.length).fill(0);
+  await boundedWork([...files.entries()], async ([index, file]) => {
+    const content = await app.vault.read(file);
+    const markers = content.match(/\[financeId::/g)?.length || 0;
+    counts[index] = markers ? markers - verifiedMigrationSourceMarker(app, content) : 0;
+  });
+  const current = app.vault.getMarkdownFiles();
+  if (current.length !== files.length || current.some(file => {
+    const original = starting.get(file.path);
+    return !original || original.file !== file || original.mtime !== file.stat.mtime || original.size !== file.stat.size;
+  })) throw new Error("The vault changed during transaction verification. Run the check again.");
+  return { markers: counts.reduce((sum, count) => sum + count, 0), firstPath: files[counts.findIndex(count => count > 0)]?.path || "" };
+}
+
+/** A converted note retains its original line for retry verification, not discovery. */
+function verifiedMigrationSourceMarker(app: App, content: string): number {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!match) return 0;
+  const yaml = match[1];
+  let fields: Record<string, any>;
+  let key: string;
+  try {
+    const properties = financeProperties(app);
+    fields = properties.read(parseYaml(yaml) || {});
+    key = properties.key("migrationSource");
+  } catch { return 0; }
+  const source = fields.migrationSource;
+  const originalAmount = typeof source === "string" ? inlineField(source, "amount") : "";
+  if (typeof source !== "string" || !/^-\s/.test(source)
+    || (source.match(/\[financeId::/g)?.length || 0) !== 1
+    || !["transaction", "investmentTransaction"].includes(fields.type)
+    || String(fields.financeId || "") !== inlineField(source, "financeId")
+    || fields.type !== inlineField(source, "type")
+    || !/^\d{4}-\d{2}-\d{2}$/.test(inlineField(source, "date"))
+    || !inlineField(source, "account")
+    || !originalAmount || !Number.isFinite(Number(originalAmount))
+    || !/^\d{4}-\d{2}-\d{2}$/.test(String(fields.date || ""))
+    || !fields.account || fields.amount === null || fields.amount === ""
+    || !Number.isFinite(Number(fields.amount))) return 0;
+
+  // Count only the literal marker inside this top-level YAML string. Comments
+  // and other properties are findings, even when YAML escapes the provenance.
+  const headers = [`${key}:`, `${JSON.stringify(key)}:`, `'${key.replace(/'/g, "''")}':`];
+  const lines = yaml.split(/\r?\n/);
+  const starts = lines.flatMap((line, index) => headers.some(header => line.startsWith(header)) ? [index] : []);
+  if (starts.length !== 1) return 0;
+  const header = headers.find(candidate => lines[starts[0]].startsWith(candidate))!;
+  const firstLine = lines[starts[0]].slice(header.length).trimStart();
+  if (firstLine[0] === ">" || firstLine[0] === "|") {
+    let end = starts[0] + 1;
+    while (end < lines.length && (!lines[end].trim() || /^\s/.test(lines[end]))) end++;
+    return (lines.slice(starts[0] + 1, end).join("\n").match(/\[financeId::/g)?.length || 0) === 1 ? 1 : 0;
+  }
+  const encoded = lines.slice(starts[0]).join("\n").slice(header.length).trimStart();
+  const quote = encoded[0];
+  if (quote !== '"' && quote !== "'") return 0;
+  let end = 1;
+  while (end < encoded.length) {
+    if (quote === '"' && encoded[end] === "\\") { end += 2; continue; }
+    if (encoded[end] === quote) {
+      if (quote === "'" && encoded[end + 1] === "'") { end += 2; continue; }
+      break;
+    }
+    end++;
+  }
+  if (end === encoded.length) return 0;
+  return (encoded.slice(1, end).match(/\[financeId::/g)?.length || 0) === 1 ? 1 : 0;
+}
+
 export class FinanceStore {
   protected transactionIndex: TransactionIndex | null = null;
 
@@ -142,7 +215,11 @@ export class FinanceStore {
   }
 
   async readTransactionRecords(_source: TransactionReadSource = "source"): Promise<TransactionRecord[]> {
-    const index = await this.ensureTransactionIndex();
+    return this.readLegacyTransactionRecords("source");
+  }
+
+  protected async readLegacyTransactionRecords(source: TransactionReadSource): Promise<TransactionRecord[]> {
+    const index = await this.ensureTransactionIndex(source);
     return [...index.recordsById.values()].flatMap((records) => records.slice(0, 1));
   }
 
@@ -419,8 +496,8 @@ export class FinanceStore {
       : fallback;
   }
 
-  private async ensureTransactionIndex(): Promise<TransactionIndex> {
-    if (this.transactionIndex) return this.transactionIndex;
+  private async ensureTransactionIndex(source: TransactionReadSource = "source"): Promise<TransactionIndex> {
+    if (source === "source" && this.transactionIndex) return this.transactionIndex;
     const files = this.app.vault.getMarkdownFiles();
     const index: TransactionIndex = {
       recordsById: new Map(),
@@ -430,6 +507,10 @@ export class FinanceStore {
     };
     await boundedWork([...files.entries()], async ([order, file]) => {
       const pathBeforeRead = file.path;
+      if (source === "metadata" && this.metadataExcludesLegacyList(file)) {
+        index.fileOrder.set(file.path, order);
+        return;
+      }
       const content = await this.app.vault.cachedRead(file);
       if (
         file.path !== pathBeforeRead
@@ -448,8 +529,19 @@ export class FinanceStore {
     index.recordsById = new Map([...index.recordsById].sort((a, b) =>
       (index.fileOrder.get(a[1][0].path)! - index.fileOrder.get(b[1][0].path)!)
       || a[1][0].lineNumber - b[1][0].lineNumber));
-    this.transactionIndex = index;
+    if (source === "source") this.transactionIndex = index;
     return index;
+  }
+
+  private metadataExcludesLegacyList(file: TFile): boolean {
+    const cache = this.app.metadataCache.getFileCache(file);
+    // A legacy marker in a Markdown list is indexed as a list item. Keep reading
+    // other blocks: the old line parser also accepts raw "- " lines in code/YAML.
+    return Boolean(cache
+      && Array.isArray(cache.sections) && cache.sections.length
+      && !cache.frontmatter && !cache.frontmatterPosition
+      && (!cache.listItems || (Array.isArray(cache.listItems) && !cache.listItems.length))
+      && cache.sections.every(section => section.type === "paragraph" || section.type === "heading"));
   }
 
   private async removeTransactionFromFile(file: TFile, financeId: string): Promise<void> {

@@ -12,7 +12,7 @@ import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassi
 import { normalizeDeviceItems } from "./device-state";
 import { AtomicFinanceStore } from "./atomic-finance-store";
 import { TransactionTitleModal } from "./transaction-title-modal";
-import { FinanceStore, type TransactionReadSource } from "./finance-store";
+import { FinanceStore, auditLegacyTransactionMarkers, type TransactionReadSource } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
 import { ManualFinanceStore, applyManualCashBalances } from "./manual-finance";
 import { ManualAccountModal, CashTransactionModal, AssetValueModal } from "./finance-modals";
@@ -134,6 +134,20 @@ export default class TPSFinancesPlugin extends Plugin {
     logger.setLoggingEnabled(this.settings.enableLogging);
     if (!this.settingsWriter) throw new Error("TPS Finances settings persistence is not ready.");
     await this.settingsWriter.save(this.settings);
+  }
+
+  private async reconcileStoredTransactionMode(): Promise<void> {
+    // The settings writer shares one promise across coalesced saves. A later
+    // setting can fail after this mode has already reached disk.
+    let persisted: TPSFinancesSettings;
+    try { persisted = normalizeSettings(await this.loadData()); }
+    catch (error) {
+      this.settings.legacyTransactionDiscovery = "discover";
+      logger.failure("Storage", "transaction-mode-readback-failed", error);
+      throw new Error("Could not verify saved finance storage settings. Reload TPS Finances before using finance records.");
+    }
+    this.settings.recordMode = persisted.recordMode;
+    this.settings.legacyTransactionDiscovery = persisted.legacyTransactionDiscovery;
   }
 
   private assertPropertyMigrationComplete(): void {
@@ -459,7 +473,9 @@ export default class TPSFinancesPlugin extends Plugin {
     logger.flow("Sync", "start", { reason, itemCount: this.deviceState.items.length });
     try {
       await timed("storage-setup", () => store.ensureStructure());
-      await timed("legacy-migration", () => this.migrateLegacyTransactions(store));
+      if (this.settings.legacyTransactionDiscovery !== "atomic-only" || this.settings.recordMode !== "atomic-note") {
+        await timed("legacy-migration", () => this.migrateLegacyTransactions(store));
+      }
       const previousSnapshot = await this.readLatestSnapshotDocument();
       const previousAccounts = this.readAccountsFromVault(previousSnapshot);
       const previousHoldings = this.parseSnapshotHoldings(previousSnapshot, previousAccounts);
@@ -777,7 +793,7 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private createStore(): FinanceStore {
     this.assertPropertyMigrationComplete();
-    if (this.settings.recordMode === "atomic-note") return new AtomicFinanceStore(this.app, this.settings.financeFolder);
+    if (this.settings.recordMode === "atomic-note") return new AtomicFinanceStore(this.app, this.settings.financeFolder, this.settings.legacyTransactionDiscovery);
     return new FinanceStore(
       this.app,
       this.settings.financeFolder,
@@ -815,10 +831,47 @@ export default class TPSFinancesPlugin extends Plugin {
   async setRecordMode(mode: "atomic-note" | "atomic-line"): Promise<void> {
     this.assertPropertyMigrationComplete();
     if(this.syncing)throw new Error("Wait for the current sync to finish.");
-    if(mode==="atomic-line")await new AtomicFinanceStore(this.app,this.settings.financeFolder).restoreLineBases();
+    const previousMode = this.settings.recordMode;
     this.settings.recordMode=mode;
-    await this.saveSettings();
+    if (mode === "atomic-line") this.settings.legacyTransactionDiscovery = "discover";
+    try { await this.saveSettings(); }
+    catch (error) {
+      await this.reconcileStoredTransactionMode();
+      if (this.settings.recordMode !== previousMode) await this.finishRecordModeChange();
+      throw error;
+    }
+    await this.finishRecordModeChange();
+  }
+
+  private async finishRecordModeChange(): Promise<void> {
+    if (this.settings.recordMode === "atomic-line") await new AtomicFinanceStore(this.app, this.settings.financeFolder).restoreLineBases();
     await this.createStore().ensureStructure();
+    await this.refreshDashboard();
+  }
+
+  async setLegacyTransactionDiscovery(mode: "discover" | "atomic-only"): Promise<void> {
+    this.assertPropertyMigrationComplete();
+    if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
+    if (mode === "atomic-only" && this.settings.recordMode !== "atomic-note") throw new Error("Choose Atomic note storage first.");
+    if (this.settings.legacyTransactionDiscovery === mode) return;
+    this.syncing = true;
+    try {
+      if (mode === "atomic-only") {
+        const audit = await auditLegacyTransactionMarkers(this.app);
+        if (audit.markers) throw new Error(`${audit.markers} inline financeId marker${audit.markers === 1 ? "" : "s"} remain; first file: ${audit.firstPath}. Review or convert them before enabling atomic-only discovery.`);
+      }
+      if (mode === "atomic-only" && (this.settings.recordMode !== "atomic-note" || this.settings.legacyTransactionDiscovery !== "discover")) {
+        throw new Error("Finance storage settings changed during verification. Run the check again.");
+      }
+      this.settings.legacyTransactionDiscovery = mode;
+      try { await this.saveSettings(); }
+      catch (error) {
+        await this.reconcileStoredTransactionMode();
+        if (this.settings.legacyTransactionDiscovery === mode) await this.refreshDashboard();
+        throw error;
+      }
+      logger.flow("Storage", "transaction-discovery-saved", { mode });
+    } finally { this.syncing = false; }
     await this.refreshDashboard();
   }
 
@@ -1162,6 +1215,7 @@ function normalizeSettings(value: unknown): TPSFinancesSettings {
     propertyNames: normalizePropertyNames(source.propertyNames),
     propertyMigration: normalizePropertyMigration(source.propertyMigration),
     recordMode: source.recordMode === "atomic-line" ? "atomic-line" : "atomic-note",
+    legacyTransactionDiscovery: source.recordMode === "atomic-line" || source.legacyTransactionDiscovery !== "atomic-only" ? "discover" : "atomic-only",
     financeFolder: normalizeFinanceFolder(source.financeFolder, DEFAULT_SETTINGS.financeFolder),
     plaidEnvironment: source.plaidEnvironment === "development" || source.plaidEnvironment === "production" ? source.plaidEnvironment : "sandbox",
     plaidClientIdSecret: String(source.plaidClientIdSecret || DEFAULT_SETTINGS.plaidClientIdSecret).trim() || DEFAULT_SETTINGS.plaidClientIdSecret,

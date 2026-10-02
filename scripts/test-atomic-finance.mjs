@@ -479,6 +479,90 @@ test('indexed display bursts read atomic properties without source reparsing',as
  assert.equal(reads,32*25,'legacy bodies remain discoverable, with no duplicate atomic source reads');assert.equal(parses,0);assert.equal(writes,0);
 });
 
+test('indexed display skips only fully parsed notes with no list or ambiguous block',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ for(let i=0;i<128;i++)await h.app.vault.create(`Notes/Plain ${i}.md`,`Ordinary paragraph ${i}\n`);
+ for(let i=0;i<128;i++)await h.app.vault.create(`Notes/Frontmatter ${i}.md`,`---\ntitle: Ordinary ${i}\n---\n`);
+ const originalCache=h.app.metadataCache.getFileCache;
+ h.app.metadataCache.getFileCache=file=>file.path.startsWith('Notes/Plain ')
+   ? {sections:[{type:'paragraph'}]}
+   : {...originalCache(file),sections:[{type:'yaml'}],frontmatterPosition:{}};
+ const expected=await h.store.readTransactionRecords();let reads=0;
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads++;return read(file);};
+ for(let i=0;i<20;i++)assert.deepEqual(await h.store.readTransactionRecords('metadata'),expected);
+ assert.equal(reads,20*129,'display skips 128 plain notes but reads 128 ambiguous YAML notes and one atomic note');
+ await h.store.readTransactionRecords();
+ assert.equal(reads,20*129+258,'source rereads all 257 bodies plus its atomic-note verification');
+});
+
+test('indexed display keeps legacy list lines, atomic precedence and newly indexed lists',async()=>{
+ const h=harness();await legacy(h);
+ await h.app.vault.create('Ordinary.md','No entries here\n');
+ const originalCache=h.app.metadataCache.getFileCache;
+ let dayIsIndexed=false;
+ h.app.metadataCache.getFileCache=file=>file.path==='Day.md'
+   ? {sections:[{type:'paragraph'},{type:'list'}],listItems:[{parent:0}]}
+   : file.path==='Ordinary.md'
+     ? dayIsIndexed ? {sections:[{type:'list'}],listItems:[{parent:0}]} : {sections:[{type:'paragraph'}]}
+     : {...originalCache(file),sections:[{type:'yaml'}],frontmatterPosition:{}};
+ let reads=[];const read=h.app.vault.cachedRead;
+ h.app.vault.cachedRead=async file=>{reads.push(file.path);return read(file);};
+ let records=await h.store.readTransactionRecords('metadata');
+ assert.deepEqual(records.map(record=>record.path),['Day.md']);
+ assert.ok(reads.includes('Day.md'));assert.ok(!reads.includes('Ordinary.md'));
+ h.text.set('Ordinary.md',line.replace('old-1','new-1')+'\n');
+ // Display follows Obsidian's indexed metadata publication; source reads never wait for it.
+ assert.equal((await h.store.readTransactionRecords()).length,2);
+ dayIsIndexed=true;reads=[];
+ records=await h.store.readTransactionRecords('metadata');
+ assert.deepEqual(records.map(record=>record.path),['Day.md','Ordinary.md']);
+ assert.ok(reads.includes('Ordinary.md'));
+ await h.store.applyTransactions([{...tx,financeId:'old-1'}],[],[],state,accounts);
+ records=await h.store.readTransactionRecords('metadata');
+ assert.deepEqual(records.map(record=>record.path),['Finances/Transactions/old-1.md','Ordinary.md']);
+});
+
+test('missing metadata and code or frontmatter blocks still receive legacy body reads',async()=>{
+ const h=harness();await h.app.vault.create('Finances/Accounts/Checking.md','---\n'+JSON.stringify({kind:'account'})+'\n---\n');
+ await h.app.vault.create('Code.md','```text\n'+line+'\n```\n');
+ await h.app.vault.create('Yaml.md','---\nentries:\n'+line.replace('old-1','yaml-1')+'\n---\n');
+ await h.app.vault.create('Missing.md',line.replace('old-1','missing-1')+'\n');
+ await h.app.vault.create('Partial.md',line.replace('old-1','partial-1')+'\n');
+ await h.app.vault.create('Unknown.md',line.replace('old-1','unknown-1')+'\n');
+ await h.app.vault.create('Plain.md','No transaction\n');
+ const originalCache=h.app.metadataCache.getFileCache;
+ h.app.metadataCache.getFileCache=file=>{
+   if(file.path==='Code.md')return {sections:[{type:'code'}]};
+   if(file.path==='Yaml.md')return {sections:[{type:'yaml'}],frontmatter:{entries:[]},frontmatterPosition:{}};
+   if(file.path==='Missing.md')return null;
+   if(file.path==='Partial.md')return {frontmatter:{}};
+   if(file.path==='Unknown.md')return {sections:[{type:'unrecognized-block'}]};
+   if(file.path==='Plain.md')return {sections:[{type:'heading'},{type:'paragraph'}]};
+   return {...originalCache(file),sections:[{type:'yaml'}],frontmatterPosition:{}};
+ };
+ const reads=[];const read=h.app.vault.cachedRead;
+ h.app.vault.cachedRead=async file=>{reads.push(file.path);return read(file);};
+ const records=await h.store.readTransactionRecords('metadata');
+ assert.deepEqual(new Set(records.map(record=>record.path)),new Set(['Code.md','Yaml.md','Missing.md','Partial.md','Unknown.md']));
+ for(const path of ['Code.md','Yaml.md','Missing.md','Partial.md','Unknown.md'])assert.ok(reads.includes(path),path);
+ assert.ok(!reads.includes('Plain.md'));
+});
+
+test('line-storage display keeps immediate source authority despite stale no-list metadata',async()=>{
+ const h=harness();await legacy(h);
+ const FinanceStore=Object.getPrototypeOf(AtomicFinanceStore.prototype).constructor;
+ const lineStore=new FinanceStore(h.app,'Finances');
+ const originalCache=h.app.metadataCache.getFileCache;
+ h.app.metadataCache.getFileCache=file=>file.path==='Day.md'
+   ? {sections:[{type:'paragraph'}]}
+   : originalCache(file);
+ const reads=[];const read=h.app.vault.cachedRead;
+ h.app.vault.cachedRead=async file=>{reads.push(file.path);return read(file);};
+ const records=await lineStore.readTransactionRecords('metadata');
+ assert.deepEqual(records.map(record=>record.path),['Day.md']);
+ assert.ok(reads.includes('Day.md'),'line storage must not use the atomic display preflight');
+});
+
 test('display uses indexed values while ordinary readers and writes retain current-source authority',async()=>{
  const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);const cached=structuredClone(h.fm(path));
  await h.app.fileManager.processFrontMatter(h.nodes.get(path),fm=>{fm.amount=-47;fm.custom='Preserve current source';});
@@ -488,13 +572,24 @@ test('display uses indexed values while ordinary readers and writes retain curre
  await h.store.updateTransactionMetadata(tx.financeId,'Food',['personal']);assert.equal(h.fm(path).amount,-47);assert.equal(h.fm(path).custom,'Preserve current source');
 });
 
-test('indexed creation and classification removal follow metadata publication without a second index',async()=>{
- const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);let cached=null;
+test('folder display reads a fresh atomic note once, then follows published metadata and rejects duplicates',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ const only=new AtomicFinanceStore(h.app,'Finances','atomic-only');let cached=null,reads=0,writes=0;
  h.app.metadataCache.getFileCache=()=>cached;
- assert.equal((await h.store.readTransactionRecords('metadata')).length,0);assert.equal((await h.store.readTransactionRecords()).length,1);
- cached={frontmatter:structuredClone(h.fm(path))};assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
- cached={frontmatter:{title:'Ordinary note'}};assert.equal((await h.store.readTransactionRecords('metadata')).length,0);
- cached={frontmatter:structuredClone(h.fm(path))};assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads++;return read(file);};
+ const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args);};
+ assert.deepEqual((await only.readTransactionRecords('metadata')).map(record=>record.path),[path]);
+ assert.equal(reads,1,'unindexed folder candidate is read from source');assert.equal(writes,0);
+ reads=0;assert.equal((await only.readTransactionRecords()).length,1);assert.equal(reads,1);
+ cached={frontmatter:structuredClone(h.fm(path))};reads=0;
+ assert.equal((await only.readTransactionRecords('metadata')).length,1);assert.equal(reads,0);
+ cached={frontmatter:{title:'Ordinary note'}};
+ assert.equal((await only.readTransactionRecords('metadata')).length,0);assert.equal(reads,0);
+ cached={frontmatter:structuredClone(h.fm(path))};
+ assert.equal((await only.readTransactionRecords('metadata')).length,1);assert.equal(reads,0);
+ await h.app.vault.create('Finances/Transactions/Duplicate.md',h.text.get(path));cached=null;reads=0;
+ await assert.rejects(only.readTransactionRecords('metadata'),/Duplicate atomic transaction identity/);
+ assert.equal(reads,2);assert.equal(writes,0);
 });
 
 test('indexed display keeps legacy bodies, atomic precedence and duplicate identity guards',async()=>{
@@ -511,4 +606,143 @@ test('indexed display retains migration and invalid-mapping guards',async()=>{
  await assert.rejects(h.store.readTransactionRecords('metadata'),/Resume the property migration/);
  settings.propertyMigration=null;settings.propertyNames={keys:{amount:'financeId'}};
  await assert.rejects(h.store.readTransactionRecords('metadata'),/plain, nonempty property name/);
+});
+
+test('atomic-only cold source and display reads scale with atomic notes, while duplicate IDs still fail',async()=>{
+ const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
+ await h.app.vault.create('Day.md',line);
+ for(let n=0;n<1024;n++)await h.app.vault.create(`Archive/${n}.md`,'Ordinary note');
+ const only=new AtomicFinanceStore(h.app,'Finances','atomic-only');
+ let reads=0,fresh=0,writes=0;const cachedRead=h.app.vault.cachedRead,read=h.app.vault.read,process=h.app.vault.process;
+ h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file)};
+ h.app.vault.read=async file=>{fresh++;return read(file)};
+ h.app.vault.process=async(...args)=>{writes++;return process(...args)};
+ assert.deepEqual((await only.readTransactionRecords()).map(record=>record.path),[path]);
+ assert.equal(reads,1,'only the atomic source is read');assert.equal(fresh,0);assert.equal(writes,0);
+ reads=0;assert.deepEqual((await only.readTransactionRecords('metadata')).map(record=>record.path),[path]);
+ assert.equal(reads,0,'cached atomic metadata requires no note-body read');assert.equal(fresh,0);assert.equal(writes,0);
+ await h.app.vault.create('Finances/Transactions/Duplicate.md',h.text.get(path));
+ await assert.rejects(only.readTransactionRecords('metadata'),/Duplicate atomic transaction identity/);
+ await assert.rejects(only.readTransactionRecords(),/Duplicate atomic transaction identity/);
+});
+
+test('root discovers an arbitrary-name atomic note before its metadata arrives without reading indexed ordinary bodies',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'','atomic-only');
+ const transaction='Inbox/An edited transaction title.md';
+ await h.app.vault.create(transaction,'---\n'+JSON.stringify(transactionFields({...tx,financeId:'cold-id'},'Checking.md'))+'\n---\nBody\n');
+ for(let n=0;n<1024;n++)await h.app.vault.create(`Archive/Ordinary ${n}.md`,'---\n'+JSON.stringify({title:`Ordinary ${n}`})+'\n---\nBody\n');
+ const cache=h.app.metadataCache.getFileCache;
+ let indexed=false,reads=0,writes=0,scans=0;
+ h.app.metadataCache.getFileCache=file=>file.path===transaction&&!indexed?null:cache(file);
+ const getFiles=h.app.vault.getMarkdownFiles;h.app.vault.getMarkdownFiles=()=>{scans++;return getFiles();};
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads++;return read(file);};
+ const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args);};
+ const source=await root.readTransactionRecords();
+ assert.deepEqual(source.map(record=>record.path),[transaction]);
+ assert.equal(legacyFields(source[0].line).amount,-12.5);
+ assert.equal(reads,1);assert.equal(scans,1);assert.equal(writes,0);
+ reads=0;
+ const display=await root.readTransactionRecords('metadata');
+ assert.deepEqual(display,source);
+ assert.equal(reads,1,'only the missing-cache candidate needs a body read');assert.equal(scans,2);assert.equal(writes,0);
+ await h.app.fileManager.processFrontMatter(h.nodes.get(transaction),fm=>fm.amount=-19);
+ reads=0;
+ assert.equal(legacyFields((await root.readTransactionRecords('metadata'))[0].line).amount,-19);
+ assert.equal(reads,1,'an unpublished edit remains visible from its current source');
+ indexed=true;reads=0;
+ assert.equal(legacyFields((await root.readTransactionRecords('metadata'))[0].line).amount,-19);
+ assert.equal(reads,0,'published metadata restores the zero-body-read display path');
+ reads=0;
+ assert.equal(legacyFields((await root.readTransactionRecords())[0].line).amount,-19);
+ assert.equal(reads,1,'source callers continue verifying the atomic note');assert.equal(writes,0);
+});
+
+test('root reads the source when indexed metadata disappears during candidate discovery',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'','atomic-only');
+ const transaction='My transaction.md';
+ const fields=transactionFields({...tx,financeId:'vanishing-cache'},'Checking.md');
+ await h.app.vault.create(transaction,'---\n'+JSON.stringify(fields)+'\n---\n');
+ let lookups=0,reads=0;
+ h.app.metadataCache.getFileCache=()=>++lookups===1?{frontmatter:fields}:null;
+ const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads++;return read(file);};
+ assert.deepEqual((await root.readTransactionRecords('metadata')).map(record=>record.path),[transaction]);
+ assert.equal(lookups,2);assert.equal(reads,1);
+});
+
+test('root cold scan checks every unindexed file and catches duplicate atomic IDs before a write',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'','atomic-only');
+ const frontmatter=transactionFields({...tx,financeId:'same-id'},'Checking.md');
+ await h.app.vault.create('Inbox/First.md','---\n'+JSON.stringify(frontmatter)+'\n---\n');
+ for(let n=0;n<128;n++)await h.app.vault.create(`Archive/Ordinary ${n}.md`,'Plain note\n');
+ h.app.metadataCache.getFileCache=()=>null;
+ let reads=0,writes=0;const read=h.app.vault.cachedRead;
+ h.app.vault.cachedRead=async file=>{reads++;return read(file);};
+ const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args);};
+ assert.deepEqual((await root.readTransactionRecords()).map(record=>record.path),['Inbox/First.md']);
+ assert.equal(reads,129,'arbitrary filenames force one read per unindexed Markdown file');
+ reads=0;assert.deepEqual((await root.readTransactionRecords('metadata')).map(record=>record.path),['Inbox/First.md']);
+ assert.equal(reads,129,'display uses the same read-only discovery until metadata is published');
+ await h.app.vault.create('Elsewhere/Second.md','---\n'+JSON.stringify(frontmatter)+'\n---\n');
+ reads=0;await assert.rejects(root.readTransactionRecords(),/Duplicate atomic transaction identity/);
+ assert.equal(reads,130);assert.equal(writes,0);
+ reads=0;await assert.rejects(root.readTransactionRecords('metadata'),/Duplicate atomic transaction identity/);
+ assert.equal(reads,130);assert.equal(writes,0);
+});
+
+test('root sync checks stale non-null metadata once per missing-ID batch before creating notes',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'','atomic-only');
+ const edited='Inbox/Edited transaction.md';
+ await h.app.vault.create(edited,'---\n'+JSON.stringify(transactionFields(tx,'Finances/Accounts/Checking.md'))+'\n---\nKeep receipt\n');
+ for(let n=0;n<128;n++)await h.app.vault.create(`Archive/Ordinary ${n}.md`,'---\n'+JSON.stringify({title:`Ordinary ${n}`})+'\n---\nBody\n');
+ const metadata=h.app.metadataCache.getFileCache;let published=false;
+ h.app.metadataCache.getFileCache=file=>file.path===edited&&!published?{frontmatter:{title:'Old title'}}:metadata(file);
+ const reads=[];const cachedRead=h.app.vault.cachedRead;
+ h.app.vault.cachedRead=async file=>{reads.push(file.path);return cachedRead(file);};
+ let noteCreates=0,writes=0,scans=0;
+ const create=h.app.vault.create;h.app.vault.create=async(path,content)=>{if(path.endsWith('.md'))noteCreates++;return create(path,content);};
+ const process=h.app.fileManager.processFrontMatter;h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+ const getFiles=h.app.vault.getMarkdownFiles;h.app.vault.getMarkdownFiles=()=>{scans++;return getFiles();};
+ const second={...tx,financeId:'local-2',providerTransactionId:'provider-2'};
+ await root.applyTransactions([{...tx,amount:-20},second],[],[],state,accounts);
+ assert.equal(h.nodes.has('local-1.md'),false,'the edited note is reused instead of duplicated');
+ assert.equal(h.fm(edited).amount,-20);assert.match(h.text.get(edited),/Keep receipt/);
+ assert.equal(scans,1,'the missing IDs share one root candidate pass');
+ assert.equal(reads.filter(path=>path.startsWith('Archive/')).length,128,'each otherwise excluded ordinary source is checked once');
+ assert.equal(reads.filter(path=>path===edited).length,3,'discovery, update preflight and verification read current source');
+ assert.equal(noteCreates,1,'only the genuinely new transaction gets a note');
+ assert.equal(writes,1);assert.equal(h.fm('local-2.md').financeId,'local-2');
+ published=true;reads.length=0;noteCreates=0;writes=0;scans=0;
+ await root.applyTransactions([{...tx,amount:-20},second],[],[],state,accounts);
+ assert.equal(scans,1);assert.equal(reads.filter(path=>path.startsWith('Archive/')).length,0,'known IDs avoid the fallback source pass');
+ assert.equal(reads.length,4,'each known note is read for indexing and the no-op write check');
+ assert.equal(noteCreates,0);assert.equal(writes,0);
+});
+
+test('root sync rejects duplicate IDs hidden behind stale non-null metadata before any note write',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'','atomic-only');
+ const source='---\n'+JSON.stringify(transactionFields(tx,'Finances/Accounts/Checking.md'))+'\n---\n';
+ await h.app.vault.create('Inbox/First.md',source);await h.app.vault.create('Inbox/Second.md',source);
+ h.app.metadataCache.getFileCache=()=>({frontmatter:{title:'Old title'}});
+ let noteCreates=0,writes=0,reads=0;
+ const create=h.app.vault.create;h.app.vault.create=async(path,content)=>{if(path.endsWith('.md'))noteCreates++;return create(path,content);};
+ const process=h.app.fileManager.processFrontMatter;h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+ const cachedRead=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file);};
+ await assert.rejects(root.applyTransactions([tx],[],[],state,accounts),/Duplicate atomic transaction identity/);
+ assert.equal(reads,2);assert.equal(noteCreates,0);assert.equal(writes,0);
+ assert.equal(h.nodes.has('local-1.md'),false);
+});
+
+test('root legacy migration reuses an arbitrary-name destination hidden by stale metadata',async()=>{
+ const h=harness(),root=new AtomicFinanceStore(h.app,'');
+ const legacyLine=line.replace('[[Finances/Accounts/Checking]]','[[Checking]]');
+ const destination='Inbox/Previously migrated.md';
+ await h.app.vault.create('Checking.md','---\n'+JSON.stringify({financeAccountId:'account-1'})+'\n---\n');
+ await h.app.vault.create('Day.md',`Before\n${legacyLine}\nAfter\n`);
+ await h.app.vault.create(destination,'---\n'+JSON.stringify({...legacyFields(legacyLine),migrationSource:legacyLine})+'\n---\nPreserve body\n');
+ const metadata=h.app.metadataCache.getFileCache;
+ h.app.metadataCache.getFileCache=file=>file.path===destination?{frontmatter:{title:'Old title'}}:metadata(file);
+ const result=await root.migrateLegacyTransactionLedgers();
+ assert.equal(result.moved,1);assert.equal(result.skipped,0);
+ assert.equal(h.nodes.has('old-1.md'),false);assert.match(h.text.get(destination),/Preserve body/);
+ assert.equal(h.text.get('Day.md'),`Before\n- [[Inbox/Previously migrated]]\nAfter\n`);
 });

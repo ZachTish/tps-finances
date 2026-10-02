@@ -14,7 +14,7 @@ type Fields = Record<string, any>;
 
 /** Atomic notes own persisted data; the line codec is only a dashboard compatibility adapter. */
 export class AtomicFinanceStore extends FinanceStore {
-  constructor(private readonly vaultApp: App, private readonly folder: string) { super(vaultApp, folder); }
+  constructor(private readonly vaultApp: App, private readonly folder: string, private readonly legacyDiscovery: "discover" | "atomic-only" = "discover") { super(vaultApp, folder); }
 
   async ensureStructure(): Promise<void> {
     await super.ensureStructure();
@@ -69,18 +69,39 @@ export class AtomicFinanceStore extends FinanceStore {
     return financeProperties(this.vaultApp).read(match ? parseYaml(match[1]) || {} : {});
   }
 
-  private async index(fieldsByFile?: Map<TFile, Fields>, source: TransactionReadSource = "source"): Promise<Map<string, TFile>> {
+  private async index(fieldsByFile?: Map<TFile, Fields>, source: TransactionReadSource = "source", requiredIds?: Set<string>): Promise<Map<string, TFile>> {
     // Keep the configuration gate; financeId itself is fixed and never mapped.
     financeProperties(this.vaultApp);
     const result = new Map<string, TFile>();
-    const files = this.vaultApp.vault.getMarkdownFiles().filter(file =>
-      (this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
-      || this.vaultApp.metadataCache.getFileCache(file)?.frontmatter?.financeId);
-    await boundedWork(files, async file => {
-      // The view follows Obsidian's index. Mutation/ordinary API callers still
-      // verify source contents; display reads must never authorize their writes.
-      const fm = source === "metadata"
-        ? financeProperties(this.vaultApp).cache(this.vaultApp, file)
+    const files: TFile[] = [];
+    const excluded: TFile[] = [];
+    const missingCache = new Set<TFile>();
+    const order = new Map<TFile, number>();
+    for (const [position, file] of this.vaultApp.vault.getMarkdownFiles().entries()) {
+      const cache = this.vaultApp.metadataCache.getFileCache(file);
+      if ((this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
+        || cache?.frontmatter?.financeId) {
+        files.push(file);
+        order.set(file, position);
+      } else if (!this.folder && !cache) {
+        // At the vault root, atomic notes can have user-edited filenames. Until
+        // Obsidian indexes one, its contents are the only way to discover its ID.
+        files.push(file);
+        missingCache.add(file);
+        order.set(file, position);
+      } else if (!this.folder && source === "source" && requiredIds?.size) {
+        excluded.push(file);
+        order.set(file, position);
+      }
+    }
+    const inspect = async (file: TFile): Promise<void> => {
+      // The view follows Obsidian's index. Mutation/ordinary API callers verify
+      // candidate source contents. Root notes without an index entry need a source
+      // read even for display; that read never authorizes a later write.
+      const cache = source === "metadata" && !missingCache.has(file)
+        ? this.vaultApp.metadataCache.getFileCache(file) : null;
+      const fm = source === "metadata" && !missingCache.has(file) && cache
+        ? financeProperties(this.vaultApp).read(cache.frontmatter || {})
         : await this.fields(file);
       const accountPath = String(fm.account || "").replace(/^\[\[|\]\]$/g, "");
       if (!file.path.startsWith(financePrefix(this.folder, "Transactions")) && !accountPath.startsWith(financePrefix(this.folder, "Accounts"))) return;
@@ -89,9 +110,14 @@ export class AtomicFinanceStore extends FinanceStore {
       if (result.has(id)) throw new Error(`Duplicate atomic transaction identity: ${id}. Resolve the duplicate notes before syncing.`);
       result.set(id, file);
       fieldsByFile?.set(file, fm);
-    });
+    };
+    await boundedWork(files, inspect);
+    if (requiredIds?.size && !this.folder && [...requiredIds].some(id => !result.has(id))) {
+      // Arbitrary root filenames and stale non-null metadata leave no reliable
+      // lookup key. Check those sources once per batch before creating a missing ID.
+      await boundedWork(excluded, inspect);
+    }
     // Read completion order must not change dashboard or migration ordering.
-    const order = new Map(files.map((file, index) => [file, index]));
     return new Map([...result].sort((a, b) => order.get(a[1])! - order.get(b[1])!));
   }
 
@@ -153,7 +179,8 @@ export class AtomicFinanceStore extends FinanceStore {
       groups.set(transaction.financeId, revisions);
     }
     await this.ensureStructure();
-    const index = await this.index();
+    const affectedIds = new Set([...groups.keys(), ...removedProviderIds.map(providerId => state.providerIdentityMap[providerIdentityKey("transaction", providerId)]).filter(Boolean)]);
+    const index = await this.index(undefined, "source", affectedIds);
     const indexedAt = Date.now();
     let removed = 0;
     for (const providerId of removedProviderIds) {
@@ -187,18 +214,20 @@ export class AtomicFinanceStore extends FinanceStore {
       const fm = fieldsByFile.get(file)!;
       records.push({line: fieldsLine(fm), path:file.path, lineNumber:0});
     }
-    // Until explicit migration, old lines remain visible. A note always wins by stable ID.
-    this.transactionIndex = null;
-    for (const record of await super.readTransactionRecords()) {
-      const accountPath=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
-      if (accountPath.startsWith(financePrefix(this.folder, "Accounts")) && !index.has(field(record.line,"financeId"))) records.push(record);
+    // Explicit atomic-only discovery retires the vault-wide legacy source scan.
+    if (this.legacyDiscovery === "discover") {
+      this.transactionIndex = null;
+      for (const record of await this.readLegacyTransactionRecords(source)) {
+        const accountPath=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
+        if (accountPath.startsWith(financePrefix(this.folder, "Accounts")) && !index.has(field(record.line,"financeId"))) records.push(record);
+      }
     }
     return records;
   }
 
   async updateTransactionMetadata(id:string, categoryOverride:string, tags:string[]): Promise<boolean> {
     const file = (await this.index()).get(id);
-    if (!file) return super.updateTransactionMetadata(id, categoryOverride, tags);
+    if (!file) return this.legacyDiscovery === "atomic-only" ? false : super.updateTransactionMetadata(id, categoryOverride, tags);
     await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
     return true;
   }
@@ -245,9 +274,11 @@ export class AtomicFinanceStore extends FinanceStore {
   /** Explicit, resumable migration. Write/verify the note before replacing the exact source line. */
   async migrateLegacyTransactionLedgers(): Promise<{moved:number;skipped:number}> {
     await this.ensureStructure();
-    const index=await this.index(); let moved=0,skipped=0;
     this.transactionIndex = null;
-    for (const record of await super.readTransactionRecords()) {
+    const records = await super.readTransactionRecords();
+    const migrationIds = new Set(records.map(record => field(record.line, "financeId")).filter(Boolean));
+    const index=await this.index(undefined, "source", migrationIds); let moved=0,skipped=0;
+    for (const record of records) {
       const ownedAccount=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
       if(!ownedAccount.startsWith(financePrefix(this.folder, "Accounts"))&&!record.path.startsWith(financePrefix(this.folder, "Transactions")))continue;
       const fm = legacyFields(record.line);

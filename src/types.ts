@@ -8,6 +8,7 @@ export interface TPSFinancesSettings {
   propertyMigration: PropertyMigration | null;
   financeFolder: string;
   recordMode: "atomic-note" | "atomic-line";
+  legacyTransactionDiscovery: "discover" | "atomic-only";
   plaidEnvironment: PlaidEnvironment;
   plaidClientIdSecret: string;
   plaidSecretSecret: string;
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: TPSFinancesSettings = {
   propertyMigration: null,
   financeFolder: "Finances",
   recordMode: "atomic-note",
+  legacyTransactionDiscovery: "discover",
   plaidEnvironment: "sandbox",
   plaidClientIdSecret: "tps-finances-plaid-client-id",
   plaidSecretSecret: "tps-finances-plaid-secret",
