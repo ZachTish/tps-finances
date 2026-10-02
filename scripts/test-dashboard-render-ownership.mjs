@@ -125,6 +125,56 @@ test('data-read failures retain the existing error presentation',async()=>{
   const h=harness();h.setReader(()=>Promise.reject(Error('Read failed')));await h.view.onOpen();assert.ok(h.root.all().some(e=>e.className==='tps-finances-error'&&e.textContent==='Read failed'));assert.equal(h.view.renderPromise,null);
 });
 
+test('first open presents loading status before the model arrives and clears it after success or error',async()=>{
+  const h=harness(true),pending=deferred();h.setReader(()=>pending.promise);
+  const opening=h.view.onOpen();
+  const loading=h.root.all().find(e=>e.className==='tps-finances-loading');
+  assert.equal(loading?.textContent,'Loading finances…');assert.equal(loading?.getAttribute('role'),'status');
+  await Promise.resolve();assert.equal(h.counts.models,1);
+  pending.resolve(model());await opening;
+  assert.ok(!h.root.all().includes(loading));assert.ok(h.root.all().some(e=>e.className==='tps-finances-summary'));
+  const refreshPending=deferred();h.setReader(()=>refreshPending.promise);
+  const refreshing=h.view.render();await Promise.resolve();
+  assert.ok(!h.root.all().some(e=>e.className==='tps-finances-loading'),'refresh retains the displayed dashboard');
+  refreshPending.reject(Error('Read failed'));await refreshing;
+  assert.ok(h.root.all().some(e=>e.className==='tps-finances-error'&&e.textContent==='Read failed'));
+  assert.equal(h.counts.models,2,'loading presentation adds no model read');
+});
+
+test('transaction source detail remains visible to touch layouts and accessible without hover',async()=>{
+  const h=harness(true),m=model();m.transactions[0].name='Coffee shop';m.transactions[0].providerName='ACME COFFEE 123';m.transactions[0].tags=['food','receipt'];h.setModel(m);
+  await h.view.onOpen();
+  const row=h.root.all().find(e=>e.className.includes('tps-finances-row--clickable'));
+  assert.match(row.getAttribute('aria-label'),/Coffee shop, imported as ACME COFFEE 123/);
+  assert.equal(row.all().find(e=>e.className==='tps-finances-provider-name')?.textContent,'Imported as ACME COFFEE 123');
+  assert.match(row.all().find(e=>e.className==='tps-finances-transaction-details')?.textContent,/2026-09-18 · Checking · Purchase · Groceries · food · receipt/);
+  row.fire('click');assert.deepEqual(h.actions,[['open','fixture']]);
+  assert.equal(h.counts.models,1);
+});
+
+test('narrow dashboard layout wraps transaction context and gives its controls touch targets',async()=>{
+  const css=readFileSync(new URL('../styles.css',import.meta.url),'utf8');
+  const narrow=css.slice(css.indexOf('@container (max-width: 650px)'),css.indexOf('@container (max-width: 520px)'));
+  assert.match(css,/@media \(hover: none\)[\s\S]*?\.tps-finances-row-main \.tps-finances-provider-name \{ display: block/);
+  for(const selector of ['.tps-finances-root .tps-finances-button','.tps-finances-view-routes button','.tps-finances-account-route','.tps-finances-budget-toolbar input','.tps-finances-budget-toolbar select','.tps-finances-plan-section button','.tps-finances-plan-section summary'])assert.ok(narrow.includes(selector),selector);
+  assert.match(narrow,/\.tps-finances-plan-section summary \{ min-height: 44px; \}/);
+  assert.match(narrow,/\.tps-finances-root \.tps-finances-button \{ min-width: 44px; \}/);
+  for(const selector of ['.tps-finances-classify-button','.tps-finances-plan-edit','.tps-finances-plan-toggle'])assert.ok(narrow.includes(selector),selector);
+  assert.match(narrow,/\.tps-finances-plan-toggle \{ width: 44px; min-width: 44px; height: 44px; \}/);
+  assert.match(narrow,/\.tps-finances-plan-row \{ grid-template-columns:repeat\(3,minmax\(0,1fr\)\) 44px; gap:8px; \}/);
+  assert.match(narrow,/\.tps-finances-row--clickable \.tps-finances-transaction-details \{ white-space: normal/);
+  assert.match(css,/@container \(max-width: 520px\)[\s\S]*?\.tps-finances-row--clickable \{ display: grid; grid-template-columns: minmax\(0, 1fr\) 44px/);
+  const assertRootAction=(h,label)=>{
+    const root=h.root.all().find(e=>e.className.startsWith('tps-finances-root'));
+    const action=root?.all().find(e=>e.attrs['aria-label']===label);
+    assert.ok(action?.className.includes('tps-finances-button'),`${label} uses the root-scoped 44px button rule`);
+  };
+  const welcome=harness(true),empty=model();empty.accounts=[];empty.transactions=[];welcome.setModel(empty);
+  await welcome.view.onOpen();assertRootAction(welcome,'Open connections');
+  const manual=harness(true),accountModel=model();accountModel.accounts[0]={...accountModel.accounts[0],manual:true,type:'other',current:100};manual.setModel(accountModel);
+  await manual.view.onOpen();assertRootAction(manual,'Open note');assertRootAction(manual,'Update value');
+});
+
 
 const mainSource=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
 const mainAst=ts.createSourceFile('main.ts',mainSource,ts.ScriptTarget.Latest,true),methods=[],eventSources={};

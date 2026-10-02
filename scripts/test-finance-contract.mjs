@@ -707,10 +707,12 @@ test("dashboard close cancels queued commits and reopening requests a fresh mode
 
   const reopeningRender = harness.view.onOpen();
   await waitForDashboardReads(harness.reads, 2);
+  assert.match(dashboardNodeText(harness.view.contentEl), /Loading finances/);
   harness.reads[1].resolve(dashboardModel("ready"));
   await reopeningRender;
-  assert.equal(harness.view.contentEl.emptyCalls, 1);
+  assert.equal(harness.view.contentEl.emptyCalls, 2, "reopen clears the old view for loading, then commits one model");
   assert.match(dashboardNodeText(harness.view.contentEl), /Plaid credentials are ready/);
+  assert.doesNotMatch(dashboardNodeText(harness.view.contentEl), /Loading finances/);
 });
 
 test("dashboard action wrapper leaves successful refresh ownership to the action", async () => {

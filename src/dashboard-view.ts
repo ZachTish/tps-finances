@@ -105,6 +105,8 @@ export class TPSFinancesView extends ItemView {
   async onOpen(): Promise<void> {
     this.closed = false;
     this.contentEl.addClass("tps-finances-view");
+    this.contentEl.empty();
+    this.contentEl.createDiv({ cls: "tps-finances-loading", text: "Loading finances…", attr: { role: "status" } });
     await this.render();
   }
 
@@ -337,7 +339,8 @@ export class TPSFinancesView extends ItemView {
       const row = list.createDiv({ cls: "tps-finances-row tps-finances-row--clickable" });
       row.tabIndex = 0;
       row.setAttr("role", "button");
-      row.setAttr("aria-label", `Open ${transaction.name} at its transaction log source`);
+      const importedName = transaction.providerName && transaction.providerName !== transaction.name ? transaction.providerName : "";
+      row.setAttr("aria-label", `Open ${transaction.name}${importedName ? `, imported as ${importedName}` : ""} at its transaction log source`);
       row.addEventListener("click", () => void this.plugin.openTransactionSource(transaction));
       row.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -348,11 +351,12 @@ export class TPSFinancesView extends ItemView {
       const main = row.createDiv({ cls: "tps-finances-row-main" });
       const name = main.createDiv({ cls: "tps-finances-transaction-name" });
       name.createEl("strong", { text: transaction.name });
-      if (transaction.providerName && transaction.providerName !== transaction.name) {
-        name.setAttr("title", transaction.providerName);
+      if (importedName) {
+        name.setAttr("title", importedName);
+        main.createEl("small", { cls: "tps-finances-provider-name", text: `Imported as ${importedName}` });
       }
       if (transaction.pending) name.createEl("span", { cls: "tps-finances-pending", text: "Pending" });
-      main.createEl("small", { text: [transaction.date, transaction.account, humanCategory(transaction.subtype), humanCategory(transaction.category), ...transaction.tags].filter(Boolean).join(" · ") });
+      main.createEl("small", { cls: "tps-finances-transaction-details", text: [transaction.date, transaction.account, humanCategory(transaction.subtype), humanCategory(transaction.category), ...transaction.tags].filter(Boolean).join(" · ") });
       const amount = row.createDiv({ cls: `tps-finances-row-amount ${transaction.amount >= 0 ? "is-positive" : "is-negative"}` });
       this.renderAmount(amount, money(transaction.amount, transaction.currency, true), `amount for ${transaction.name}`);
       const edit = row.createEl("button", { cls: "tps-finances-classify-button", attr: { type: "button", "aria-label": `Categorize ${transaction.name}`, title: "Categorize and tag" } });

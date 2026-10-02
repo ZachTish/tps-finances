@@ -1,5 +1,11 @@
 # TPS Finances
 
+## 1.13.0 — Clearer phone dashboard
+
+The dashboard now shows a loading status on first open while its model is being read. Existing content stays visible during later refreshes. Recent transactions wrap their names and context in narrow panels, show a distinct imported provider name on touch devices, and include that name in the accessible row label. Narrow-panel route, account, budget and classification controls have at least 44 px touch targets. These display changes add no model reads, source scans, writes, timers or persisted settings; the Overview amount-privacy control retains its existing behavior.
+
+This is a backward-compatible mobile UX feature with no note migration and the same Obsidian 1.12.0 minimum. Focused tests cover first-load and error presentation, source-name visibility, narrow CSS, and unchanged model-read counts. The full declared suite, final build/deployment, reload, and installed narrow-panel QA are documented in [1.13.0 release notes](release-notes/1.13.0.md). The installed Test-vault check is a desktop narrow panel, not physical iPhone acceptance. The remaining Finance scale cost is legacy inline transaction discovery: genuine model loads still cached-read candidate note bodies because those lines may exist anywhere in root storage. Filename IDs do not remove that requirement; retiring it needs an explicit legacy migration or a separately designed maintained index.
+
 ## 1.12.0 — Private amounts on Overview
 
 The main dashboard’s **Hide amounts** eye button masks summary totals, account balances, holding share quantities/prices/values and recent transaction amounts. Tap a masked value to reveal just that value; tap again to hide it. **Show amounts** restores the normal display. Percentages, dates, account labels and identifiers remain visible. Budget, the home summary, Bases, notes, forms and other views are unchanged.
