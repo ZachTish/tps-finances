@@ -10,7 +10,7 @@ import { budgetInputError, budgetOverlapError, budgetBucket, budgetCurrency, acc
 
 const GENERATED_START = "<!-- tps-finances:generated:start -->";
 const GENERATED_END = "<!-- tps-finances:generated:end -->";
-type TransactionRecord = { line: string; path: string; lineNumber: number };
+type TransactionRecord = { line: string; path: string; lineNumber: number; sourceFile?: TFile };
 export type TransactionReadSource = "source" | "metadata";
 type TransactionIndex = {
   recordsById: Map<string, TransactionRecord[]>;

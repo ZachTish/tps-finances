@@ -600,13 +600,18 @@ export default class TPSFinancesPlugin extends Plugin {
     if (sourcePaths) for (const record of transactionRecords) sourcePaths.add(record.path);
     const rules = store.readRules(sourcePaths);
     const classifyForDashboard = prepareTransactionClassifier(rules);
-    const transactions = transactionRecords.map((record) => parseDashboardTransaction(record.line, record.path, record.lineNumber)).filter((value): value is DashboardTransaction => value !== null)
-      .map((transaction) => {
-        const accountLabel = accountLabels.get(transaction.accountPath);
-        const resolved = accountLabel ? { ...transaction, account: accountLabel.display, accountSearchText: accountLabel.search } : transaction;
-        const classification = classifyForDashboard(resolved);
-        return { ...resolved, category: classification.category, tags: classification.tags, categorySource: classification.source, ruleId: classification.ruleId };
-      }).sort((left, right) => right.date.localeCompare(left.date));
+    const transactions: DashboardTransaction[] = [];
+    for (const record of transactionRecords) {
+      const transaction = parseDashboardTransaction(record.line, record.path, record.lineNumber);
+      if (!transaction) continue;
+      const accountLabel = accountLabels.get(transaction.accountPath);
+      const resolved = accountLabel ? { ...transaction, account: accountLabel.display, accountSearchText: accountLabel.search } : transaction;
+      const classification = classifyForDashboard(resolved);
+      const row = { ...resolved, category: classification.category, tags: classification.tags, categorySource: classification.source, ruleId: classification.ruleId };
+      if (record.sourceFile) Object.defineProperty(row, "sourceFile", { value: record.sourceFile });
+      transactions.push(row);
+    }
+    transactions.sort((left, right) => right.date.localeCompare(left.date));
     applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
     const budgetEntries = await store.readBudgetEntries(sourcePaths, source);
@@ -699,9 +704,19 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   editTransactionClassification(transaction: DashboardTransaction): void {
+    const financeId = transaction.financeId;
+    const renderedFile = transaction.sourceFile;
+    const sourcePath = transaction.sourcePath;
+    const selectedFile = renderedFile instanceof TFile && sourcePath ? this.app.vault.getAbstractFileByPath(sourcePath) : null;
+    const renderedTarget = renderedFile instanceof TFile && sourcePath && this.settings.legacyTransactionDiscovery === "atomic-only"
+      ? { path: sourcePath, file: selectedFile === renderedFile ? renderedFile : null,
+          type: transaction.type, categoryOverride: transaction.categoryOverride || "", tags: [...(transaction.manualTags || [])] }
+      : null;
     new TransactionClassificationModal(this.app, transaction, async (category, tags) => {
       const store = transaction.manual ? new AtomicFinanceStore(this.app, this.settings.financeFolder, this.settings.legacyTransactionDiscovery) : this.createStore();
-      const updated = await store.updateTransactionMetadata(transaction.financeId, category, tags);
+      const updated = renderedTarget && this.settings.legacyTransactionDiscovery === "atomic-only" && store instanceof AtomicFinanceStore
+        ? await store.updateTransactionMetadata(financeId, category, tags, renderedTarget)
+        : await store.updateTransactionMetadata(financeId, category, tags);
       if (!updated) throw new Error("The transaction could not be found.");
       logger.flow("Classification", "transaction-updated", { source: category ? "manual" : "automatic", tagCount: tags.length });
       new Notice(category || tags.length ? "Transaction classification saved." : "Transaction returned to automatic classification.");
@@ -719,7 +734,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async renderHomeSummary(container: HTMLElement): Promise<void> {
-    const model = await this.getDashboardModel();
+    const model = await this.getDashboardModel(undefined, "metadata");
     container.empty();
     container.addClass("tps-finances-home-summary");
     if (!model.connectedItems && !model.accounts.length) {

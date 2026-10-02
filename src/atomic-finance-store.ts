@@ -77,10 +77,13 @@ export class AtomicFinanceStore extends FinanceStore {
     const excluded: TFile[] = [];
     const missingCache = new Set<TFile>();
     const order = new Map<TFile, number>();
+    const transactionPrefix = financePrefix(this.folder, "Transactions");
     for (const [position, file] of this.vaultApp.vault.getMarkdownFiles().entries()) {
-      const cache = this.vaultApp.metadataCache.getFileCache(file);
-      if ((this.folder && file.path.startsWith(financePrefix(this.folder, "Transactions")))
-        || cache?.frontmatter?.financeId) {
+      const inTransactionFolder = Boolean(this.folder) && file.path.startsWith(transactionPrefix);
+      // The path already makes these files candidates. Inspect checks metadata
+      // or current source once below, so this preliminary cache lookup is redundant.
+      const cache = inTransactionFolder ? null : this.vaultApp.metadataCache.getFileCache(file);
+      if (inTransactionFolder || cache?.frontmatter?.financeId) {
         files.push(file);
         order.set(file, position);
       } else if (!this.folder && !cache) {
@@ -206,13 +209,15 @@ export class AtomicFinanceStore extends FinanceStore {
     await this.applyTransactions(transactions, [], [], {plaidUserId:"",items:[],providerIdentityMap:{}}, accountPaths);
   }
 
-  async readTransactionRecords(source: TransactionReadSource = "source"): Promise<{line:string;path:string;lineNumber:number}[]> {
-    const records = [];
+  async readTransactionRecords(source: TransactionReadSource = "source"): Promise<{line:string;path:string;lineNumber:number;sourceFile?:TFile}[]> {
+    const records: {line:string;path:string;lineNumber:number;sourceFile?:TFile}[] = [];
     const fieldsByFile = new Map<TFile, Fields>();
     const index = await this.index(fieldsByFile, source);
     for (const file of index.values()) {
       const fm = fieldsByFile.get(file)!;
-      records.push({line: fieldsLine(fm), path:file.path, lineNumber:0});
+      const record: {line:string;path:string;lineNumber:number;sourceFile?:TFile} = {line: fieldsLine(fm), path:file.path, lineNumber:0};
+      Object.defineProperty(record, "sourceFile", {value:file});
+      records.push(record);
     }
     // Explicit atomic-only discovery retires the vault-wide legacy source scan.
     if (this.legacyDiscovery === "discover") {
@@ -225,7 +230,24 @@ export class AtomicFinanceStore extends FinanceStore {
     return records;
   }
 
-  async updateTransactionMetadata(id:string, categoryOverride:string, tags:string[]): Promise<boolean> {
+  async updateTransactionMetadata(id:string, categoryOverride:string, tags:string[], target?: {
+    path:string; file:TFile|null; type:"transaction"|"investmentTransaction"; categoryOverride:string; tags:string[];
+  }): Promise<boolean> {
+    if (target) {
+      const file = target.file;
+      const changed = () => new Error("The transaction changed or moved. Reopen the dashboard and try again.");
+      if (!(file instanceof TFile) || file.path !== target.path || this.vaultApp.vault.getAbstractFileByPath(target.path) !== file) throw changed();
+      await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {
+        const accountPath=String(fm.account||"").replace(/^\[\[|\]\]$/g,"");
+        if (file.path !== target.path || this.vaultApp.vault.getAbstractFileByPath(target.path) !== file
+          || String(fm.financeId||"") !== id || fm.type !== target.type
+          || (!file.path.startsWith(financePrefix(this.folder,"Transactions")) && !accountPath.startsWith(financePrefix(this.folder,"Accounts")))
+          || String(fm.categoryOverride||"") !== target.categoryOverride
+          || JSON.stringify(atomicTags(fm.tags)) !== JSON.stringify(normalizeTags(target.tags))) throw changed();
+        fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));
+      });
+      return true;
+    }
     const file = (await this.index()).get(id);
     if (!file) return this.legacyDiscovery === "atomic-only" ? false : super.updateTransactionMetadata(id, categoryOverride, tags);
     await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
@@ -363,7 +385,10 @@ export function transactionFields(t:FinanceTransaction,accountPath:string):Field
 function fieldsLine(f:Fields):string {
   if(!Number.isFinite(Number(f.amount))||f.amount===null||f.amount===''||!/^\d{4}-\d{2}-\d{2}$/.test(String(f.date)))throw new Error('Invalid atomic transaction properties; repair the note before syncing.');
   const t:FinanceTransaction={financeId:String(f.financeId),providerTransactionId:'',financeAccountId:String(f.financeAccountId||''),date:String(f.date),authorizedDate:String(f.authorizedDate||''),name:String(f.title||''),providerName:typeof f.providerName==='string'?f.providerName:undefined,merchantName:String(f.merchant||''),amount:Number(f.amount),currency:String(f.currency||'USD'),pending:f.pending===true,category:String(f.providerCategory||''),categoryDetail:String(f.providerCategoryDetail||''),subtype:String(f.subtype||''),kind:f.type==='investmentTransaction'?'investmentTransaction':'transaction',investmentType:String(f.investmentType||'')};
-  return transactionLine(t,String(f.account||'').replace(/^\[\[|\]\]$/g,''),{categoryOverride:String(f.categoryOverride||''),tags:normalizeTags(Array.isArray(f.tags)?f.tags:[])}) + (f.financeSource === 'manual' ? ` [financeSource:: manual] [transferAccount:: ${String(f.transferAccount || '')}]` : '');
+  return transactionLine(t,String(f.account||'').replace(/^\[\[|\]\]$/g,''),{categoryOverride:String(f.categoryOverride||''),tags:atomicTags(f.tags)}) + (f.financeSource === 'manual' ? ` [financeSource:: manual] [transferAccount:: ${String(f.transferAccount || '')}]` : '');
+}
+function atomicTags(value:unknown):string[] {
+  return normalizeTags(Array.isArray(value) ? value.map(String) : typeof value === 'string' ? value.split(',') : []);
 }
 function field(line:string,key:string):string {return line.match(new RegExp(`\\[${key}::\\s*(\\[\\[[^\\]]+\\]\\]|[^\\]]*)\\]`))?.[1]?.trim()||'';}
 export function legacyFields(line:string):Fields|null {

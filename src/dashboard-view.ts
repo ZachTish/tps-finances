@@ -1,5 +1,5 @@
 import type { TransactionReadSource } from "./finance-store";
-import { ItemView, Menu, Notice, Platform, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, Notice, Platform, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { renderBudgetView, type BudgetViewState } from "./budget-view";
 import type { BudgetBucket } from "./flex-budget";
 import { accountSummaries } from "./finance-summary";
@@ -33,6 +33,8 @@ export interface DashboardTransaction {
   investmentType?: string;
   sourcePath: string;
   sourceLine: number;
+  /** Original atomic file, attached non-enumerably to the displayed model row. */
+  sourceFile?: TFile;
 }
 
 export interface BudgetProgress {

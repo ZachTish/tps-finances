@@ -294,6 +294,169 @@ test('manual classification respects atomic-only discovery when its note disappe
  assert.equal(writes,1);
  assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
 });
+const classificationFields=(financeId,extra={})=>({financeId,type:'transaction',date:'2026-09-20',account:'[[Checking]]',amount:-3,currency:'USD',...extra});
+async function displayedTransaction(h,p,financeId){
+ p.plugin.getConnectedItems=()=>[];p.plugin.getRelayStatus=()=>null;p.plugin.getPlaidSetupStatus=()=>({state:'ready'});
+ return (await p.plugin.getDashboardModel(undefined,'metadata')).transactions.find(row=>row.financeId===financeId);
+}
+function classificationSave(plugin,row,category='Food',tags=['cash']){
+ globalThis.PropertyQAModal=null;
+ plugin.editTransactionClassification(row);
+ assert.ok(globalThis.PropertyQAModal);
+ return globalThis.PropertyQAModal.save(category,tags);
+}
+test('atomic-only classification targets one rendered file without reading 10,000 other note bodies',async t=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ for(let i=0;i<10000;i++)await h.add(`Transactions/tx-${i}.md`,classificationFields(`tx-${i}`));
+ const row=await displayedTransaction(h,p,'tx-5000');
+ assert.equal(row.sourceFile,h.files.get(row.sourcePath));
+ assert.equal(Object.getOwnPropertyDescriptor(row,'sourceFile').enumerable,false,'file binding stays out of the public model shape');
+ let scans=0,metadata=0,cached=0,fresh=0,frontmatterWrites=0,legacyWrites=0;
+ const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead,read=h.app.vault.read;
+ const getFileCache=h.app.metadataCache.getFileCache,processFrontMatter=h.app.fileManager.processFrontMatter,process=h.app.vault.process;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};
+ h.app.metadataCache.getFileCache=file=>{metadata++;return getFileCache(file)};
+ h.app.vault.cachedRead=async file=>{cached++;return cachedRead(file)};
+ h.app.vault.read=async file=>{fresh++;return read(file)};
+ h.app.fileManager.processFrontMatter=async(...args)=>{frontmatterWrites++;return processFrontMatter(...args)};
+ h.app.vault.process=async(...args)=>{legacyWrites++;return process(...args)};
+ const saveStarted=performance.now();await classificationSave(p.plugin,row);const saveMs=performance.now()-saveStarted;
+ assert.deepEqual({scans,metadata,cached,fresh,frontmatterWrites,legacyWrites},{scans:0,metadata:0,cached:0,fresh:0,frontmatterWrites:1,legacyWrites:0});
+ assert.equal(h.fm(row.sourcePath).categoryOverride,'Food');assert.deepEqual(h.fm(row.sourcePath).tags,['cash']);
+ assert.equal(h.fm('Transactions/tx-5001.md').categoryOverride,undefined);
+ scans=metadata=cached=fresh=frontmatterWrites=legacyWrites=0;
+ const refreshStarted=performance.now();const refreshed=await p.plugin.getDashboardModel(new Set(),'metadata');const refreshMs=performance.now()-refreshStarted;
+ assert.equal(refreshed.transactions.length,10000);
+ assert.ok(scans>0);assert.ok(metadata>=10000);assert.equal(frontmatterWrites,0);assert.equal(legacyWrites,0);
+ t.diagnostic(`synthetic 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${scans} enumerations, ${metadata} metadata lookups, ${cached} cached reads, ${fresh} fresh reads, 0 writes`);
+});
+test('folder-mode save is path-bound while dashboard and home summaries use indexed display reads',async t=>{
+ const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder='Finances';await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ for(let i=0;i<10000;i++)await h.add(`Finances/Transactions/tx-${i}.md`,classificationFields(`tx-${i}`));
+ const row=await displayedTransaction(h,p,'tx-5000');assert.equal(row.sourceFile,h.files.get(row.sourcePath));
+ let scans=0,metadata=0,cached=0,fresh=0,writes=0;
+ const getMarkdownFiles=h.app.vault.getMarkdownFiles,getFileCache=h.app.metadataCache.getFileCache,cachedRead=h.app.vault.cachedRead,read=h.app.vault.read,processFrontMatter=h.app.fileManager.processFrontMatter;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};h.app.metadataCache.getFileCache=file=>{metadata++;return getFileCache(file)};
+ h.app.vault.cachedRead=async file=>{cached++;return cachedRead(file)};h.app.vault.read=async file=>{fresh++;return read(file)};
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return processFrontMatter(...args)};
+ const reset=()=>{scans=metadata=cached=fresh=writes=0};
+ const saveStarted=performance.now();await classificationSave(p.plugin,row);const saveMs=performance.now()-saveStarted;
+ assert.deepEqual({scans,metadata,cached,fresh,writes},{scans:0,metadata:0,cached:0,fresh:0,writes:1});reset();
+ const refreshStarted=performance.now();const model=await p.plugin.getDashboardModel(new Set(),'metadata');const refreshMs=performance.now()-refreshStarted;
+ assert.equal(model.transactions.length,10000);assert.equal(metadata,10000,'transaction folder candidates need only their inspection lookup');assert.equal(cached,0);assert.equal(fresh,0);assert.equal(writes,0);
+ const refreshCounts={scans,metadata,cached,fresh,writes};reset();
+ const sourceStarted=performance.now();await p.plugin.getDashboardModel();const sourceMs=performance.now()-sourceStarted;
+ assert.equal(cached,10000,'the old source-backed home model reads every atomic body');assert.equal(metadata,0,'folder candidates need no metadata preflight for source reads');const sourceCounts={scans,metadata,cached,fresh,writes};reset();
+ const element={empty(){},addClass(){},createDiv(){return this},createEl(){return this},createSpan(){return this},addEventListener(){}};
+ const homeStarted=performance.now();await p.plugin.renderHomeSummary(element);const homeMs=performance.now()-homeStarted;
+ assert.equal(cached,0,'read-only home display uses the indexed model');assert.equal(metadata,10000);assert.equal(fresh,0);assert.equal(writes,0);
+ t.diagnostic(`synthetic folder 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${JSON.stringify(refreshCounts)}; old source model: ${sourceMs.toFixed(1)} ms, ${JSON.stringify(sourceCounts)}; home summary: ${homeMs.toFixed(1)} ms, ${JSON.stringify({scans,metadata,cached,fresh,writes})}`);
+});
+test('rendered manual cash classification uses the same atomic-only target',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const cash=await h.manual.createAccount({kind:'cash',name:'Wallet',currency:'USD',value:100,valuationDate:'2026-09-20',purchaseTransaction:'',liabilityAccount:'',assetType:''});
+ const file=await h.manual.createCashEntry({title:'Lunch',amount:3,date:'2026-09-20',accountPath:cash.path,kind:'expense',category:'',tags:[],counterpart:'',linkedTransaction:''});
+ const row=await displayedTransaction(h,p,h.fm(file.path).financeId);assert.equal(row.manual,true);assert.equal(row.sourceFile,file);
+ let scans=0,reads=0;const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};h.app.vault.cachedRead=async target=>{reads++;return cachedRead(target)};
+ await classificationSave(p.plugin,row);
+ assert.deepEqual({scans,reads},{scans:0,reads:0});assert.equal(h.fm(file.path).categoryOverride,'Food');
+});
+test('atomic-only classification keeps the ID lookup for a plain dashboard row',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ await h.add('Selected.md',classificationFields('plain'));const row=await displayedTransaction(h,p,'plain'),plain={...row};
+ assert.equal(plain.sourceFile,undefined);
+ let scans=0,reads=0;const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file)};
+ await classificationSave(p.plugin,plain);
+ assert.deepEqual({scans,reads},{scans:1,reads:1});assert.equal(h.fm('Selected.md').categoryOverride,'Food');
+});
+test('atomic-only classification rejects a same-path replacement after render or modal open',async()=>{
+ for(const replaceAfterModal of [false,true]){
+  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  await h.add('Selected.md',classificationFields('selected'));
+  const row=await displayedTransaction(h,p,'selected'),original=row.sourceFile;
+  if(replaceAfterModal){globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification(row);assert.ok(globalThis.PropertyQAModal);}
+  h.files.delete('Selected.md');h.contents.delete('Selected.md');
+  await h.add('Selected.md',classificationFields('selected',{custom:'replacement'}));
+  assert.notEqual(h.files.get('Selected.md'),original);
+  const save=replaceAfterModal?globalThis.PropertyQAModal.save('Food',['cash']):classificationSave(p.plugin,row);
+  await assert.rejects(save,/transaction changed or moved/);
+  assert.equal(h.fm('Selected.md').categoryOverride,undefined);
+ }
+});
+test('atomic-only classification rejects moved, retargeted and concurrently reclassified notes',async()=>{
+ for(const change of ['moved','identity','type','classification','boundary']){
+  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const file=await h.add('Selected.md',classificationFields('selected',{categoryOverride:'Old',tags:['old']}));
+  const row=await displayedTransaction(h,p,'selected');
+  globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification(row);const modal=globalThis.PropertyQAModal;
+  assert.ok(modal);
+  if(change==='moved'){
+   h.files.delete('Selected.md');h.contents.set('Moved.md',h.contents.get('Selected.md'));h.contents.delete('Selected.md');file.path='Moved.md';h.files.set('Moved.md',file);
+  }else if(change==='boundary'){
+   const process=h.app.fileManager.processFrontMatter;
+   h.app.fileManager.processFrontMatter=(target,update)=>process(target,raw=>{raw.financeId='other';update(raw)});
+  }else await h.app.fileManager.processFrontMatter(file,raw=>{
+   if(change==='identity')raw.financeId='other';
+   if(change==='type')raw.type='investmentTransaction';
+   if(change==='classification'){raw.categoryOverride='Newer';raw.tags=['newer'];}
+  });
+  const before=new Map(h.contents);
+  await assert.rejects(modal.save('Food',['cash']),/transaction changed or moved/,change);
+  assert.deepEqual(h.contents,before,`${change} must not overwrite the newer source`);
+ }
+});
+test('scalar YAML tags are displayed and concurrent scalar edits block classification',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const file=await h.add('Selected.md',classificationFields('selected',{tags:'cash, receipt'}));
+ const row=await displayedTransaction(h,p,'selected');assert.deepEqual(row.manualTags,['#cash','#receipt']);
+ globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification(row);const modal=globalThis.PropertyQAModal;
+ await h.app.fileManager.processFrontMatter(file,raw=>{raw.tags='newer'});
+ const before=h.contents.get(file.path);
+ await assert.rejects(modal.save('Food',['cash']),/transaction changed or moved/);
+ assert.equal(h.contents.get(file.path),before);
+});
+test('nonstring YAML array tags do not break displayed classification or its write guard',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ await h.add('Selected.md',classificationFields('mixed-tags',{tags:[42,null]}));
+ const row=await displayedTransaction(h,p,'mixed-tags');assert.deepEqual(row.manualTags,['#42','#null']);
+ await classificationSave(p.plugin,row,'Food',['receipt']);
+ assert.equal(h.fm('Selected.md').categoryOverride,'Food');assert.deepEqual(h.fm('Selected.md').tags,['receipt']);
+});
+test('path-bound classification honors mapped category and scalar tag property names',async()=>{
+ const properties=mapped(),h=harness(properties),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ await h.add('Selected.md',properties.write(classificationFields('mapped',{tags:'cash, receipt'})));
+ const row=await displayedTransaction(h,p,'mapped');assert.deepEqual(row.manualTags,['#cash','#receipt']);
+ await classificationSave(p.plugin,row,'Food',['receipt']);
+ assert.equal(h.fm('Selected.md')[properties.key('categoryOverride')],'Food');
+ assert.deepEqual(h.fm('Selected.md')[properties.key('tags')],['receipt']);
+});
+test('path-bound classification updates only the selected duplicate; full ID reads still reject duplicates',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ await h.add('Selected.md',classificationFields('same'));const row=await displayedTransaction(h,p,'same');
+ await h.add('Duplicate.md',classificationFields('same'));
+ await classificationSave(p.plugin,row);
+ assert.equal(h.fm('Selected.md').categoryOverride,'Food');assert.equal(h.fm('Duplicate.md').categoryOverride,undefined);
+ await assert.rejects(p.plugin.createStore().readTransactionRecords(),/Duplicate atomic transaction identity/);
+});
+test('displayed legacy classification keeps the discover-mode inline fallback',async()=>{
+ const h=harness(),p=pluginHarness(h);
+ await h.app.vault.create('Day.md','- Cash [type:: transaction] [financeId:: line-manual] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]');
+ const row=await displayedTransaction(h,p,'line-manual');assert.equal(row.sourceFile,undefined);
+ let writes=0;const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args)};
+ await classificationSave(p.plugin,row);
+ assert.equal(writes,1);assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
+});
+test('discover mode still follows an atomic row ID to an inline entry after its note disappears',async()=>{
+ const h=harness(),p=pluginHarness(h);await h.add('Selected.md',classificationFields('recover'));
+ const row=await displayedTransaction(h,p,'recover');assert.equal(row.sourceFile,h.files.get('Selected.md'));
+ h.files.delete('Selected.md');h.contents.delete('Selected.md');
+ await h.app.vault.create('Day.md','- Purchase [type:: transaction] [financeId:: recover] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]');
+ let writes=0;const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args)};
+ await classificationSave(p.plugin,row);
+ assert.equal(writes,1);assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
+});
 test('saving with migration renames first, then commits settings; no previous names are retained',async()=>{
  const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction',amount:-4});
  await p.plugin.changePropertyNames(from,to,true);assert.equal(h.fm('A.md').transactionType,'transaction');assert.ok(!('type' in h.fm('A.md')));assert.deepEqual(p.disk().propertyNames,to.names);assert.equal(p.disk().propertyMigration,null);assert.ok(!('previous' in p.disk().propertyNames));
