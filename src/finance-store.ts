@@ -318,21 +318,37 @@ export class FinanceStore {
     return this.app.vault.create(path, financeProperties(this.app).note(body));
   }
 
-  async readBudgetEntries(sourcePaths?: Set<string>): Promise<FinanceBudget[]> {
+  async readBudgetEntries(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<FinanceBudget[]> {
     const records: FinanceBudget[] = [];
     const prefix = financePrefix(this.rootFolder, "Budgets");
-    // Read current content, including newly-created notes whose metadata is not indexed yet.
-    const files = this.app.vault.getMarkdownFiles().filter(file => {
-      if (!file.path.startsWith(prefix)) return false;
-      if (this.rootFolder) return true;
-      const fm = financeProperties(this.app).cache(this.app, file);
-      return !fm || !Object.keys(fm).length || fm.kind === "financeBudget" || Boolean(fm.financeBudgetId);
-    });
-    await boundedWork(files, async file => {
-      const text = await this.app.vault.cachedRead(file);
-      const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-      if (!match || !/financeBudgetId|financeBudget/.test(match[1])) return;
-      const fm = financeProperties(this.app).read(parseYaml(match[1]) || {});
+    const properties = financeProperties(this.app);
+    const files: { file: TFile; indexed: ReturnType<typeof properties.read> | null }[] = [];
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!file.path.startsWith(prefix)) continue;
+      const raw = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      // A missing or empty index can hide a newly-created root budget. Indexed
+      // ordinary notes can be excluded without entering the content read queue.
+      const indexed = raw && Object.keys(raw).some(key => key !== "position") ? properties.read(raw) : null;
+      if (indexed && indexed.kind !== "financeBudget" && !indexed.financeBudgetId && (source === "metadata" || !this.rootFolder)) continue;
+      files.push({ file, indexed: source === "metadata" ? indexed : null });
+    }
+    await boundedWork(files, async ({ file, indexed }) => {
+      let fm = indexed;
+      if (!fm) {
+        const text = await this.app.vault.cachedRead(file);
+        const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+        if (!match) return;
+        const marked = /financeBudgetId|financeBudget/.test(match[1]);
+        // A mapped kind can identify a legacy budget without either literal marker.
+        if (!marked && !properties.customized) return;
+        let raw: Record<string, unknown>;
+        try { raw = parseYaml(match[1]) || {}; }
+        catch (error) {
+          if (marked) throw error;
+          return; // Unrelated, malformed frontmatter was never a budget candidate.
+        }
+        fm = properties.read(raw);
+      }
       if (!fm || (!fm.financeBudgetId && fm.kind !== "financeBudget")) return;
       sourcePaths?.add(file.path);
       const links = Array.isArray(fm.accounts) ? fm.accounts : fm.accounts ? [fm.accounts] : [];

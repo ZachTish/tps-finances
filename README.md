@@ -1,5 +1,11 @@
 # TPS Finances
 
+## 1.14.1 — Read indexed budgets without opening note bodies
+
+The dashboard's Budget and Overview displays now use Obsidian's decoded property index for indexed budget notes. Indexed ordinary notes are still excluded before content reads. In a 1,025-note root fixture, 20 display loads read zero note bodies instead of 20 budget bodies; 20 source/API loads still read the budget body 20 times. Notes with missing or ambiguous metadata still receive content reads, and every display still enumerates the vault and checks candidate metadata. These operation counts are synthetic, not an installed-vault speed claim.
+
+Editing an existing budget first refreshes that budget from current source, refuses a same-path budget identity change, and retains the existing revision check at the write boundary. Source reads also recognize a legacy budget whose kind is encoded by Global Context Menu as a tag without a literal `financeBudget` field or ID. Mapped budget properties, immediate root creation before indexing, and custom kinds remain supported. A root note with stale non-null ordinary metadata can still remain hidden until Obsidian refreshes its index. This patch changes no stored settings or notes, and needs no migration. Minimum Obsidian remains 1.12.0. The final declared suite passed 342 checks (2 connection plus 340 plugin), including source/editor authority and operation-count regressions. Hot Reload reopened the installed Test-vault Finance dashboard and Budget tab with the same visible totals and unchanged `data.json`. One foreground Budget switch measured about 0.97 seconds before and 0.70 after; repeated switches measured about 0.42 and 0.67 seconds. These include automation waits and do not establish a latency improvement; physical iPhone and a real budget edit remain unverified. Full details and artifact hashes are in [1.14.1 release notes](release-notes/1.14.1.md); production installation remains the user's BRAT pull.
+
 ## 1.14.0 — Choose when Finance stops reading old inline transactions
 
 **Data & routing → Transaction discovery** now offers **Include inline entries** (the existing default) and **Atomic notes only**. The latter removes the vault-wide legacy transaction body scan from atomic-note dashboard/API reads and sync. It does not change transaction identities or filenames, rewrite a note, or change the record format. Atomic transaction filenames already encode their stable `financeId`; a further filename suffix would not remove the legacy scan.
@@ -179,7 +185,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.14.0](https://github.com/ZachTish/tps-finances/releases/tag/1.14.0) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [1.14.1](https://github.com/ZachTish/tps-finances/releases/tag/1.14.1) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

@@ -606,7 +606,7 @@ export default class TPSFinancesPlugin extends Plugin {
       }).sort((left, right) => right.date.localeCompare(left.date));
     applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
-    const budgetEntries = await store.readBudgetEntries(sourcePaths);
+    const budgetEntries = await store.readBudgetEntries(sourcePaths, source);
     const budgets = calculateMonthlyBudgetProgress(budgetEntries.filter(budget=>budgetBucket(budget)==="category" && budgetCurrency(budget)==="USD"), transactions, month);
     const lastSyncAt = this.getConnectedItems().map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
@@ -676,13 +676,17 @@ export default class TPSFinancesPlugin extends Plugin {
   private async openBudgetEditor(budget: FinanceBudget): Promise<void> {
     try {
       const model = await this.getDashboardModel();
+      const current = budget.sourcePath
+        ? model.budgetEntries?.find(entry => entry.sourcePath === budget.sourcePath && entry.id === budget.id)
+        : budget;
+      if (!current) throw new Error("The budget note changed or was removed. Reopen the dashboard and try again.");
       const categories=Array.from(new Set(model.transactions.map(transaction=>transaction.category).filter(Boolean))).sort();
-      new FinanceBudgetModal(this.app,budget,model.accounts,categories,async input=>{
+      new FinanceBudgetModal(this.app,current,model.accounts,categories,async input=>{
         const save=this.budgetSave.catch(()=>{}).then(async()=>{
           const store=this.createStore();
           await store.ensureStructure();
-          await store.saveBudgetEntry(input,budget.sourcePath?budget:undefined);
-          logger.flow("Budget",budget.sourcePath?"updated":"created",{bucket:budgetBucket(input),currency:budgetCurrency(input)});
+          await store.saveBudgetEntry(input,current.sourcePath?current:undefined);
+          logger.flow("Budget",current.sourcePath?"updated":"created",{bucket:budgetBucket(input),currency:budgetCurrency(input)});
         });
         this.budgetSave=save;
         await save;

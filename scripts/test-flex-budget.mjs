@@ -35,7 +35,7 @@ function harness(root=''){
  const app={vault:{getMarkdownFiles:()=>[...files.values()],getAbstractFileByPath:p=>files.get(p),cachedRead:async f=>text.get(f.path),read:async f=>text.get(f.path),create:async(p,c)=>{if(fail)throw Error('disk full');if(files.has(p))throw Error('exists');const f=new File(p);files.set(p,f);text.set(p,c);return f;}},metadataCache:{getFileCache:f=>stale?{frontmatter:{}}:{frontmatter:fm(f)},getFirstLinkpathDest:p=>[...files.values()].find(f=>f.path===p+'.md'||f.basename===p)},fileManager:{processFrontMatter:async(f,fn)=>{if(fail)throw Error('disk full');const before=text.get(f.path),data=fm(f);fn(data);text.set(f.path,'---\n'+JSON.stringify(data)+'\n---'+before.split('\n---').slice(1).join('\n---'));}}};
  return {app,files,text,fm,store:new FinanceStore(app,root),create:async(p,fields,body='\nBody')=>app.vault.create(p,'---\n'+JSON.stringify(fields)+'\n---'+body),stale:()=>stale=true,fail:()=>fail=true};
 }
-test('budget create and immediate read work at vault root with a stale metadata cache',async()=>{const h=harness();h.stale();await h.create('Unrelated.md',{title:'Unrelated'});const file=await h.store.saveBudgetEntry(budget('Flexible','flex',100));assert.equal(file.path,'Flexible.md');const rows=await h.store.readBudgetEntries();assert.equal(rows.length,1);assert.equal(rows[0].bucket,'flex');assert.equal(rows[0].monthlyLimit,100);});
+test('budget create and immediate read work at vault root with a stale metadata cache',async()=>{const h=harness();h.stale();await h.create('Unrelated.md',{title:'Unrelated'});const file=await h.store.saveBudgetEntry(budget('Flexible','flex',100));assert.equal(file.path,'Flexible.md');for(const source of ['metadata','source']){const rows=await h.store.readBudgetEntries(undefined,source);assert.equal(rows.length,1);assert.equal(rows[0].bucket,'flex');assert.equal(rows[0].monthlyLimit,100);}});
 test('legacy category budget notes remain readable without conversion',async()=>{const h=harness();await h.create('Old.md',{kind:'financeBudget',title:'Groceries',category:'food',monthlyLimit:200});const [row]=await h.store.readBudgetEntries();assert.equal(row.bucket,'category');assert.equal(row.currency,'USD');assert.equal(row.id,'Old.md');});
 test('editing respects direct changes, canonicalizes account links, and preserves custom metadata and body',async()=>{const h=harness();await h.create('Accounts/Save.md',{financeAccountId:'save',accountType:'depository',currency:'USD'});await h.create('Plan.md',{financeBudgetId:'goal',title:'Goal',kind:'custom-kind',bucket:'savings',monthlyLimit:100,currency:'USD',accounts:'[[Save|My savings]]',custom:42},'\nReceipt body');const [row]=await h.store.readBudgetEntries();assert.deepEqual(row.accounts,['[[Accounts/Save]]']);await h.store.saveBudgetEntry({...row,monthlyLimit:150},row);assert.equal(h.fm('Plan.md').monthlyLimit,150);assert.equal(h.fm('Plan.md').custom,42);assert.equal(h.fm('Plan.md').kind,'custom-kind');assert.match(h.text.get('Plan.md'),/Receipt body/);await assert.rejects(h.store.saveBudgetEntry({...row,monthlyLimit:200},row),/changed while/);});
 test('save rejects missing or incompatible contribution accounts before creating a goal',async()=>{const h=harness();await assert.rejects(h.store.saveBudgetEntry(budget('Goal','savings',100,{accounts:['[[Missing]]']})),/moved or was deleted/);await h.create('Debt.md',{financeAccountId:'debt',accountType:'credit',currency:'USD'});await assert.rejects(h.store.saveBudgetEntry(budget('Goal','savings',100,{accounts:['[[Debt]]']})),/existing savings/);assert.equal(h.files.size,1);});
@@ -46,3 +46,62 @@ test('budget UI remains additive, scoped, accessible and mobile-responsive',()=>
 
 test('root discovery avoids rereading indexed unrelated notes',async()=>{const h=harness();for(let i=0;i<200;i++)await h.create('Ordinary '+i+'.md',{kind:'task',title:'Ordinary'});await h.store.saveBudgetEntry(budget('A','flex',100));let reads=0;const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async f=>{reads++;return read(f)};assert.equal((await h.store.readBudgetEntries()).length,1);assert.equal(reads,1);});
 test('a repeated new-target identity cannot create a second note',async()=>{const h=harness(),b=budget('A','income',100);await h.store.saveBudgetEntry(b);await assert.rejects(h.store.saveBudgetEntry({...b,name:'Renamed'}),/Duplicate budget identity/);assert.equal(h.files.size,1);});
+
+test('indexed budget display scales without note-body reads or writes',async()=>{
+ const h=harness();for(let i=0;i<1024;i++)await h.create(`Ordinary ${i}.md`,{kind:'task',title:'Ordinary'});
+ await h.create('Plan.md',{financeBudgetId:'plan',kind:'financeBudget',title:'Plan',bucket:'flex',monthlyLimit:100});
+ let scans=0,metadata=0,reads=0,fresh=0,writes=0;
+ const list=h.app.vault.getMarkdownFiles,cache=h.app.metadataCache.getFileCache,read=h.app.vault.cachedRead,rawRead=h.app.vault.read,write=h.app.fileManager.processFrontMatter;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return list();};h.app.metadataCache.getFileCache=f=>{metadata++;return cache(f);};
+ h.app.vault.cachedRead=async f=>{reads++;return read(f);};h.app.vault.read=async f=>{fresh++;return rawRead(f);};h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return write(...args);};
+ const paths=new Set();for(let i=0;i<20;i++){const rows=await h.store.readBudgetEntries(paths,'metadata');assert.deepEqual(rows.map(row=>[row.id,row.monthlyLimit]),[['plan',100]]);}
+ assert.deepEqual([...paths],['Plan.md']);assert.equal(scans,20);assert.equal(metadata,1025*20);assert.equal(reads,0);assert.equal(fresh,0);assert.equal(writes,0);
+ reads=0;scans=0;for(let i=0;i<20;i++)assert.equal((await h.store.readBudgetEntries()).length,1);
+ assert.equal(scans,20);assert.equal(reads,20,'the current-source path still reads the budget once per model');assert.equal(fresh,0);assert.equal(writes,0);
+});
+
+test('missing and ambiguous root metadata still reads only those candidate bodies on every display',async()=>{
+ const h=harness();for(let i=0;i<256;i++)await h.create(`Indexed ${i}.md`,{kind:'task',title:'Indexed'});
+ for(let i=0;i<64;i++)await h.create(`Unindexed ${i}.md`,{kind:'task',title:'Unindexed'});
+ await h.create('Plan.md',{financeBudgetId:'plan',kind:'financeBudget',title:'Plan',bucket:'flex',monthlyLimit:100});
+ const cache=h.app.metadataCache.getFileCache;h.app.metadataCache.getFileCache=f=>f.path==='Plan.md'?{frontmatter:{position:{}}}:f.path.startsWith('Unindexed ')?null:cache(f);
+ let reads=0,writes=0;const read=h.app.vault.cachedRead,write=h.app.fileManager.processFrontMatter;
+ h.app.vault.cachedRead=async f=>{reads++;return read(f);};h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return write(...args);};
+ for(let i=0;i<10;i++)assert.deepEqual((await h.store.readBudgetEntries(undefined,'metadata')).map(row=>row.id),['plan']);
+ assert.equal(reads,65*10);assert.equal(writes,0);
+});
+
+test('indexed display decodes mapped properties and GCM budget kinds',async()=>{
+ const h=harness();h.app.plugins={plugins:{
+  'tps-finances':{settings:{propertyNames:{keys:{title:'label',monthlyLimit:'cap',bucket:'section',accounts:'sources'}}}},
+  'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'tpsId'},api:{frontmatterKinds:{
+   definition:kind=>kind==='finance-budget'?{tag:'#finance/budget'}:null,encode:fields=>fields,
+   decode:fields=>fields.kind==='task'&&fields.tags?.includes('finance/budget')?{...fields,kind:'finance-budget'}:fields,
+  }}},
+ }};
+ await h.create('Accounts/Save.md',{financeAccountId:'save',accountType:'depository',currency:'USD'});
+ await h.create('Plan.md',{financeBudgetId:'mapped',kind:'task',tags:['finance/budget'],label:'Mapped plan',section:'savings',cap:125,currency:'USD',sources:'[[Save|Cash]]'});
+ await h.create('Legacy.md',{kind:'task',tags:['finance/budget'],label:'Legacy plan',section:'category',cap:50,category:'Food'});
+ let reads=0;const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async f=>{reads++;return read(f);};
+ const display=await h.store.readBudgetEntries(undefined,'metadata');assert.equal(reads,0);
+ assert.deepEqual(display.map(row=>[row.id,row.name,row.bucket,row.monthlyLimit,row.accounts]),[
+  ['Legacy.md','Legacy plan','category',50,[]],['mapped','Mapped plan','savings',125,['[[Accounts/Save]]']],
+ ]);
+ const current=await h.store.readBudgetEntries();assert.equal(reads,2);assert.deepEqual(current,display);
+});
+
+test('budget display follows indexed values while source reads and save guards use current content',async()=>{
+ const h=harness();await h.create('Plan.md',{financeBudgetId:'plan',kind:'financeBudget',title:'Plan',bucket:'flex',monthlyLimit:100,custom:'preserve'},'\nKeep body');
+ const cached=h.fm('Plan.md'),cache=h.app.metadataCache.getFileCache;
+ await h.app.fileManager.processFrontMatter(h.files.get('Plan.md'),fm=>{fm.monthlyLimit=150;});
+ h.app.metadataCache.getFileCache=f=>f.path==='Plan.md'?{frontmatter:cached}:cache(f);
+ let reads=0,writes=0;const read=h.app.vault.cachedRead,write=h.app.fileManager.processFrontMatter;
+ h.app.vault.cachedRead=async f=>{reads++;return read(f);};h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return write(...args);};
+ const [display]=await h.store.readBudgetEntries(undefined,'metadata');assert.equal(display.monthlyLimit,100);assert.equal(reads,0);assert.equal(writes,0);
+ const [current]=await h.store.readBudgetEntries();assert.equal(current.monthlyLimit,150);assert.equal(reads,1);
+ await assert.rejects(h.store.saveBudgetEntry({...display,monthlyLimit:175},display),/changed while/);
+ assert.equal(h.fm('Plan.md').monthlyLimit,150);assert.equal(h.fm('Plan.md').custom,'preserve');
+ await h.store.saveBudgetEntry({...current,monthlyLimit:175},current);assert.equal(h.fm('Plan.md').monthlyLimit,175);assert.match(h.text.get('Plan.md'),/Keep body/);
+ h.app.metadataCache.getFileCache=cache;reads=0;writes=0;
+ assert.equal((await h.store.readBudgetEntries(undefined,'metadata'))[0].monthlyLimit,175);assert.equal(reads,0);assert.equal(writes,0);
+});

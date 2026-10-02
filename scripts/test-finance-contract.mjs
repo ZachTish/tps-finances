@@ -126,7 +126,7 @@ const mainActionBuild = await build({
             "export class ButtonComponent {}",
             "export class ItemView { constructor() { this.contentEl = {}; } }",
             "export class Menu {}",
-            "export class Modal {}",
+            "export class Modal { open() { globalThis.__tpsOpenedModal = this; } }",
             "export class Notice { constructor(message) { globalThis.__tpsConnectNotices?.push(String(message)); } }",
             "export class PluginSettingTab {}",
             "export class SecretComponent {}",
@@ -2462,6 +2462,34 @@ test('root dashboard identifies accounts and snapshots without mistaking holding
  const plugin=new mainActionModule.default({vault:{getMarkdownFiles:()=>files},metadataCache:{getFileCache:f=>({frontmatter:f.fm})}});
  plugin.settings={financeFolder:'',recordMode:'atomic-note'};
  assert.equal(plugin.readAccountsFromVault(null).length,1);assert.deepEqual(plugin.accountFiles().map(f=>f.path),['Wallet.md']);assert.equal(plugin.latestSnapshotFile().path,'Old/Snapshot.md');
+});
+
+test('dashboard passes its display or source mode to the budget reader',async()=>{
+ const plugin=new mainActionModule.default({});plugin.settings={financeFolder:'Finances',recordMode:'atomic-note'};
+ plugin.readLatestSnapshotDocument=async()=>null;plugin.readAccountsFromVault=()=>[];plugin.parseSnapshotHoldings=()=>[];
+ plugin.getConnectedItems=()=>[];plugin.getRelayStatus=()=>null;plugin.getPlaidSetupStatus=()=>({state:'ready'});
+ const observed=[];plugin.createStore=()=>({readTransactionRecords:async source=>{observed.push(['transactions',source]);return [];},readRules:()=>[],readBudgetEntries:async(_paths,source)=>{observed.push(['budgets',source]);return [];}});
+ for(const mode of ['metadata','source'])await plugin.getDashboardModel(new Set(),mode);
+ assert.deepEqual(observed,[['transactions','metadata'],['budgets','metadata'],['transactions','source'],['budgets','source']]);
+});
+
+test('budget editor opens current source values, guards identity, and saves against their revision',async()=>{
+ const plugin=new mainActionModule.default({});
+ const displayed={id:'plan',name:'Indexed old name',category:'',bucket:'flex',currency:'USD',monthlyLimit:100,sourcePath:'Plan.md',revision:'old'};
+ const current={...displayed,name:'Current name',monthlyLimit:150,revision:'current'};
+ plugin.getDashboardModel=async()=>({budgetEntries:[current],transactions:[],accounts:[]});
+ const saves=[];plugin.createStore=()=>({ensureStructure:async()=>{},saveBudgetEntry:async(input,original)=>{saves.push({input,original});}});
+ plugin.refreshDashboard=async()=>{};globalThis.__tpsOpenedModal=null;globalThis.__tpsConnectNotices=[];
+ await plugin.openBudgetEditor(displayed);
+ assert.strictEqual(globalThis.__tpsOpenedModal.budget,current);
+ await globalThis.__tpsOpenedModal.save({...current,monthlyLimit:175});
+ assert.deepEqual(saves,[{input:{...current,monthlyLimit:175},original:current}]);
+ plugin.getDashboardModel=async()=>({budgetEntries:[{...current,id:'replacement'}],transactions:[],accounts:[]});globalThis.__tpsOpenedModal=null;
+ await plugin.openBudgetEditor(displayed);
+ assert.equal(globalThis.__tpsOpenedModal,null,'a new budget at the same path must not be edited from the old row');
+ plugin.getDashboardModel=async()=>({budgetEntries:[],transactions:[],accounts:[]});globalThis.__tpsOpenedModal=null;
+ await plugin.openBudgetEditor(displayed);
+ assert.equal(globalThis.__tpsOpenedModal,null);assert.match(globalThis.__tpsConnectNotices.at(-1),/budget note changed or was removed/);
 });
 
 test('readable merchant titles keep existing bank-description classification rules working', () => {
