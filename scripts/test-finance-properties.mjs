@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 class File {constructor(path){this.path=path;this.basename=path.split('/').at(-1).replace(/\.md$/,'');this.extension=path.split('.').at(-1);this.stat={mtime:1,size:0};}}
 globalThis.PropertyQA={File,parse,stringify};
 const output=await build({stdin:{contents:['finance-properties','property-migration','atomic-finance-store','manual-finance','finance-store','settings-persistence'].map(name=>`export * from './src/${name}.ts';`).join('\n')+`\nexport {default as FinancePlugin} from './src/main.ts';\nexport {setLoggingEnabled} from './src/logger.ts';`,resolveDir:process.cwd()},bundle:true,write:false,external:['electron'],platform:'node',format:'esm',plugins:[{name:'obsidian',setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:'obsidian',namespace:'mock'}));b.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:`export class Plugin{constructor(app){this.app=app}};export class PluginSettingTab{};export class ButtonComponent{};export class Modal{open(){globalThis.PropertyQAModal=this}};export class Setting{};export class Notice{};export class SecretComponent{};export class ItemView{};export class Menu{};export class WorkspaceLeaf{};export const setIcon=()=>{};export const Platform={isDesktopApp:true};export const requestUrl=()=>{throw Error("Unexpected provider request")};export class App{};export const TFile=globalThis.PropertyQA.File;export const normalizePath=s=>s;export const parseYaml=globalThis.PropertyQA.parse;export const stringifyYaml=globalThis.PropertyQA.stringify;`}));}}]});
-const {FinancePlugin,FinanceProperties,financeProperties,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,previewGeneratedBaseClassificationChange,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,auditLegacyTransactionMarkers,CoalescedSnapshotWriter,reconcilePersistedSnapshot,setLoggingEnabled,atomicBase,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
+const {FinancePlugin,FinanceProperties,financeProperties,financeKindCodec,FINANCE_PROPERTY_KEYS,PROPERTY_GROUPS,normalizePropertyNames,propertyChanges,migrateProperties,previewPropertyMigration,previewGeneratedBaseClassificationChange,applyPropertyMigration,normalizePropertyMigration,AtomicFinanceStore,ManualFinanceStore,FinanceStore,auditLegacyTransactionMarkers,CoalescedSnapshotWriter,reconcilePersistedSnapshot,setLoggingEnabled,atomicBase,accountsBaseBody,transactionsBaseBody}=await import('data:text/javascript;base64,'+Buffer.from(output.outputFiles[0].text).toString('base64'));
 const mapped=()=>new FinanceProperties({keys:Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key=>[key,`custom ${key}`]))});
 function harness(properties=new FinanceProperties()){
  const files=new Map(),contents=new Map();let failPath='';
@@ -547,6 +547,121 @@ test('tag mappings support finance import, repeat updates and generated Base pre
  const base=financeProperties(h.app).base('filters:\n  and:\n    - kind == "transaction"\n    - note.kind != "account"\nviews: []\n');
  assert.match(base,/file\.hasTag\("kind\/financial\/transaction"\)/);assert.match(base,/!file\.hasTag\("accounts"\)/);assert.doesNotMatch(base,/undefined/);
 });
+function configurableListCodec(){
+ const paths={account:'entity/bank','finance-transaction':'transaction/money','investment-transaction':'transaction/investment',holding:'entity/position',ledger:'note/snapshot','finance-rule':'note/rule','finance-budget':'note/budget'};
+ const scalar={account:'account','finance-transaction':'transaction','investment-transaction':'investmentTransaction',holding:'holding',ledger:'ledger','finance-rule':'financeRule','finance-budget':'financeBudget'};
+ const aliases={account:[{tag:'kind/account/entity'}],'finance-transaction':[{tag:'kind/financial/transaction'}]};
+ const disabled=new Set();
+ let listKey='classifications',scheduleKey='when';
+ const readDefinitions=kind=>paths[kind]?[{kindList:{key:listKey,value:paths[kind]}},{scalar:{key:'kind',value:scalar[kind]}},...(aliases[kind]||[])]:[];
+ const matches=(raw,kind)=>readDefinitions(kind).some(d=>'kindList'in d?raw[d.kindList.key]?.includes(d.kindList.value):'scalar'in d?raw[d.scalar.key]===d.scalar.value:raw.tags?.includes(d.tag));
+ return {
+  version:2,definition:kind=>readDefinitions(kind)[0]||null,readDefinitions,matches,
+  propertyKey:id=>id==='scheduled'?scheduleKey:id==='kind'?listKey:null,
+  encode:(fields,existing)=>{
+   const kind=fields.kind,definition=readDefinitions(kind)[0];if(!definition)return {...fields};
+   if(disabled.has(kind))throw Error(`Writer disabled for ${kind}`);
+   const next={...fields};delete next.kind;
+   const old=existing?.[listKey];if(old!==undefined&&!Array.isArray(old)&&old!==scalar[kind])throw Error('Incompatible existing kind');
+   next[listKey]=[...new Set([...(Array.isArray(old)?old:[]),...(Array.isArray(next[listKey])?next[listKey]:[]),definition.kindList.value])];
+   return next;
+  },
+  decode:fields=>{const kinds=Object.keys(paths).filter(kind=>matches(fields,kind));if(kinds.length>1)throw Error('Ambiguous kind');return kinds.length?{...fields,kind:kinds[0]}:{...fields};},
+  configure:(kind,path)=>{paths[kind]=path;},setScheduleKey:key=>{scheduleKey=key;},setListKey:key=>{listKey=key;},setWriterEnabled:(kind,enabled)=>{if(enabled)disabled.delete(kind);else disabled.add(kind);},
+ };
+}
+test('GCM v2 owns configurable kind lists and Scheduled key, while old scalar, tag and date forms remain readable',()=>{
+ const codec=configurableListCodec(),properties=new FinanceProperties({keys:{kind:'oldKind',date:'oldDate'}},financeKindCodec(codec));
+ const created=properties.write({kind:'transaction',type:'transaction',date:'2026-10-03',amount:-4});
+ assert.deepEqual(created.classifications,['transaction/money']);assert.equal(created.when,'2026-10-03');
+ assert.ok(!('oldKind'in created)&&!('oldDate'in created)&&!('date'in created));
+ assert.equal(properties.read(created).kind,'transaction');assert.equal(properties.read(created).date,'2026-10-03');
+ assert.equal(properties.read({oldKind:'account',oldDate:'2026-10-01'}).kind,'account');
+ assert.equal(properties.read({kind:'transaction',date:'2026-10-02'}).date,'2026-10-02');
+ assert.equal(properties.read({tags:['kind/financial/transaction'],date:'2026-10-01'}).kind,'transaction');
+ const raw={classifications:['transaction/money','user/other'],when:'2026-10-03',type:'transaction',financeId:'tx',amount:-4};
+ properties.mutate(raw,f=>{f.amount=-5;});assert.deepEqual(raw.classifications,['transaction/money','user/other']);assert.equal(raw.when,'2026-10-03');assert.equal(raw.amount,-5);
+ codec.configure('finance-transaction','transaction/new-choice');codec.setScheduleKey('plannedAt');
+ const changed=new FinanceProperties(undefined,financeKindCodec(codec)).write({kind:'transaction',type:'transaction',date:'2026-10-04'});
+ assert.deepEqual(changed.classifications,['transaction/new-choice']);assert.equal(changed.plannedAt,'2026-10-04');
+ codec.setScheduleKey('amount');assert.throws(()=>new FinanceProperties(undefined,financeKindCodec(codec)),/conflicts with a Finance field/);
+ codec.setScheduleKey('plannedAt');codec.setListKey('amount');
+ assert.throws(()=>new FinanceProperties(undefined,financeKindCodec(codec)),/Record classification property.*conflicts with a Finance field/);
+});
+test('GCM v2 Finance sync and generated views follow configured mappings without losing rule order',async()=>{
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const paths=await h.store.upsertAccounts([account]);
+ assert.deepEqual(h.fm(paths.get('account1')).classifications,['entity/bank']);
+ await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
+ assert.deepEqual(h.fm('tx1.md').classifications,['transaction/money']);assert.equal(h.fm('tx1.md').when,'2026-09-20');assert.ok(!('date'in h.fm('tx1.md')));
+ await h.store.updateTransactionMetadata('tx1','Dining',['food']);
+ assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
+ const existing=h.files.get('tx1.md');await h.app.fileManager.processFrontMatter(existing,raw=>{raw.classifications.push('user/other');});
+ await h.store.applyTransactions([],[{...tx,amount:-7}],[],structuredClone(state),paths);
+ assert.deepEqual(h.fm('tx1.md').classifications,['transaction/money','user/other']);
+ await h.store.createRule({id:'rule',name:'Coffee rule',enabled:true,priority:7,accountContains:'',nameContains:'Coffee',merchantContains:'',minAmount:null,maxAmount:null,category:'Food',tags:[]});
+ assert.equal(h.store.readRules()[0].priority,7);assert.equal(h.fm('Coffee rule.md').priority,7);assert.deepEqual(h.fm('Coffee rule.md').classifications,['note/rule']);
+ await h.store.saveBudgetEntry({id:'budget',name:'Food budget',bucket:'category',category:'Food',monthlyLimit:100,currency:'USD',accounts:[]});
+ assert.deepEqual(h.fm('Food budget.md').classifications,['note/budget']);assert.equal((await h.store.readBudgetEntries())[0].id,'budget');
+ await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-20T12:00:00Z'));
+ assert.deepEqual(h.fm('ABC — Bank Checking •1234.md').classifications,['entity/position']);
+ const snapshot=await new FinanceStore(h.app,'').writeSnapshot([],[],new Map(),new Date('2026-09-20T12:00:00Z'));
+ assert.deepEqual(h.fm(snapshot).classifications,['note/snapshot']);assert.equal(h.fm(snapshot).when,'2026-09-20');
+ const manual=await h.manual.createAccount({kind:'cash',name:'Wallet',currency:'USD',value:20,valuationDate:'2026-09-20',purchaseTransaction:'',liabilityAccount:'',assetType:''});
+ assert.deepEqual(h.fm(manual.path).classifications,['entity/bank']);
+ const base=parse(financeProperties(h.app).base(atomicBase('','Transactions')));
+ assert.equal(base.views[0].sort[0].property,'when');assert.ok(base.views[0].order.includes('when'));
+ const accountBase=parse(financeProperties(h.app).base(accountsBaseBody('')));
+ assert.match(accountBase.filters.and[0],/classifications.*contains.*entity\/bank/);
+ assert.match(accountBase.filters.and[0],/kind.*account/);
+ assert.match(accountBase.filters.and[0],/kind\/account\/entity/);
+});
+test('GCM v2 reads old account and transaction markers before migration without duplicating an account',async()=>{
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ await h.add('Accounts/Old.md',{kind:'account',financeAccountId:'account1',title:'Old account',accountName:'Checking',accountType:'depository',currency:'USD'},'Keep account body\n');
+ await h.add('Transactions/Old.md',{type:'transaction',financeId:'old-tx',financeAccountId:'account1',account:'[[Accounts/Old]]',date:'2026-09-18',amount:-3,currency:'USD',tags:['kind/financial/transaction']},'Keep transaction body\n');
+ assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
+ const paths=await h.store.upsertAccounts([account]);assert.equal(paths.get('account1'),'Accounts/Old.md');
+ assert.equal(h.app.vault.getMarkdownFiles().filter(f=>f.path.startsWith('Accounts/')).length,1);
+ assert.deepEqual(h.fm('Accounts/Old.md').classifications,['entity/bank']);assert.match(h.contents.get('Accounts/Old.md'),/Keep account body/);
+ assert.equal(financeProperties(h.app).read(h.fm('Transactions/Old.md')).date,'2026-09-18');
+ assert.equal(financeProperties(h.app).read(h.fm('Transactions/Old.md')).kind,'transaction');
+});
+test('GCM v2 refuses dated Finance writes when Scheduled is unconfigured, while legacy dates stay readable',async()=>{
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const paths=await h.store.upsertAccounts([account]);
+ codec.setScheduleKey(null);
+ const properties=financeProperties(h.app);
+ assert.equal(properties.read({kind:'transaction',date:'2026-09-20'}).date,'2026-09-20');
+ assert.throws(()=>properties.write({kind:'transaction',type:'transaction',date:'2026-09-20'}),/Configure the Scheduled custom-property key/);
+ const before=new Map(h.contents);
+ await assert.rejects(h.store.applyTransactions([tx],[],[],structuredClone(state),paths),/Configure the Scheduled custom-property key/);
+ assert.deepEqual(h.contents,before);
+ assert.ok(!h.files.has('tx1.md'));
+});
+test('GCM v2 disabled classification writers refuse Finance note creation without a fallback path',async()=>{
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const paths=await h.store.upsertAccounts([account]);
+ await h.store.ensureStructure();
+ codec.setWriterEnabled('finance-transaction',false);
+ assert.equal(financeProperties(h.app).read({kind:'transaction',date:'2026-09-18'}).kind,'transaction');
+ const before=new Map(h.contents);
+ await assert.rejects(h.store.applyTransactions([tx],[],[],structuredClone(state),paths),/Writer disabled for finance-transaction/);
+ assert.deepEqual(h.contents,before);
+ assert.ok(!h.files.has('tx1.md'));
+});
+test('repeated GCM v2 transaction display reads do not enter the note write queue',async()=>{
+ const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:configurableListCodec()}};
+ const paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
+ for(let i=0;i<128;i++)await h.add(`Inbox/Unrelated ${i}.md`,{title:`Unrelated ${i}`,kind:['note/other']});
+ let scans=0,cached=0,fresh=0,writes=0;
+ const list=h.app.vault.getMarkdownFiles,read=h.app.vault.cachedRead,disk=h.app.vault.read,process=h.app.fileManager.processFrontMatter;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return list();};
+ h.app.vault.cachedRead=async file=>{cached++;return read(file);};h.app.vault.read=async file=>{fresh++;return disk(file);};
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+ for(let i=0;i<3;i++)assert.deepEqual((await h.store.readTransactionRecords('metadata')).map(row=>row.path),['tx1.md']);
+ assert.deepEqual({scans,cached,fresh,writes},{scans:3,cached:0,fresh:0,writes:0});
+});
 test('classification change previews only exact generated Bases and leaves customized Bases alone',async()=>{
  const h=harness();
  const definitions={account:{tag:'kind/finance/account'}};
@@ -560,6 +675,19 @@ test('classification change previews only exact generated Bases and leaves custo
  assert.match(account.after,/entityKind/);assert.doesNotMatch(account.after,/file\.hasTag\("kind\/finance\/account"\)/);
  assert.ok(!changes.some(change=>change.path==='Transactions.base'));
  assert.equal(h.contents.get('Transactions.base'),'user-authored Base');
+});
+test('GCM v2 classification previews generated Bases with the proposed list path and configured legacy aliases',async()=>{
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ await h.store.ensureStructure();
+ const from=codec.definition('account');
+ const before=h.contents.get('Accounts.base');
+ const changes=await previewGeneratedBaseClassificationChange(h.app,'',{recordKind:'account',from,to:{kindList:{key:'classifications',value:'entity/new-choice'}}});
+ const accountChange=changes.find(change=>change.path==='Accounts.base');
+ assert.ok(accountChange);assert.equal(accountChange.before,before);
+ assert.match(accountChange.after,/entity\/new-choice/);
+ assert.match(accountChange.after,/kind.*account/);
+ assert.match(accountChange.after,/kind\/account\/entity/);
+ assert.equal(h.contents.get('Accounts.base'),before);
 });
 test('finance classification rejects subkind keys owned by finance fields or record IDs',async()=>{
  const h=harness(new FinanceProperties({keys:{amount:'totalAmount'}}));

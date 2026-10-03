@@ -104,7 +104,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
   private renderPropertySettings(parent: HTMLElement): void {
     new Setting(parent).setName("Record classification")
-      .setDesc("Choose a complete tag or a kind and subkind property pair for each record type in Global Context Menu. Finances uses that mapping for new records and its generated views.")
+      .setDesc("Configure each record's kind list in Global Context Menu. Finances uses those mappings for new records and generated views; older classifications remain readable during migration.")
       .addButton(button => button.setButtonText("Configure in GCM").onClick(() => {
         const open = (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.ui?.openCustomPropertySettings;
         if (typeof open !== "function" || !open()) new Notice("Enable TPS Global Context Menu to configure record classifications.");
@@ -125,7 +125,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       this.propertyDraft = Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key => [key, this.propertyBaseline!.key(key)]));
     }
     new Setting(parent).setName("Property names")
-      .setDesc("Choose Finance field names, not tag or property classification. GCM uses the core tags and kind keys for mapped records. Saving asks whether to rename existing properties. IDs stay fixed.")
+      .setDesc("Choose Finance field names. Global Context Menu owns record classification and the Scheduled property; saved Finance kind and date names remain legacy read aliases. Saving asks whether to rename existing Finance properties. IDs stay fixed.")
       .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
         button.setDisabled(true);
         try {
@@ -149,7 +149,14 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       });
       dropdown.selectEl.setAttribute("aria-label", "Property group");
     });
+    const gcmKinds = (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds;
     for (const key of PROPERTY_GROUPS[this.propertyGroup]) {
+      if (gcmKinds?.version === 2 && (key === "kind" || key === "date")) {
+        const currentKey = gcmKinds.propertyKey?.(key === "date" ? "scheduled" : "kind");
+        new Setting(parent).setName(key === "date" ? "Scheduled" : "Record kind")
+          .setDesc(`Managed in Global Context Menu${currentKey ? ` as “${currentKey}”` : ""}. Legacy Finance key “${this.propertyDraft![key]}” remains readable during migration.`);
+        continue;
+      }
       new Setting(parent).setName(propertyLabel(key)).addText(text => {
         text.setValue(this.propertyDraft![key]).onChange(value => { this.propertyDraft![key] = value.trim(); });
         text.inputEl.setAttribute("aria-label", `${propertyLabel(key)} property name`);

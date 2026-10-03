@@ -110,7 +110,9 @@ export default class TPSFinancesPlugin extends Plugin {
       renderHomeSummary: (container: HTMLElement) => this.renderHomeSummary(container),
       getTransactionsBasePath: () => this.getTransactionsBasePath(),
       getDailyNotePathForIsoDate: (isoDate: string) => this.getDailyNotePathForIsoDate(isoDate),
-      classificationBases: { version: 1, preview: (change: {recordKind: string; from: {tag: string} | {parentKind: string; key: string; value: string}; to: {tag: string} | {parentKind: string; key: string; value: string}}) =>
+      classificationBases: { version: 1, preview: (change: {recordKind: string;
+        from: {tag: string} | {parentKind: string; key: string; value: string} | {kindList: {key: string; value: string}} | {scalar: {key: string; value: string}};
+        to: {tag: string} | {parentKind: string; key: string; value: string} | {kindList: {key: string; value: string}} | {scalar: {key: string; value: string}}}) =>
         previewGeneratedBaseClassificationChange(this.app, this.settings.financeFolder, change),
         settingsSignature: () => JSON.stringify([this.settings.financeFolder, this.settings.propertyNames]) },
     };

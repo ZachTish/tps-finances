@@ -111,16 +111,19 @@ function generatedBaseDefinitions(root: string): Record<string, string[]> {
 }
 
 export async function previewGeneratedBaseClassificationChange(app: App, root: string,
-  change: {recordKind: string; from: {tag: string} | {parentKind: string; key: string; value: string}; to: {tag: string} | {parentKind: string; key: string; value: string}}): Promise<Array<{path: string; before: string; after: string}>> {
+  change: {recordKind: string; from: {tag: string} | {parentKind: string; key: string; value: string} | {kindList: {key: string; value: string}} | {scalar: {key: string; value: string}};
+    to: {tag: string} | {parentKind: string; key: string; value: string} | {kindList: {key: string; value: string}} | {scalar: {key: string; value: string}}}): Promise<Array<{path: string; before: string; after: string}>> {
   if (!["account", "finance-transaction", "investment-transaction", "holding", "ledger", "finance-rule", "finance-budget"].includes(change.recordKind)) return [];
   const gcm = (app as any).plugins?.plugins?.["tps-global-context-menu"];
   const api = gcm?.api?.frontmatterKinds;
   if (!api?.definition) throw new Error("Enable TPS Global Context Menu before changing finance record classifications.");
   const from = financeProperties(app);
-  if ("key" in change.to) {
-    const targetKey = change.to.key;
+  if ("key" in change.to || "kindList" in change.to) {
+    const targetKey = "kindList" in change.to ? change.to.kindList.key : change.to.key;
+    const kindListKey = "kindList" in change.to && targetKey.toLowerCase() === (api.propertyKey?.("kind") || "kind").toLowerCase();
     const occupied = [
-      ...FINANCE_PROPERTY_KEYS, ...FINANCE_PROPERTY_KEYS.map(key => from.key(key)),
+      ...FINANCE_PROPERTY_KEYS.filter(key => !kindListKey || key !== "kind"),
+      ...FINANCE_PROPERTY_KEYS.filter(key => !kindListKey || key !== "kind").map(key => from.key(key)),
       "tpsId", gcm?.settings?.nativeRecordIdentityPropertyKey || "tpsId",
       "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId",
     ];
@@ -131,7 +134,12 @@ export async function previewGeneratedBaseClassificationChange(app: App, root: s
   if (("tag" in change.from || "tag" in change.to) && from.key("tags") !== "tags") throw new Error("Migrate the Finance Tags property name back to tags before changing this record classification.");
   if (("key" in change.from || "key" in change.to) && from.key("kind") !== "kind") throw new Error("Migrate the Finance Record kind property name back to kind before changing this record classification.");
   const to = new FinanceProperties((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyNames,
-    financeKindCodec({ ...api, definition: (kind: string) => kind === change.recordKind ? change.to : api.definition(kind) }));
+    financeKindCodec({ ...api,
+      definition: (kind: string) => kind === change.recordKind ? change.to : api.definition(kind),
+      readDefinitions: (kind: string) => kind === change.recordKind
+        ? [change.to, ...(api.readDefinitions?.(kind) || []).filter((definition: unknown) => JSON.stringify(definition) !== JSON.stringify(change.to))]
+        : api.readDefinitions?.(kind) || [],
+    }));
   const changes: Array<{path: string; before: string; after: string}> = [];
   for (const [name, bodies] of Object.entries(generatedBaseDefinitions(root))) {
     const file = app.vault.getAbstractFileByPath(financePath(root, "", `${name}.base`));
