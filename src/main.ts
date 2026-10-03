@@ -12,7 +12,7 @@ import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassi
 import { normalizeDeviceItems } from "./device-state";
 import { AtomicFinanceStore } from "./atomic-finance-store";
 import { TransactionTitleModal } from "./transaction-title-modal";
-import { FinanceStore, auditLegacyTransactionMarkers, type TransactionReadSource } from "./finance-store";
+import { auditLegacyTransactionMarkers, type TransactionReadSource } from "./finance-store";
 import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } from "./finance-modals";
 import { ManualFinanceStore, applyManualCashBalances } from "./manual-finance";
 import { ManualAccountModal, CashTransactionModal, AssetValueModal } from "./finance-modals";
@@ -32,7 +32,6 @@ import {
   FinanceHolding,
   PlaidSetupStatus,
   TPSFinancesSettings,
-  TransactionLogTarget,
 } from "./types";
 
 const DEVICE_STATE_SECRET = "tps-finances-device-state";
@@ -57,7 +56,6 @@ export default class TPSFinancesPlugin extends Plugin {
   private deviceState: DeviceState = emptyDeviceState();
   private syncing = false;
   private unregisterGcmAction: (() => void) | null = null;
-  private transactionRouteOverrides = new Map<string, TransactionLogTarget>();
   private settingsWriter: CoalescedSnapshotWriter<TPSFinancesSettings> | null = null;
 
   async onload(): Promise<void> {
@@ -155,6 +153,14 @@ export default class TPSFinancesPlugin extends Plugin {
     if (this.settings.propertyMigration) throw new Error("Resume the property migration in Finances → Properties before using finance records.");
   }
 
+  legacyReviewRequired(): boolean {
+    return this.settings.recordMode === "atomic-line" || this.settings.legacyTransactionDiscovery === "discover";
+  }
+
+  private assertLegacyReviewComplete(): void {
+    if (this.legacyReviewRequired()) throw new Error("Review older inline transactions in Finances → Data & storage before adding or syncing transactions.");
+  }
+
   async changePropertyNames(from: FinanceProperties, to: FinanceProperties, migrate: boolean): Promise<void> {
     this.assertPropertyMigrationComplete();
     if (this.syncing) throw new Error("Wait for the current finance sync to finish.");
@@ -204,29 +210,6 @@ export default class TPSFinancesPlugin extends Plugin {
     await this.saveSettings();
     await this.refreshDashboard();
     logger.flow("Storage", "destination-saved", { root: this.settings.financeFolder === "" });
-  }
-
-  async setDefaultTransactionLogTarget(target: TransactionLogTarget): Promise<void> {
-    this.settings.transactionLogTarget = target;
-    await this.saveSettings();
-    await this.rerouteFinanceTransactions("default-changed");
-  }
-
-  async setAccountTransactionLogTarget(account: FinanceAccount, target: TransactionLogTarget | "default"): Promise<void> {
-    const file = account.path ? this.app.vault.getAbstractFileByPath(account.path) : this.findAccountFileById(account.financeAccountId);
-    if (!(file instanceof TFile)) throw new Error("The account note could not be found.");
-    await this.processFinanceFrontmatter(file, (frontmatter) => {
-      if (target === "default") delete frontmatter.transactionLogTarget;
-      else frontmatter.transactionLogTarget = target;
-    });
-    logger.flow("Storage", "account-route-updated", { route: target });
-    const key = file.path.replace(/\.md$/i, "");
-    this.transactionRouteOverrides.set(key, target === "default" ? this.settings.transactionLogTarget : target);
-    try {
-      await this.rerouteFinanceTransactions("account-changed");
-    } finally {
-      this.transactionRouteOverrides.delete(key);
-    }
   }
 
   getConnectedItems(): RelayItem[] {
@@ -303,7 +286,7 @@ export default class TPSFinancesPlugin extends Plugin {
         if (this.settingsWriter) await this.saveSettings();
         this.assertPropertyMigrationComplete();
         if (this.syncing) throw new Error('TPS Finances is already syncing.');
-        if (this.settings.recordMode !== 'atomic-note') throw new Error('Choose Atomic note storage in Finances before importing Apple Wallet.');
+        this.assertLegacyReviewComplete();
         const batch = parseWalletParts(parts);
         // Wallet account/transaction identities are stable on the one paired iPhone.
         // Never infer removal from a missing account or a limited consent window.
@@ -437,12 +420,14 @@ export default class TPSFinancesPlugin extends Plugin {
 
   async syncAll(reason: string): Promise<void> {
     this.assertPropertyMigrationComplete();
+    this.assertLegacyReviewComplete();
     if (await this.requestFinance('sync')) return;
     return this.syncLocal(reason);
   }
 
   private async syncLocal(reason: string): Promise<void> {
     this.assertPropertyMigrationComplete();
+    this.assertLegacyReviewComplete();
     if (this.syncing) {
       if (reason === "controller") throw new Error("TPS Finances is already syncing. Try again shortly.");
       new Notice("TPS Finances is already syncing.");
@@ -474,9 +459,6 @@ export default class TPSFinancesPlugin extends Plugin {
     logger.flow("Sync", "start", { reason, itemCount: this.deviceState.items.length });
     try {
       await timed("storage-setup", () => store.ensureStructure());
-      if (this.settings.legacyTransactionDiscovery !== "atomic-only" || this.settings.recordMode !== "atomic-note") {
-        await timed("legacy-migration", () => this.migrateLegacyTransactions(store));
-      }
       const previousSnapshot = await this.readLatestSnapshotDocument();
       const previousAccounts = this.readAccountsFromVault(previousSnapshot);
       const previousHoldings = this.parseSnapshotHoldings(previousSnapshot, previousAccounts);
@@ -592,10 +574,7 @@ export default class TPSFinancesPlugin extends Plugin {
     const accounts = this.readAccountsFromVault(snapshot, accountLabels, sourcePaths, files);
     const holdings = this.parseSnapshotHoldings(snapshot, accounts, sourcePaths, files);
     const store = this.createStore();
-    // Manual records are always atomic notes, also when provider logging uses atomic lines.
-    const transactionStore = accounts.some(account => account.manual) && this.settings.recordMode === "atomic-line"
-      ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : store;
-    const transactionRecords = await transactionStore.readTransactionRecords(source, files);
+    const transactionRecords = await store.readTransactionRecords(source, files);
     if (sourcePaths) for (const record of transactionRecords) sourcePaths.add(record.path);
     const rules = store.readRules(sourcePaths, files);
     const classifyForDashboard = prepareTransactionClassifier(rules);
@@ -625,6 +604,7 @@ export default class TPSFinancesPlugin extends Plugin {
       lastSyncAt,
       connectedItems: this.getConnectedItems().length,
       relayMessage: this.getRelayStatus()?.message,
+      legacyReviewRequired: this.legacyReviewRequired(),
       plaidSetupState: this.getPlaidSetupStatus().state,
     };
   }
@@ -639,6 +619,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async addCashTransaction(): Promise<void> {
+    this.assertLegacyReviewComplete();
     financeProperties(this.app);
     // The form needs account choices, not transaction balances or a dashboard.
     const accounts = this.readAccountsFromVault(await this.readLatestSnapshotDocument());
@@ -647,6 +628,7 @@ export default class TPSFinancesPlugin extends Plugin {
       return;
     }
     new CashTransactionModal(this.app, accounts, async input => {
+      this.assertLegacyReviewComplete();
       await new ManualFinanceStore(this.app, this.settings.financeFolder).createCashEntry(input);
       logger.flow("Manual", "cash-entry-created", {kind: input.kind});
       new Notice("Cash transaction recorded.");
@@ -707,13 +689,13 @@ export default class TPSFinancesPlugin extends Plugin {
     const renderedFile = transaction.sourceFile;
     const sourcePath = transaction.sourcePath;
     const selectedFile = renderedFile instanceof TFile && sourcePath ? this.app.vault.getAbstractFileByPath(sourcePath) : null;
-    const renderedTarget = renderedFile instanceof TFile && sourcePath && this.settings.legacyTransactionDiscovery === "atomic-only"
+    const renderedTarget = renderedFile instanceof TFile && sourcePath
       ? { path: sourcePath, file: selectedFile === renderedFile ? renderedFile : null,
           type: transaction.type, categoryOverride: transaction.categoryOverride || "", tags: [...(transaction.manualTags || [])] }
       : null;
     new TransactionClassificationModal(this.app, transaction, async (category, tags) => {
-      const store = transaction.manual ? new AtomicFinanceStore(this.app, this.settings.financeFolder, this.settings.legacyTransactionDiscovery) : this.createStore();
-      const updated = renderedTarget && this.settings.legacyTransactionDiscovery === "atomic-only" && store instanceof AtomicFinanceStore
+      const store = this.createStore();
+      const updated = renderedTarget
         ? await store.updateTransactionMetadata(financeId, category, tags, renderedTarget)
         : await store.updateTransactionMetadata(financeId, category, tags);
       if (!updated) throw new Error("The transaction could not be found.");
@@ -725,7 +707,7 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private getTransactionsBasePath(): string {
     const alternate = financePath(this.settings.financeFolder, "", "Transactions (Atomic notes).base");
-    return this.settings.recordMode === "atomic-note" && this.app.vault.getAbstractFileByPath(alternate)
+    return this.app.vault.getAbstractFileByPath(alternate)
       ? alternate
       : financePath(this.settings.financeFolder, "", "Transactions.base");
   }
@@ -784,13 +766,6 @@ export default class TPSFinancesPlugin extends Plugin {
       ? await gcmApi.openFileInLeaf(file, false, () => this.app.workspace.getLeaf(false), { revealLeaf: true, active: true, reuseLeafIfNoExisting: true })
       : this.app.workspace.getLeaf(false);
     if (!gcmApi?.openFileInLeaf) await leaf.openFile(file);
-    if (this.settings.recordMode === "atomic-note") return;
-    const editor = (leaf.view as any)?.editor;
-    if (editor) {
-      editor.setCursor({ line: transaction.sourceLine, ch: 0 });
-      editor.scrollIntoView?.({ from: { line: transaction.sourceLine, ch: 0 }, to: { line: transaction.sourceLine + 1, ch: 0 } }, true);
-      editor.focus?.();
-    }
   }
 
   private controllerPlaid(required = true): any {
@@ -819,16 +794,9 @@ export default class TPSFinancesPlugin extends Plugin {
     }
   }
 
-  private createStore(): FinanceStore {
+  private createStore(): AtomicFinanceStore {
     this.assertPropertyMigrationComplete();
-    if (this.settings.recordMode === "atomic-note") return new AtomicFinanceStore(this.app, this.settings.financeFolder, this.settings.legacyTransactionDiscovery);
-    return new FinanceStore(
-      this.app,
-      this.settings.financeFolder,
-      (file, mutator) => this.processFinanceFrontmatter(file, mutator),
-      (isoDate) => this.ensureFinanceDailyNote(isoDate),
-      (context) => this.resolveFinanceTransactionTarget(context.date, context.accountPath),
-    );
+    return new AtomicFinanceStore(this.app, this.settings.financeFolder);
   }
 
   async reviewTransactionTitles(includeEmptyProperties = false): Promise<void> {
@@ -836,71 +804,26 @@ export default class TPSFinancesPlugin extends Plugin {
     new TransactionTitleModal(this.app, await store.reviewTransactionTitles(includeEmptyProperties), store, () => this.refreshDashboard(), includeEmptyProperties).open();
   }
 
-  private async rerouteFinanceTransactions(reason: string): Promise<void> {
-    const result = await this.createStore().rerouteTransactions();
-    logger.flow("Storage", "transactions-rerouted", { reason, ...result });
-    if (result.moved) new Notice(`Moved ${result.moved} transaction${result.moved === 1 ? "" : "s"} to the selected log location.`);
-    await this.refreshDashboard();
-  }
-
-  private async resolveFinanceTransactionTarget(date: string, accountPath: string): Promise<TFile> {
-    const normalizedAccountPath = normalizePath(accountPath.replace(/\.md$/i, ""));
-    const immediateOverride = this.transactionRouteOverrides.get(normalizedAccountPath);
-    const accountFile = this.app.vault.getAbstractFileByPath(`${normalizedAccountPath}.md`);
-    const frontmatter = accountFile instanceof TFile ? financeProperties(this.app).cache(this.app, accountFile) || {} : {};
-    const override = frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note"
-      ? frontmatter.transactionLogTarget as TransactionLogTarget
-      : null;
-    const target = immediateOverride || override || this.settings.transactionLogTarget;
-    if (target === "account-note" && accountFile instanceof TFile) return accountFile;
-    return this.ensureFinanceDailyNote(date);
-  }
-
-  async setRecordMode(mode: "atomic-note" | "atomic-line"): Promise<void> {
-    this.assertPropertyMigrationComplete();
-    if(this.syncing)throw new Error("Wait for the current sync to finish.");
-    const previousMode = this.settings.recordMode;
-    this.settings.recordMode=mode;
-    if (mode === "atomic-line") this.settings.legacyTransactionDiscovery = "discover";
-    try { await this.saveSettings(); }
-    catch (error) {
-      await this.reconcileStoredTransactionMode();
-      if (this.settings.recordMode !== previousMode) await this.finishRecordModeChange();
-      throw error;
-    }
-    await this.finishRecordModeChange();
-  }
-
-  private async finishRecordModeChange(): Promise<void> {
-    if (this.settings.recordMode === "atomic-line") await new AtomicFinanceStore(this.app, this.settings.financeFolder).restoreLineBases();
-    await this.createStore().ensureStructure();
-    await this.refreshDashboard();
-  }
-
-  async setLegacyTransactionDiscovery(mode: "discover" | "atomic-only"): Promise<void> {
+  async reviewLegacyTransactionMarkers(): Promise<{ markers: number; firstPath: string }> {
     this.assertPropertyMigrationComplete();
     if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
-    if (mode === "atomic-only" && this.settings.recordMode !== "atomic-note") throw new Error("Choose Atomic note storage first.");
-    if (this.settings.legacyTransactionDiscovery === mode) return;
     this.syncing = true;
     try {
-      if (mode === "atomic-only") {
-        const audit = await auditLegacyTransactionMarkers(this.app);
-        if (audit.markers) throw new Error(`${audit.markers} inline financeId marker${audit.markers === 1 ? "" : "s"} remain; first file: ${audit.firstPath}. Review or convert them before enabling atomic-only discovery.`);
+      const audit = await auditLegacyTransactionMarkers(this.app);
+      logger.flow("Storage", "legacy-inline-reviewed", { markers: audit.markers, clear: audit.markers === 0 });
+      if (audit.markers === 0 && this.legacyReviewRequired()) {
+        this.settings.recordMode = "atomic-note";
+        this.settings.legacyTransactionDiscovery = "atomic-only";
+        try { await this.saveSettings(); }
+        catch (error) {
+          await this.reconcileStoredTransactionMode();
+          if (!this.legacyReviewRequired()) await this.refreshDashboard();
+          throw error;
+        }
+        await this.refreshDashboard();
       }
-      if (mode === "atomic-only" && (this.settings.recordMode !== "atomic-note" || this.settings.legacyTransactionDiscovery !== "discover")) {
-        throw new Error("Finance storage settings changed during verification. Run the check again.");
-      }
-      this.settings.legacyTransactionDiscovery = mode;
-      try { await this.saveSettings(); }
-      catch (error) {
-        await this.reconcileStoredTransactionMode();
-        if (this.settings.legacyTransactionDiscovery === mode) await this.refreshDashboard();
-        throw error;
-      }
-      logger.flow("Storage", "transaction-discovery-saved", { mode });
+      return audit;
     } finally { this.syncing = false; }
-    await this.refreshDashboard();
   }
 
   async migrateAtomicTransactions(): Promise<void> {
@@ -915,33 +838,6 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private async prepareFinanceStorage(): Promise<void> {
     await this.ensureFinanceStructure();
-    if (this.settings.recordMode !== "atomic-note") await this.migrateLegacyTransactions(this.createStore());
-  }
-
-  private async migrateLegacyTransactions(store: FinanceStore): Promise<void> {
-    try {
-      const result = await store.migrateLegacyTransactionLedgers();
-      if (this.settings.recordMode === "atomic-note" && result.skipped) throw new Error(`${result.skipped} legacy transactions need review before syncing atomic notes.`);
-      if (result.moved || result.skipped) logger.flow("Storage", "daily-note-migration", result);
-      if (result.moved) new Notice(`Migrated ${result.moved} finance transaction${result.moved === 1 ? "" : "s"}.`);
-    } catch (error) {
-      logger.failure("Storage", "daily-note-migration-failed", error);
-      throw error;
-    }
-  }
-
-  private async ensureFinanceDailyNote(isoDate: string): Promise<TFile> {
-    const gcmApi = this.getGcmApi();
-    if (typeof gcmApi?.dailyNotes?.ensureForIsoDate === "function") {
-      const file = await gcmApi.dailyNotes.ensureForIsoDate(isoDate);
-      if (file instanceof TFile) return file;
-    }
-    const path = this.getDailyNotePathForIsoDate(isoDate);
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (existing instanceof TFile) return existing;
-    const folder = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
-    if (folder) await this.ensureFolderPath(folder);
-    return this.app.vault.create(path, "");
   }
 
   private getDailyNotePathForIsoDate(isoDate: string): string {
@@ -955,14 +851,6 @@ export default class TPSFinancesPlugin extends Plugin {
     return normalizePath(folder ? `${folder}/${basename}.md` : `${basename}.md`);
   }
 
-  private async ensureFolderPath(path: string): Promise<void> {
-    let current = "";
-    for (const part of normalizePath(path).split("/").filter(Boolean)) {
-      current = current ? `${current}/${part}` : part;
-      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
-    }
-  }
-
   private async ensureFinanceStructure(): Promise<void> {
     try {
       await this.createStore().ensureStructure();
@@ -970,13 +858,6 @@ export default class TPSFinancesPlugin extends Plugin {
     } catch (error) {
       logger.failure("Storage", "structure-failed", error, { folder: this.settings.financeFolder });
     }
-  }
-
-  private async processFinanceFrontmatter(file: TFile, mutator: (frontmatter: Record<string, unknown>) => void): Promise<unknown> {
-    const gcmApi = this.getGcmApi();
-    if (typeof gcmApi?.frontmatter?.process === "function") return gcmApi.frontmatter.process(file, (raw: Record<string, unknown>) => financeProperties(this.app).mutate(raw, mutator));
-    if (typeof gcmApi?.processFrontmatter === "function") return gcmApi.processFrontmatter(file, mutator);
-    return financeProperties(this.app).process(this.app, file, mutator);
   }
 
   private getGcmApi(): any {
@@ -1117,17 +998,13 @@ export default class TPSFinancesPlugin extends Plugin {
         type: String(frontmatter.accountType || ""),
         subtype: String(frontmatter.accountSubtype || ""),
         currency: String(frontmatter.currency || balance?.currency || "USD"),
-        available: this.settings.recordMode === "atomic-note" && "available" in frontmatter ? atomicNumber(frontmatter.available) : balance?.available ?? null,
-        current: (this.settings.recordMode === "atomic-note" || frontmatter.financeSource === "manual") && "current" in frontmatter ? atomicNumber(frontmatter.current) : balance?.balance ?? null,
-        limit: this.settings.recordMode === "atomic-note" ? atomicNumber(frontmatter.limit) : null,
+        available: "available" in frontmatter ? atomicNumber(frontmatter.available) : balance?.available ?? null,
+        current: "current" in frontmatter ? atomicNumber(frontmatter.current) : balance?.balance ?? null,
+        limit: atomicNumber(frontmatter.limit),
         manual: frontmatter.financeSource === "manual",
         openingBalance: "openingBalance" in frontmatter ? Number(frontmatter.openingBalance) : undefined,
         valuationDate: String(frontmatter.valuationDate || ""),
         path: file.path,
-        transactionLogTarget: frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note" ? frontmatter.transactionLogTarget : "default",
-        effectiveTransactionLogTarget: frontmatter.transactionLogTarget === "account-note" || frontmatter.transactionLogTarget === "daily-note"
-          ? frontmatter.transactionLogTarget
-          : this.settings.transactionLogTarget,
       });
     }
     return accounts.sort((left, right) => accountSortRank(left.type) - accountSortRank(right.type)
@@ -1136,17 +1013,15 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[], sourcePaths?: Set<string>, files?: DashboardFileSnapshot): FinanceHolding[] {
-    if(this.settings.recordMode === "atomic-note") {
-      const notes=(files?.files ?? this.app.vault.getMarkdownFiles()).filter(file=>file.path.startsWith(financePrefix(this.settings.financeFolder, "Holdings")))
-        .map(file => {
-          const fm = files?.fields(file) ?? financeProperties(this.app).cache(this.app, file) ?? {};
-          if (fm.type === "holding") sourcePaths?.add(file.path);
-          return fm;
-        }).filter(fm=>fm.type==="holding");
-      if(notes.length) return notes.filter(fm=>fm.active===true).map(fm=>({
-        financeAccountId:String(fm.financeAccountId),securityId:String(fm.securityId),name:String(fm.name||""),ticker:String(fm.ticker||""),type:String(fm.holdingType||""),quantity:Number(fm.quantity)||0,price:Number(fm.price)||0,value:Number(fm.value)||0,costBasis:atomicNumber(fm.costBasis),currency:String(fm.currency||"USD"),asOf:String(fm.asOf||""),stale:fm.stale===true
-      }));
-    }
+    const notes=(files?.files ?? this.app.vault.getMarkdownFiles()).filter(file=>file.path.startsWith(financePrefix(this.settings.financeFolder, "Holdings")))
+      .map(file => {
+        const fm = files?.fields(file) ?? financeProperties(this.app).cache(this.app, file) ?? {};
+        if (fm.type === "holding") sourcePaths?.add(file.path);
+        return fm;
+      }).filter(fm=>fm.type==="holding");
+    if(notes.length) return notes.filter(fm=>fm.active===true).map(fm=>({
+      financeAccountId:String(fm.financeAccountId),securityId:String(fm.securityId),name:String(fm.name||""),ticker:String(fm.ticker||""),type:String(fm.holdingType||""),quantity:Number(fm.quantity)||0,price:Number(fm.price)||0,value:Number(fm.value)||0,costBasis:atomicNumber(fm.costBasis),currency:String(fm.currency||"USD"),asOf:String(fm.asOf||""),stale:fm.stale===true
+    }));
 
     if (!snapshot) return [];
     const pathToId = new Map<string, string>();
@@ -1244,14 +1119,13 @@ function normalizeSettings(value: unknown): TPSFinancesSettings {
     propertyNames: normalizePropertyNames(source.propertyNames),
     propertyMigration: normalizePropertyMigration(source.propertyMigration),
     recordMode: source.recordMode === "atomic-line" ? "atomic-line" : "atomic-note",
-    legacyTransactionDiscovery: source.recordMode === "atomic-line" || source.legacyTransactionDiscovery !== "atomic-only" ? "discover" : "atomic-only",
+    legacyTransactionDiscovery: source.recordMode === "atomic-line" || source.legacyTransactionDiscovery === "discover" ? "discover" : "atomic-only",
     financeFolder: normalizeFinanceFolder(source.financeFolder, DEFAULT_SETTINGS.financeFolder),
     plaidEnvironment: source.plaidEnvironment === "development" || source.plaidEnvironment === "production" ? source.plaidEnvironment : "sandbox",
     plaidClientIdSecret: String(source.plaidClientIdSecret || DEFAULT_SETTINGS.plaidClientIdSecret).trim() || DEFAULT_SETTINGS.plaidClientIdSecret,
     plaidSecretSecret: String(source.plaidSecretSecret || DEFAULT_SETTINGS.plaidSecretSecret).trim() || DEFAULT_SETTINGS.plaidSecretSecret,
     oauthRedirectUri: String(source.oauthRedirectUri || "").trim(),
     transactionHistoryDays: Math.max(30, Math.min(730, Number(source.transactionHistoryDays) || DEFAULT_SETTINGS.transactionHistoryDays)),
-    transactionLogTarget: source.transactionLogTarget === "account-note" ? "account-note" : "daily-note",
     enableLogging: source.enableLogging === true,
   };
 }

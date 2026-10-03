@@ -33,6 +33,7 @@ function cashFormHarness() {
  const snapshot={date:'2026-09-28',lines:['snapshot preserved']};
  const owner=Object.assign(new exports.Owner(),{
   app:h.app,settings:{financeFolder:'Inbox/Finance QA'},
+  assertLegacyReviewComplete(){if(h.legacyReviewRequired)throw Error('Review older inline transactions before adding or syncing transactions.')},
   async readLatestSnapshotDocument(){counts.snapshots++;if(h.snapshotError)throw h.snapshotError;return snapshot;},
   readAccountsFromVault(value){counts.accounts++;assert.equal(value,snapshot,'preserve snapshot fallback for account currencies');return h.accounts;},
   async getDashboardModel(){counts.models++;validate();if(h.dashboardError)throw h.dashboardError;return {accounts:this.readAccountsFromVault(await this.readLatestSnapshotDocument())};},
@@ -89,6 +90,14 @@ test('cash form keeps the actual validated writer and refreshes only after a suc
  assert.deepEqual(h.fm(tx.path).tags,['food']);assert.equal(h.fm(account.path).openingBalance,100);
  await assert.rejects(save({...entry,accountPath:account.path,amount:-1}),/positive amount/);
  assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,1);
+});
+test('cash form rechecks legacy review before saving an already open modal',async()=>{
+ const h=cashFormHarness(),account=await h.store.createAccount(input);
+ h.accounts=[{...h.accounts[0],path:account.path,currency:'USD'}];
+ await h.owner.addCashTransaction();h.legacyReviewRequired=true;
+ const before=h.app.vault.getMarkdownFiles().length;
+ await assert.rejects(h.forms[0].save({...entry,accountPath:account.path}),/Review older inline transactions/);
+ assert.equal(h.app.vault.getMarkdownFiles().length,before);assert.equal(h.counts.refreshes,0);
 });
 const wallet=(path='Wallet',openingBalance=100,currency='USD')=>({path:path+'.md',manual:true,type:'depository',subtype:'cash',currency,openingBalance,current:999});
 const tx=(amount,other={})=>({manual:true,accountPath:'Wallet',amount,currency:'USD',subtype:amount<0?'purchase':'income',...other});

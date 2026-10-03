@@ -1,6 +1,6 @@
 # Historical documentation reference
 
-Preserved from the README at 1.3.0, during the 2026-09-16 documentation cleanup. This includes earlier release notes, detailed contracts, and historical validation claims. Earlier setup steps or limitations may have been superseded. Start with [the current README](README.md), current source, and the tagged release. Relative source links remain rooted in this repository.
+Preserved from the README at 1.3.0, during the 2026-09-16 documentation cleanup. This includes earlier release notes, detailed contracts, and historical validation claims. Earlier setup steps or limitations may have been superseded. Start with [the current README](README.md), current source, and the tagged release. In 2.0.0, transaction records are whole notes only; the daily-note and account-note routing instructions below are historical. Relative source links remain rooted in this repository.
 
 ---
 

@@ -106,7 +106,7 @@ test('migration updates recognized generated Bases but preserves customized defi
  assert.equal(h.contents.get('Accounts.base'),'custom base');assert.equal(parse(h.contents.get('Transactions.base')).views[0].order[1],'custom date');h.plugin.settings.propertyNames=to.names;await h.store.ensureStructure();assert.ok(!h.files.has('Transactions (Atomic notes).base'));
 });
 test('settings expose every group, preserve existing actions, and explicitly ask migration or decline',()=>{
- const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & routing','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Configure in GCM','Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/api\?\.ui\?\.openCustomPropertySettings/);assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
+ const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & storage','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Configure in GCM','Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/api\?\.ui\?\.openCustomPropertySettings/);assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
  const properties=readFileSync('src/finance-properties.ts','utf8');assert.doesNotMatch(properties,/aliases\(/);assert.doesNotMatch(readFileSync('src/types.ts','utf8'),/propertyDraft|propertyGroup/);
 });
 function pluginHarness(h){
@@ -115,184 +115,141 @@ function pluginHarness(h){
  plugin.loadData=async()=>structuredClone(disk);
  return {plugin,disk:()=>disk,failSave:n=>failAt=n};
 }
-test('atomic-only activation reads fresh vault bodies once and persists only after a clean audit',async()=>{
+test('explicit legacy review reads current notes once and clears upgrade markers only after a clean audit',async()=>{
  const h=harness(),p=pluginHarness(h);for(let n=0;n<200;n++)await h.app.vault.create(`Archive/${n}.md`,'Ordinary note');
  let fresh=0,cached=0;const read=h.app.vault.read,cachedRead=h.app.vault.cachedRead;
  h.app.vault.read=async file=>{fresh++;return read(file)};h.app.vault.cachedRead=async file=>{cached++;return cachedRead(file)};
- await p.plugin.setLegacyTransactionDiscovery('atomic-only');
- assert.equal(fresh,200);assert.equal(cached,0);assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
- assert.equal(p.plugin.settings.legacyTransactionDiscovery,'atomic-only');
+ assert.equal(p.plugin.legacyReviewRequired(),true);
+ assert.deepEqual(await p.plugin.reviewLegacyTransactionMarkers(),{markers:0,firstPath:''});
+ assert.deepEqual({fresh,cached},{fresh:200,cached:0});
+ assert.equal(p.disk().recordMode,'atomic-note');assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
+ assert.equal(p.plugin.legacyReviewRequired(),false);
 });
-test('already-converted notes retain migration provenance without blocking atomic-only activation',async()=>{
+test('old line and discovery settings gate writes while the active store stays whole-note only',async()=>{
+ const h=harness(),p=pluginHarness(h);p.plugin.settings.recordMode='atomic-line';
+ const source='- Purchase [type:: transaction] [financeId:: old] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ await h.app.vault.create('Day.md',source);
+ let requests=0;p.plugin.requestFinance=async()=>{requests++;return true};
+ assert.equal(p.plugin.createStore() instanceof AtomicFinanceStore,true);
+ await assert.rejects(p.plugin.syncAll('test'),/Review older inline transactions/);
+ await assert.rejects(p.plugin.addCashTransaction(),/Review older inline transactions/);
+ assert.equal(requests,0,'no provider request starts before legacy review');
+ assert.deepEqual(await p.plugin.reviewLegacyTransactionMarkers(),{markers:1,firstPath:'Day.md'});
+ assert.equal(p.plugin.legacyReviewRequired(),true);assert.equal(p.disk().recordMode,'atomic-note');
+ assert.equal(p.disk().legacyTransactionDiscovery,'discover');assert.equal(h.contents.get('Day.md'),source);
+});
+test('missing legacy setting keys normalize to writable whole-note mode without a warning',async()=>{
+ const h=harness(),plugin=new FinancePlugin(h.app);plugin.settings={financeFolder:''};
+ let saved,requests=0;plugin.settingsWriter={save:async value=>{saved=structuredClone(value)}};
+ await plugin.saveSettings();
+ assert.equal(saved.recordMode,'atomic-note');assert.equal(saved.legacyTransactionDiscovery,'atomic-only');
+ assert.equal(plugin.legacyReviewRequired(),false);assert.equal(plugin.createStore() instanceof AtomicFinanceStore,true);
+ plugin.requestFinance=async()=>{requests++;return true};
+ await plugin.syncAll('test');assert.equal(requests,1);
+});
+test('converted provenance does not hide another inline marker from explicit review',async()=>{
  const h=harness(new FinanceProperties({keys:{migrationSource:'originalEntry'}}));
  const paths=await h.store.upsertAccounts([account]);
  const source=`- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[${paths.get('account1').replace(/\.md$/,'')}]]] [amount:: -2] [currency:: USD]`;
  await h.app.vault.create('Day.md',source);
  assert.deepEqual(await h.store.migrateLegacyTransactionLedgers(),{moved:1,skipped:0});
- assert.equal(h.fm('legacy.md').originalEntry,source,'provenance remains available for interrupted-conversion retries');
- assert.equal(h.contents.get('Day.md'),'- [[legacy]]');
- const p=pluginHarness(h); // A fresh plugin instance sees notes converted by an earlier version.
- assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:0,firstPath:''});
- await p.plugin.setLegacyTransactionDiscovery('atomic-only');
- assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
- await p.plugin.setLegacyTransactionDiscovery('discover');
+ assert.equal(h.fm('legacy.md').originalEntry,source);
+ const p=pluginHarness(h);assert.deepEqual(await p.plugin.reviewLegacyTransactionMarkers(),{markers:0,firstPath:''});
  await h.app.vault.create('Later.md',source.replace('legacy','later'));
- assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Later.md'});
- await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/1 inline financeId marker remain; first file: Later\.md/);
+ assert.deepEqual(await p.plugin.reviewLegacyTransactionMarkers(),{markers:1,firstPath:'Later.md'});
 });
-test('audit preserves extra YAML, code and body markers beside valid migration provenance',async()=>{
- const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
- for(const extra of ['yaml','code','body']){
-  const h=harness();
-  const file=await h.add('Converted.md',{type:'transaction',financeId:'legacy',date:'2026-09-20',account:'[[Checking]]',amount:-2,migrationSource:source});
-  if(extra==='yaml')await h.app.fileManager.processFrontMatter(file,raw=>{raw.example='[financeId:: extra]'});
-  else h.contents.set(file.path,h.contents.get(file.path)+(extra==='code'?'```text\n[financeId:: extra]\n```\n':'[financeId:: extra]\n'));
-  assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Converted.md'},extra);
- }
-});
-test('encoded provenance cannot exempt a separate YAML comment marker',async()=>{
+test('legacy audit counts extra YAML, code, malformed and body markers without changing notes',async()=>{
  const h=harness();
  const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ const converted=await h.add('Converted.md',{type:'transaction',financeId:'legacy',date:'2026-09-20',account:'[[Checking]]',amount:-2,migrationSource:source});
+ await h.app.fileManager.processFrontMatter(converted,raw=>{raw.example='[financeId:: extra]'});
+ await h.app.vault.create('Code.md','```text\n[financeId:: example]\n```');
+ await h.app.vault.create('Day.md','- [financeId:: broken]');
+ const before=new Map(h.contents);
+ assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:3,firstPath:'Converted.md'});
+ assert.deepEqual(h.contents,before);
+});
+test('encoded and folded migration provenance is checked conservatively',async()=>{
+ const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ const h=harness();
  const encoded=source.replace('[financeId::','\\u005bfinanceId::');
  await h.app.vault.create('Escaped.md',`---\ntype: transaction\nfinanceId: legacy\ndate: 2026-09-20\naccount: "[[Checking]]"\namount: -2\nmigrationSource: "${encoded}" # [financeId:: extra]\n---\n`);
- assert.equal(h.fm('Escaped.md').migrationSource,source);
  assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Escaped.md'});
+ const folded=harness();await folded.app.vault.create('Prior.md',`---\ntype: transaction\nfinanceId: legacy\ndate: 2026-09-20\naccount: "[[Checking]]"\namount: -2\nmigrationSource: >-\n  ${source}\n---\n`);
+ assert.deepEqual(await auditLegacyTransactionMarkers(folded.app),{markers:0,firstPath:''});
 });
-test('a previously converted folded YAML provenance value is exempt without editing it',async()=>{
- const h=harness();
- const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
- const content=`---\ntype: transaction\nfinanceId: legacy\ndate: 2026-09-20\naccount: "[[Checking]]"\namount: -2\nmigrationSource: >-\n  ${source}\n---\n`;
- await h.app.vault.create('Prior.md',content);
- assert.equal(h.fm('Prior.md').migrationSource,source);
- assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:0,firstPath:''});
- assert.equal(h.contents.get('Prior.md'),content);
-});
-test('audit does not exempt migration provenance on a malformed atomic transaction',async()=>{
- const h=harness();
- const source='- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
- await h.add('Incomplete.md',{type:'transaction',financeId:'legacy',date:'bad-date',account:'[[Checking]]',amount:-2,migrationSource:source});
- assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Incomplete.md'});
-});
-test('atomic-only activation blocks all raw financeId markers, even malformed, duplicated, or in YAML and code',async()=>{
- const h=harness(),p=pluginHarness(h);
- await h.app.vault.create('Day.md','- [financeId:: broken]\n- [financeId:: broken]');
- await h.app.vault.create('Frontmatter.md','---\nitems:\n  - "[financeId:: hidden]"\n---\n```\n[financeId:: example]\n```');
- assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:4,firstPath:'Day.md'});
- await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/4 inline financeId markers remain; first file: Day\.md/);
- assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
-});
-test('atomic-only activation refuses a vault changed during its fresh read',async()=>{
- const h=harness(),p=pluginHarness(h);const file=await h.app.vault.create('Journal.md','No markers');
+test('changed source or interrupted conversion cannot clear the review gate',async()=>{
+ const h=harness(),p=pluginHarness(h),file=await h.app.vault.create('Journal.md','No markers');
  const read=h.app.vault.read;h.app.vault.read=async current=>{const content=await read(current);if(current===file)file.stat.mtime++;return content};
- await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/vault changed during transaction verification/);
- assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
-});
-test('an interrupted conversion cannot certify atomic-only discovery even when its atomic note exists',async()=>{
- const h=harness(),p=pluginHarness(h),paths=await h.store.upsertAccounts([account]);
+ await assert.rejects(p.plugin.reviewLegacyTransactionMarkers(),/vault changed during transaction verification/);
+ assert.equal(p.plugin.legacyReviewRequired(),true);
+ const later=harness(),review=pluginHarness(later),paths=await later.store.upsertAccounts([account]);
  const source=`- Old purchase [type:: transaction] [financeId:: legacy] [date:: 2026-09-20] [account:: [[${paths.get('account1').replace(/\.md$/,'')}]]] [amount:: -2] [currency:: USD]`;
- await h.app.vault.create('Day.md',source);h.fail('Day.md');
- await assert.rejects(h.store.migrateLegacyTransactionLedgers(),/disk failure/);
- assert.ok(h.app.vault.getMarkdownFiles().some(file=>h.fm(file.path).financeId==='legacy'));
- assert.deepEqual(await auditLegacyTransactionMarkers(h.app),{markers:1,firstPath:'Day.md'});
- await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/first file: Day\.md/);
- assert.equal(p.disk().legacyTransactionDiscovery,'discover');assert.equal(h.contents.get('Day.md'),source);
+ await later.app.vault.create('Day.md',source);later.fail('Day.md');
+ await assert.rejects(later.store.migrateLegacyTransactionLedgers(),/disk failure/);
+ assert.deepEqual(await review.plugin.reviewLegacyTransactionMarkers(),{markers:1,firstPath:'Day.md'});
+ assert.equal(review.plugin.legacyReviewRequired(),true);assert.equal(later.contents.get('Day.md'),source);
 });
-test('a failed settings save rolls back discovery, and switching to line records clears atomic-only discovery',async()=>{
+test('failed review-settings save keeps writes gated',async()=>{
  const h=harness(),p=pluginHarness(h);p.failSave(1);
- await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/settings write failure/);
- assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
- p.failSave(0);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
- await p.plugin.setRecordMode('atomic-line');
- assert.equal(p.plugin.settings.legacyTransactionDiscovery,'discover');assert.equal(p.disk().legacyTransactionDiscovery,'discover');
- assert.equal(p.plugin.settings.recordMode,'atomic-line');
+ await assert.rejects(p.plugin.reviewLegacyTransactionMarkers(),/settings write failure/);
+ assert.equal(p.plugin.legacyReviewRequired(),true);assert.equal(p.disk().legacyTransactionDiscovery,'discover');
 });
-test('a failed record-format save preserves the previously certified atomic-only mode',async()=>{
- const h=harness(),p=pluginHarness(h);await h.store.ensureStructure();
- const base=h.contents.get('Transactions.base');
- await p.plugin.setLegacyTransactionDiscovery('atomic-only');p.failSave(2);
- await assert.rejects(p.plugin.setRecordMode('atomic-line'),/settings write failure/);
- assert.equal(p.plugin.settings.recordMode,'atomic-note');assert.equal(p.plugin.settings.legacyTransactionDiscovery,'atomic-only');
- assert.equal(p.disk().recordMode,'atomic-note');assert.equal(p.disk().legacyTransactionDiscovery,'atomic-only');
- assert.equal(h.contents.get('Transactions.base'),base,'a failed settings save does not alter the generated Base');
-});
-test('a later coalesced settings failure cannot roll back a discovery mode already saved to disk',async()=>{
- const h=harness(),p=pluginHarness(h);let disk=structuredClone(p.disk()),writes=0,later;
- let refreshes=0;p.plugin.refreshDashboard=async()=>{refreshes++};
+test('review state follows persisted settings when a later coalesced write fails',async()=>{
+ const h=harness(),p=pluginHarness(h);let disk=structuredClone(p.disk()),writes=0,later,refreshes=0;
+ p.plugin.refreshDashboard=async()=>{refreshes++};
  p.plugin.settingsWriter=new CoalescedSnapshotWriter({
-  initialSnapshot:structuredClone(p.plugin.settings),
-  readLatest:async()=>structuredClone(disk),
-  writeMerged:async value=>{
-   writes++;
-   if(writes===1){
-    disk=structuredClone(value);
-    p.plugin.settings.enableLogging=true;
-    later=p.plugin.saveSettings().then(()=>null,error=>error);
-   }else throw Error('debug settings write failure');
-  },
-  normalize:value=>structuredClone(value),
-  reconcile:(requested,persisted)=>{p.plugin.settings=reconcilePersistedSnapshot(p.plugin.settings,requested,persisted)},
+  initialSnapshot:structuredClone(p.plugin.settings),readLatest:async()=>structuredClone(disk),
+  writeMerged:async value=>{writes++;if(writes===1){disk=structuredClone(value);p.plugin.settings.enableLogging=true;later=p.plugin.saveSettings().then(()=>null,error=>error)}else throw Error('debug settings write failure')},
+  normalize:value=>structuredClone(value),reconcile:(requested,persisted)=>{p.plugin.settings=reconcilePersistedSnapshot(p.plugin.settings,requested,persisted)},
  });
  p.plugin.loadData=async()=>structuredClone(disk);
- await assert.rejects(p.plugin.setLegacyTransactionDiscovery('atomic-only'),/debug settings write failure/);
+ await assert.rejects(p.plugin.reviewLegacyTransactionMarkers(),/debug settings write failure/);
  assert.match(String(await later),/debug settings write failure/);
  assert.equal(writes,2);assert.equal(disk.legacyTransactionDiscovery,'atomic-only');
- assert.equal(p.plugin.settings.legacyTransactionDiscovery,'atomic-only','memory follows persisted discovery after shared-cycle rejection');
- assert.equal(refreshes,1,'the visible dashboard adopts the already-persisted mode');
+ assert.equal(p.plugin.legacyReviewRequired(),false);assert.equal(refreshes,1);
  setLoggingEnabled(false);
 });
-test('atomic-only dashboard and API ignore externally added inline entries until discovery is restored',async()=>{
+test('dashboard and API never discover inline entries, including after legacy review',async()=>{
  const h=harness(),p=pluginHarness(h),paths=await h.store.upsertAccounts([account]);
  await h.store.applyTransactions([tx],[],[],state,paths);
  p.plugin.getConnectedItems=()=>[];p.plugin.getRelayStatus=()=>null;p.plugin.getPlaidSetupStatus=()=>({state:'ready'});
- await p.plugin.setLegacyTransactionDiscovery('atomic-only');
- assert.equal(p.plugin.createStore().legacyDiscovery,'atomic-only');
  const source=`- Old purchase [type:: transaction] [financeId:: later] [date:: 2026-09-20] [account:: [[${paths.get('account1').replace(/\.md$/,'')}]]] [amount:: -2] [currency:: USD]`;
  await h.app.vault.create('Day.md',source);
  const reads=[];const cachedRead=h.app.vault.cachedRead;h.app.vault.cachedRead=async file=>{reads.push(file.path);return cachedRead(file)};
  const store=p.plugin.createStore();
  assert.deepEqual((await store.readTransactionRecords()).map(t=>t.path),['tx1.md']);
- assert.ok(!reads.includes('Day.md'),'atomic source API skips the legacy transaction scan');
+ assert.ok(!reads.includes('Day.md'));
  reads.length=0;assert.deepEqual((await store.readTransactionRecords('metadata')).map(t=>t.path),['tx1.md']);
- assert.ok(!reads.includes('Day.md'),'atomic display skips the legacy transaction scan');
- reads.length=0;const atomic=await p.plugin.getDashboardModel();assert.deepEqual(atomic.transactions.map(t=>t.financeId),['tx1']);
- assert.ok(reads.includes('Day.md'),'an independent root-folder budget reader still inspects ambiguous files');
- const indexed=await p.plugin.getDashboardModel(new Set(),'metadata');assert.deepEqual(indexed.transactions.map(t=>t.financeId),['tx1']);
- await p.plugin.setLegacyTransactionDiscovery('discover');
- const restored=await p.plugin.getDashboardModel();assert.deepEqual(restored.transactions.map(t=>t.financeId).sort(),['later','tx1']);
- reads.length=0;await p.plugin.createStore().readTransactionRecords();assert.ok(reads.includes('Day.md'));
+ assert.ok(!reads.includes('Day.md'));
+ const model=await p.plugin.getDashboardModel(new Set(),'metadata');assert.deepEqual(model.transactions.map(t=>t.financeId),['tx1']);
+ assert.equal(model.legacyReviewRequired,true);
+ assert.deepEqual(await p.plugin.reviewLegacyTransactionMarkers(),{markers:1,firstPath:'Day.md'});
+ assert.deepEqual((await p.plugin.createStore().readTransactionRecords()).map(t=>t.path),['tx1.md']);
+ assert.equal(h.contents.get('Day.md'),source);
 });
-test('manual classification respects atomic-only discovery when its note disappears',async()=>{
- const h=harness(),p=pluginHarness(h);
- await p.plugin.setLegacyTransactionDiscovery('atomic-only');
- const original='- Cash purchase [type:: transaction] [financeId:: missing-manual] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
- await h.app.vault.create('Day.md',original);
- let reads=0,writes=0;
+test('dashboard display ignores 10,000 unrelated notes without body reads or writes',async()=>{
+ const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder='Finances';
+ await h.add('Finances/Transactions/selected.md',classificationFields('selected',{account:'[[Finances/Accounts/Checking]]'}));
+ for(let i=0;i<10000;i++)await h.app.vault.create(`Archive/ordinary-${i}.md`,'Ordinary note');
+ p.plugin.getConnectedItems=()=>[];p.plugin.getRelayStatus=()=>null;p.plugin.getPlaidSetupStatus=()=>({state:'ready'});
+ let scans=0,reads=0,writes=0;const list=h.app.vault.getMarkdownFiles,read=h.app.vault.cachedRead,process=h.app.vault.process;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return list()};h.app.vault.cachedRead=async file=>{reads++;return read(file)};h.app.vault.process=async(...args)=>{writes++;return process(...args)};
+ const model=await p.plugin.getDashboardModel(new Set(),'metadata');
+ assert.deepEqual(model.transactions.map(row=>row.financeId),['selected']);
+ assert.deepEqual({scans,reads,writes},{scans:1,reads:0,writes:0});
+});
+test('classification never writes a missing atomic transaction into an inline note',async()=>{
+ const h=harness(),p=pluginHarness(h);const original='- Cash purchase [type:: transaction] [financeId:: missing-manual] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ await h.app.vault.create('Day.md',original);let reads=0,writes=0;
  const cachedRead=h.app.vault.cachedRead,process=h.app.vault.process;
- h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file)};
- h.app.vault.process=async(...args)=>{writes++;return process(...args)};
- const save=(financeId='missing-manual')=>{
-  globalThis.PropertyQAModal=null;
-  p.plugin.editTransactionClassification({financeId,manual:true});
-  assert.ok(globalThis.PropertyQAModal,'the real classification action opens a modal');
-  return globalThis.PropertyQAModal.save('Food',['cash']);
- };
+ h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file)};h.app.vault.process=async(...args)=>{writes++;return process(...args)};
+ const save=(financeId='missing-manual')=>{globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification({financeId,manual:true});return globalThis.PropertyQAModal.save('Food',['cash'])};
  await assert.rejects(save(),/The transaction could not be found\./);
- assert.equal(reads,0,'atomic-only must not scan legacy note bodies for a missing atomic ID');
- assert.equal(writes,0,'atomic-only must not write a matching inline record');
- assert.equal(h.contents.get('Day.md'),original);
+ assert.deepEqual({reads,writes},{reads:0,writes:0});assert.equal(h.contents.get('Day.md'),original);
  await h.add('Cash.md',{financeId:'atomic-manual',type:'transaction',financeSource:'manual',account:'[[Checking]]',date:'2026-09-20',amount:-3,currency:'USD'});
- await save('atomic-manual');
- assert.equal(h.fm('Cash.md').categoryOverride,'Food','an existing atomic note still saves classification');
- assert.deepEqual(h.fm('Cash.md').tags,['cash']);
- assert.equal(reads,1,'atomic-only reads the atomic note without scanning legacy bodies');
- assert.equal(writes,0);
+ await save('atomic-manual');assert.equal(h.fm('Cash.md').categoryOverride,'Food');assert.deepEqual(h.fm('Cash.md').tags,['cash']);
  assert.equal(h.contents.get('Day.md'),original);
- reads=0;
- await p.plugin.setLegacyTransactionDiscovery('discover');
- await save();
- assert.equal(reads,3,'discover mode retains the intentional inline fallback across both Markdown notes');
- assert.equal(writes,1);
- assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
 });
 const classificationFields=(financeId,extra={})=>({financeId,type:'transaction',date:'2026-09-20',account:'[[Checking]]',amount:-3,currency:'USD',...extra});
 async function displayedTransaction(h,p,financeId){
@@ -306,7 +263,7 @@ function classificationSave(plugin,row,category='Food',tags=['cash']){
  return globalThis.PropertyQAModal.save(category,tags);
 }
 test('atomic-only classification targets one rendered file without reading 10,000 other note bodies',async t=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  for(let i=0;i<10000;i++)await h.add(`Transactions/tx-${i}.md`,classificationFields(`tx-${i}`));
  const row=await displayedTransaction(h,p,'tx-5000');
  assert.equal(row.sourceFile,h.files.get(row.sourcePath));
@@ -331,7 +288,7 @@ test('atomic-only classification targets one rendered file without reading 10,00
  t.diagnostic(`synthetic 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${scans} enumerations, ${metadata} metadata lookups, ${cached} cached reads, ${fresh} fresh reads, 0 writes`);
 });
 test('folder-mode save is path-bound while dashboard and home summaries use indexed display reads',async t=>{
- const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder='Finances';await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder='Finances';await p.plugin.reviewLegacyTransactionMarkers();
  for(let i=0;i<10000;i++)await h.add(`Finances/Transactions/tx-${i}.md`,classificationFields(`tx-${i}`));
  const row=await displayedTransaction(h,p,'tx-5000');assert.equal(row.sourceFile,h.files.get(row.sourcePath));
  let scans=0,metadata=0,cached=0,fresh=0,writes=0;
@@ -354,7 +311,7 @@ test('folder-mode save is path-bound while dashboard and home summaries use inde
 });
 test('model-scoped discovery enumerates once with 90,000 indexed unrelated notes',async t=>{
  for(const folder of ['', 'Finances']){
-  const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.reviewLegacyTransactionMarkers();
   const transactionPath=folder?'Finances/Transactions/selected.md':'Transactions/selected.md';
   await h.add(transactionPath,classificationFields('selected'));
   for(let i=0;i<90000;i++)await h.app.vault.create(`Other/ordinary-${i}.md`,'Ordinary note\n');
@@ -374,7 +331,7 @@ test('model-scoped discovery enumerates once with 90,000 indexed unrelated notes
 });
 test('model snapshot keeps atomic discovery fresh when metadata changes or disappears between readers',async()=>{
  for(const phase of ['late-candidate','vanished-inspection']){
-  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
   const path=phase==='late-candidate'?'Accounts/Edited transaction.md':'Inbox/Edited transaction.md';
   const fields=classificationFields('edited',{account:'[[Accounts/Checking]]'});
   await h.add(path,fields);
@@ -396,7 +353,7 @@ test('model snapshot keeps atomic discovery fresh when metadata changes or disap
  }
 });
 test('one model keeps its file list while a later model sees a note created during the read',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  const snapshot=await h.add('Snapshots/Latest.md',{type:'financeSnapshot',date:'2026-09-20'});
  const originalRead=h.app.vault.cachedRead;let created=false,scans=0;
  const originalList=h.app.vault.getMarkdownFiles;
@@ -411,7 +368,7 @@ test('one model keeps its file list while a later model sees a note created duri
  assert.deepEqual(second.transactions.map(row=>row.financeId),['new']);assert.equal(scans,2);
 });
 test('model snapshot still rejects duplicate atomic IDs before presenting a model',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  await h.add('Transactions/First.md',classificationFields('same'));
  await h.add('Transactions/Second.md',classificationFields('same'));
  let writes=0;const process=h.app.fileManager.processFrontMatter;
@@ -420,7 +377,7 @@ test('model snapshot still rejects duplicate atomic IDs before presenting a mode
  assert.equal(writes,0);
 });
 test('rendered manual cash classification uses the same atomic-only target',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  const cash=await h.manual.createAccount({kind:'cash',name:'Wallet',currency:'USD',value:100,valuationDate:'2026-09-20',purchaseTransaction:'',liabilityAccount:'',assetType:''});
  const file=await h.manual.createCashEntry({title:'Lunch',amount:3,date:'2026-09-20',accountPath:cash.path,kind:'expense',category:'',tags:[],counterpart:'',linkedTransaction:''});
  const row=await displayedTransaction(h,p,h.fm(file.path).financeId);assert.equal(row.manual,true);assert.equal(row.sourceFile,file);
@@ -430,7 +387,7 @@ test('rendered manual cash classification uses the same atomic-only target',asyn
  assert.deepEqual({scans,reads},{scans:0,reads:0});assert.equal(h.fm(file.path).categoryOverride,'Food');
 });
 test('atomic-only classification keeps the ID lookup for a plain dashboard row',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  await h.add('Selected.md',classificationFields('plain'));const row=await displayedTransaction(h,p,'plain'),plain={...row};
  assert.equal(plain.sourceFile,undefined);
  let scans=0,reads=0;const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead;
@@ -440,7 +397,7 @@ test('atomic-only classification keeps the ID lookup for a plain dashboard row',
 });
 test('atomic-only classification rejects a same-path replacement after render or modal open',async()=>{
  for(const replaceAfterModal of [false,true]){
-  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
   await h.add('Selected.md',classificationFields('selected'));
   const row=await displayedTransaction(h,p,'selected'),original=row.sourceFile;
   if(replaceAfterModal){globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification(row);assert.ok(globalThis.PropertyQAModal);}
@@ -454,7 +411,7 @@ test('atomic-only classification rejects a same-path replacement after render or
 });
 test('atomic-only classification rejects moved, retargeted and concurrently reclassified notes',async()=>{
  for(const change of ['moved','identity','type','classification','boundary']){
-  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
   const file=await h.add('Selected.md',classificationFields('selected',{categoryOverride:'Old',tags:['old']}));
   const row=await displayedTransaction(h,p,'selected');
   globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification(row);const modal=globalThis.PropertyQAModal;
@@ -475,7 +432,7 @@ test('atomic-only classification rejects moved, retargeted and concurrently recl
  }
 });
 test('scalar YAML tags are displayed and concurrent scalar edits block classification',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  const file=await h.add('Selected.md',classificationFields('selected',{tags:'cash, receipt'}));
  const row=await displayedTransaction(h,p,'selected');assert.deepEqual(row.manualTags,['#cash','#receipt']);
  globalThis.PropertyQAModal=null;p.plugin.editTransactionClassification(row);const modal=globalThis.PropertyQAModal;
@@ -485,14 +442,14 @@ test('scalar YAML tags are displayed and concurrent scalar edits block classific
  assert.equal(h.contents.get(file.path),before);
 });
 test('nonstring YAML array tags do not break displayed classification or its write guard',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  await h.add('Selected.md',classificationFields('mixed-tags',{tags:[42,null]}));
  const row=await displayedTransaction(h,p,'mixed-tags');assert.deepEqual(row.manualTags,['#42','#null']);
  await classificationSave(p.plugin,row,'Food',['receipt']);
  assert.equal(h.fm('Selected.md').categoryOverride,'Food');assert.deepEqual(h.fm('Selected.md').tags,['receipt']);
 });
 test('path-bound classification honors mapped category and scalar tag property names',async()=>{
- const properties=mapped(),h=harness(properties),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const properties=mapped(),h=harness(properties),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  await h.add('Selected.md',properties.write(classificationFields('mapped',{tags:'cash, receipt'})));
  const row=await displayedTransaction(h,p,'mapped');assert.deepEqual(row.manualTags,['#cash','#receipt']);
  await classificationSave(p.plugin,row,'Food',['receipt']);
@@ -500,29 +457,29 @@ test('path-bound classification honors mapped category and scalar tag property n
  assert.deepEqual(h.fm('Selected.md')[properties.key('tags')],['receipt']);
 });
 test('path-bound classification updates only the selected duplicate; full ID reads still reject duplicates',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  await h.add('Selected.md',classificationFields('same'));const row=await displayedTransaction(h,p,'same');
  await h.add('Duplicate.md',classificationFields('same'));
  await classificationSave(p.plugin,row);
  assert.equal(h.fm('Selected.md').categoryOverride,'Food');assert.equal(h.fm('Duplicate.md').categoryOverride,undefined);
  await assert.rejects(p.plugin.createStore().readTransactionRecords(),/Duplicate atomic transaction identity/);
 });
-test('displayed legacy classification keeps the discover-mode inline fallback',async()=>{
+test('inline entries do not appear as dashboard classification targets',async()=>{
  const h=harness(),p=pluginHarness(h);
- await h.app.vault.create('Day.md','- Cash [type:: transaction] [financeId:: line-manual] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]');
- const row=await displayedTransaction(h,p,'line-manual');assert.equal(row.sourceFile,undefined);
- let writes=0;const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args)};
- await classificationSave(p.plugin,row);
- assert.equal(writes,1);assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
+ const source='- Cash [type:: transaction] [financeId:: line-manual] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ await h.app.vault.create('Day.md',source);
+ assert.equal(await displayedTransaction(h,p,'line-manual'),undefined);
+ assert.equal(h.contents.get('Day.md'),source);
 });
-test('discover mode still follows an atomic row ID to an inline entry after its note disappears',async()=>{
+test('a vanished atomic row never falls back to an inline entry with the same ID',async()=>{
  const h=harness(),p=pluginHarness(h);await h.add('Selected.md',classificationFields('recover'));
  const row=await displayedTransaction(h,p,'recover');assert.equal(row.sourceFile,h.files.get('Selected.md'));
  h.files.delete('Selected.md');h.contents.delete('Selected.md');
- await h.app.vault.create('Day.md','- Purchase [type:: transaction] [financeId:: recover] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]');
+ const source='- Purchase [type:: transaction] [financeId:: recover] [date:: 2026-09-20] [account:: [[Checking]]] [amount:: -2]';
+ await h.app.vault.create('Day.md',source);
  let writes=0;const process=h.app.vault.process;h.app.vault.process=async(...args)=>{writes++;return process(...args)};
- await classificationSave(p.plugin,row);
- assert.equal(writes,1);assert.match(h.contents.get('Day.md'),/\[categoryOverride:: Food\]/);
+ await assert.rejects(classificationSave(p.plugin,row),/transaction changed or moved/);
+ assert.equal(writes,0);assert.equal(h.contents.get('Day.md'),source);
 });
 test('saving with migration renames first, then commits settings; no previous names are retained',async()=>{
  const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction',amount:-4});
@@ -617,7 +574,7 @@ test('finance classification rejects subkind keys owned by finance fields or rec
 });
 
 
-test('dashboard collects exact contributing paths during existing reads, including mapped and legacy records',async()=>{
+test('dashboard collects exact contributing paths without treating inline entries as records',async()=>{
  for(const properties of [new FinanceProperties(),mapped()]){
   const h=harness(properties),paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],state,paths);await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-20T12:00:00Z'));
   const ledger=new FinanceStore(h.app,'');const snapshot=await ledger.writeSnapshot([],[],new Map(),new Date('2026-09-20T12:00:00Z'));
@@ -626,7 +583,7 @@ test('dashboard collects exact contributing paths during existing reads, includi
   const p=new FinancePlugin(h.app);p.settings={...h.plugin.settings,financeFolder:'',recordMode:'atomic-note'};p.getConnectedItems=()=>[];p.getRelayStatus=()=>null;p.getPlaidSetupStatus=()=>({state:'ready'});
   let reads=0,scans=0;const read=h.app.vault.cachedRead,list=h.app.vault.getMarkdownFiles;h.app.vault.cachedRead=async f=>{reads++;return read(f)};h.app.vault.getMarkdownFiles=()=>{scans++;return list()};
   const without=await p.getDashboardModel(),baseline={reads,scans};reads=0;scans=0;const sources=new Set(),withSources=await p.getDashboardModel(sources);assert.deepEqual(withSources,without);assert.deepEqual({reads,scans},baseline,'dependency collection adds no I/O');
-  const expected=h.app.vault.getMarkdownFiles().map(f=>f.path).filter(path=>path!=='Unrelated.md');assert.deepEqual([...sources].sort(),expected.sort());assert.ok(sources.has(snapshot));assert.ok(sources.has('Journal.md'));
+  const expected=h.app.vault.getMarkdownFiles().map(f=>f.path).filter(path=>path!=='Unrelated.md'&&path!=='Journal.md');assert.deepEqual([...sources].sort(),expected.sort());assert.ok(sources.has(snapshot));assert.ok(!sources.has('Journal.md'));
  }
 });
 
@@ -643,7 +600,7 @@ test('model snapshot preserves complete source and indexed results with mapped G
  const defs={account:{parentKind:'entity',key:'entityKind',value:'account'},'finance-transaction':{parentKind:'transaction',key:'transactionKind',value:'financial'},holding:{parentKind:'entity',key:'entityKind',value:'holding'},'finance-rule':{parentKind:'rule',key:'ruleKind',value:'finance'},'finance-budget':{parentKind:'budget',key:'budgetKind',value:'finance'}};
  const codec={definition:k=>defs[k]||null,encode:f=>{const d=defs[f.kind];return d?{...f,kind:d.parentKind,[d.key]:d.value}:{...f}},decode:f=>{const entry=Object.entries(defs).find(([,d])=>f.kind===d.parentKind&&f[d.key]===d.value);if(!entry)return {...f};const result={...f,kind:entry[0]};delete result[entry[1].key];return result}};
  for(const folder of ['', 'Finances']){
-  const h=harness(mapped()),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const h=harness(mapped()),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.reviewLegacyTransactionMarkers();
   h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
   const prefix=folder?`${folder}/`:'';
   const add=(section,name,fields)=>h.add(`${prefix}${section}/${name}.md`,financeProperties(h.app).write(fields));
@@ -667,7 +624,7 @@ test('model snapshot preserves complete source and indexed results with mapped G
  }
 });
 test('root ambiguous budget metadata still reads source and stale ordinary metadata waits for indexing',async()=>{
- const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  const ambiguous=await h.add('Budgets/Ambiguous.md',{kind:'financeBudget',financeBudgetId:'ambiguous',title:'Ambiguous',category:'Dining',monthlyLimit:20});
  const stale=await h.add('Budgets/Stale.md',{kind:'financeBudget',financeBudgetId:'stale',title:'Stale',category:'Dining',monthlyLimit:30});
  const originalCache=h.app.metadataCache.getFileCache,originalRead=h.app.vault.cachedRead;

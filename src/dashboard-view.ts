@@ -53,12 +53,12 @@ export interface DashboardModel {
   connectedItems: number;
   plaidSetupState: PlaidSetupState;
   relayMessage?: string;
+  legacyReviewRequired?: boolean;
   budgets: BudgetProgress[];
   budgetEntries?: FinanceBudget[];
 }
 
 interface FinancesViewPlugin {
-  settings?: {recordMode: string};
   getDashboardModel(sourcePaths?: Set<string>, source?: TransactionReadSource): Promise<DashboardModel>;
   canConnectPlaid?(): boolean;
   connectPlaid(): Promise<void>;
@@ -73,7 +73,6 @@ interface FinancesViewPlugin {
   addMonthlyBudget(bucket?: BudgetBucket, currency?: string): void;
   editMonthlyBudget(budget: FinanceBudget): void;
   openFinanceBase(name: "Rules" | "Budgets" | "Transactions"): Promise<void>;
-  setAccountTransactionLogTarget(account: FinanceAccount, target: "default" | "daily-note" | "account-note"): Promise<void>;
 }
 
 export class TPSFinancesView extends ItemView {
@@ -174,6 +173,11 @@ export class TPSFinancesView extends ItemView {
       const button=navigation.createEl("button",{type:"button",text:label,attr:{"aria-pressed":String(this.route===route),"data-budget-focus":route}});
       button.addEventListener("click",()=>{this.route=route;this.renderModel(model);});
     }
+    if (model.legacyReviewRequired) root.createDiv({
+      cls: "tps-finances-status is-warning",
+      text: "Older inline transactions may still exist. Finances now uses transaction notes only. Review or convert old entries in Finances → Data & storage before adding or syncing transactions.",
+      attr: { role: "alert" },
+    });
     if (model.relayMessage) root.createDiv({cls:"tps-finances-status",text:model.relayMessage});
     if (this.route === "budget") {
       renderBudgetView(root,model,this.budgetState,{
@@ -288,32 +292,9 @@ export class TPSFinancesView extends ItemView {
         if (account.type === "other") card.appendChild(actionButton("pencil", "Update value", () => this.plugin.updateAssetValue(account)));
         continue;
       }
-      if (this.plugin.settings?.recordMode === "atomic-note") {
-        card.createEl("small", {text:"Atomic notes"});
-        continue;
-      }
-      const route = card.createEl("button", {
-        cls: "tps-finances-account-route",
-        attr: { type: "button", title: "Choose where this account's transactions are logged" },
-      });
-      const routeIcon = route.createSpan();
-      setIcon(routeIcon, account.effectiveTransactionLogTarget === "account-note" ? "landmark" : "calendar-days");
-      route.createSpan({ text: account.effectiveTransactionLogTarget === "account-note" ? "Account note" : "Daily notes" });
-      if (account.transactionLogTarget === "default") route.createEl("small", { text: "Default" });
-      route.addEventListener("click", (event) => this.showAccountRouteMenu(event, account));
+      card.createEl("small", {text:"Transaction notes"});
     }
     if (!accounts.length) grid.createDiv({ cls: "tps-finances-empty", text: "No account snapshots yet." });
-  }
-
-  private showAccountRouteMenu(event: MouseEvent, account: FinanceAccount): void {
-    const menu = new Menu();
-    menu.addItem((item) => item.setTitle(`Use default (${account.effectiveTransactionLogTarget === "account-note" ? "account note" : "daily notes"})`).setIcon("rotate-ccw")
-      .setChecked(account.transactionLogTarget === "default").onClick(() => void this.runAction(() => this.plugin.setAccountTransactionLogTarget(account, "default"))));
-    menu.addItem((item) => item.setTitle("Daily notes").setIcon("calendar-days")
-      .setChecked(account.transactionLogTarget === "daily-note").onClick(() => void this.runAction(() => this.plugin.setAccountTransactionLogTarget(account, "daily-note"))));
-    menu.addItem((item) => item.setTitle("This account note").setIcon("landmark")
-      .setChecked(account.transactionLogTarget === "account-note").onClick(() => void this.runAction(() => this.plugin.setAccountTransactionLogTarget(account, "account-note"))));
-    menu.showAtMouseEvent(event);
   }
 
   private renderHoldings(root: HTMLElement, holdings: FinanceHolding[]): void {

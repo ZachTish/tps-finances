@@ -6,6 +6,7 @@ import { build } from "esbuild";
 
 const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const store = readFileSync(new URL("../src/finance-store.ts", import.meta.url), "utf8");
+const atomicStore = readFileSync(new URL("../src/atomic-finance-store.ts", import.meta.url), "utf8");
 const transactionContentSource = readFileSync(new URL("../src/transaction-content.ts", import.meta.url), "utf8");
 const financeModals = readFileSync(new URL("../src/finance-modals.ts", import.meta.url), "utf8");
 const dashboard = readFileSync(new URL("../src/dashboard-view.ts", import.meta.url), "utf8");
@@ -778,16 +779,12 @@ test("dashboard action wrapper is limited to owned mutations and navigation", ()
   assert.deepEqual(actionTargets, [
     "addCashTransaction",
     "openFinanceBase",
-    "setAccountTransactionLogTarget",
-    "setAccountTransactionLogTarget",
-    "setAccountTransactionLogTarget",
     "syncAll",
   ]);
   assert.match(main, /await this\.syncAll\("connect"\)/);
   assert.match(main, /const syncWasAlreadyRunning = this\.syncing;\s*await this\.syncAll\("connect"\);\s*if \(syncWasAlreadyRunning\) await this\.refreshDashboard\(\)/);
   assert.match(main, /await timed\("dashboard", \(\) => this\.refreshDashboard\(\)\);\s*logger\.flow\("Sync", "done"/);
-  assert.match(main, /await this\.rerouteFinanceTransactions\("account-changed"\)/);
-  assert.match(main, /rerouteFinanceTransactions[\s\S]*?await this\.refreshDashboard\(\)/);
+  assert.doesNotMatch(dashboard, /setAccountTransactionLogTarget/);
   assert.doesNotMatch(dashboard, /await action\(\);\s*await this\.render\(\)/);
 });
 
@@ -846,13 +843,13 @@ test("Connect owns exactly one refresh through normal and already-running Sync p
 });
 
 test("finance settings use a shallow routed hub with complete controls and actions", () => {
-  for (const route of ["Data & routing", "Rules & budgets", "Properties"]) {
+  for (const route of ["Data & storage", "Rules & budgets", "Properties"]) {
     assert.ok(settings.includes(`title: "${route}"`));
   }
   for (const control of [
     "Finance folder",
     "Transaction history",
-    "Default transaction location",
+    "Legacy inline transactions",
     "Debug logging",
   ]) {
     assert.match(settings + connections, new RegExp(`setName\\("${control}"\\)`));
@@ -860,6 +857,9 @@ test("finance settings use a shallow routed hub with complete controls and actio
   for (const action of ["Connect with Plaid", "Sync finances", "Open finances", "Add rule", "Add budget"]) {
     assert.match(settings + connections, new RegExp(`setButtonText\\("${action}"\\)`));
   }
+  assert.match(settings, /setButtonText\("Check old entries"\)/);
+  assert.match(settings, /setButtonText\("Convert to transaction notes"\)/);
+  assert.doesNotMatch(settings, /setName\("Record format"\)|setName\("Transaction discovery"\)|setName\("Default transaction location"\)/);
 
   assert.match(settings, /private activeRoute: FinanceSettingsRoute = "data"/);
   assert.match(settings, /"aria-pressed": String\(isActive\)/);
@@ -881,30 +881,16 @@ test("finance settings use a shallow routed hub with complete controls and actio
   assert.match(styles, /\.tps-finances-settings-page > h3\s*\{[^}]*scroll-margin-top:/s);
 });
 
-test("finance transactions are contract-native daily-note log lines", () => {
-  assert.match(readme, /Bank and investment transactions are plain `log` bullets in the configured daily note/);
-  assert.match(store, /resolveTransactionTarget\(\{/);
-  assert.match(store, /date: transaction\.date/);
-  assert.match(store, /`\[type:: \$\{transaction\.kind\}\]`/);
-  assert.match(store, /`\[financeId:: \$\{transaction\.financeId\}\]`/);
-  assert.match(store, /`\[account::/);
-  assert.match(store, /`\[amount::/);
-  assert.match(store, /`\[subtype:: \$\{inlineValue\(transaction\.subtype\)\}\]`/);
-  assert.doesNotMatch(store, /## Transactions/);
-  assert.match(store, /findFinanceLedgerFile\(financePrefix\(this\.rootFolder, "Snapshots"\), "financeSnapshot", "date", date\)/);
-  assert.match(store, /String\(frontmatter\.type \|\| ""\) === type && String\(frontmatter\[key\] \|\| ""\) === value/);
-  assert.match(store, /providerCategory/);
-  assert.match(store, /categoryOverride/);
-  assert.match(store, /refreshTransactionRecords/);
-  assert.match(store, /transactionMetadataForTarget/);
-  assert.match(store, /\[asOf::/);
-  assert.match(store, /\[stale:: true\]/);
-  assert.match(store, /migrateLegacyTransactionLedgers/);
-  assert.match(store, /removeEmptyLegacyLedger/);
-  assert.match(main, /dailyNotes\?\.ensureForIsoDate/);
-  assert.match(main, /getDailyNotePathForIsoDate/);
-  assert.match(readme, /Plaid categories are retained as `providerCategory`/);
-  assert.match(readme, /Monthly category budgets are durable `financeBudget` notes/);
+test("finance transactions use whole notes and inline conversion requires an explicit action", () => {
+  assert.match(main, /private createStore\(\): AtomicFinanceStore/);
+  assert.match(main, /return new AtomicFinanceStore\(this\.app, this\.settings\.financeFolder\)/);
+  assert.match(atomicStore, /async applyTransactions\(/);
+  assert.match(atomicStore, /async readTransactionRecords\(/);
+  assert.doesNotMatch(atomicStore, /legacyDiscovery|readLegacyTransactionRecords\(source\)/);
+  assert.match(main, /async migrateAtomicTransactions\(\)/);
+  assert.match(atomicStore, /async migrateLegacyTransactionLedgers\(\)/);
+  assert.doesNotMatch(main, /migrateLegacyTransactions\(store/);
+  assert.match(readme, /Whole-note-only transactions/);
 });
 
 test("local classification is ordered, additive, and manual-first", () => {
@@ -1531,19 +1517,11 @@ test("snapshot reuse preserves filename dates and propagates selected-file read 
   assert.equal(reads, 1, "a failed selected-file read must not reselect or fall back to another snapshot");
 });
 
-test("transaction ownership supports daily-note defaults and per-account overrides", () => {
-  assert.match(types, /transactionLogTarget: TransactionLogTarget/);
-  assert.match(types, /transactionLogTarget: "daily-note"/);
-  assert.match(settings, /Default transaction location/);
-  assert.match(settings, /setDefaultTransactionLogTarget/);
-  assert.match(main, /setAccountTransactionLogTarget/);
-  assert.match(main, /transactionRouteOverrides/);
-  assert.match(main, /resolveFinanceTransactionTarget/);
-  assert.match(store, /rerouteTransactions/);
-  assert.match(store, /resolveTransactionTarget/);
-  assert.ok(store.includes('\\\\[\\\\[[^\\\\]]+\\\\]\\\\]'));
-  assert.match(readme, /Each account card can inherit that default or explicitly choose daily notes\/account note/);
-  assert.match(readme, /Changing either route moves existing identified transactions to the resolved owner; it does not keep mirrored copies/);
+test("transaction routing controls are retired without changing historical note properties", () => {
+  assert.doesNotMatch(settings, /Default transaction location|Record format|Transaction discovery/);
+  assert.doesNotMatch(main, /setAccountTransactionLogTarget|setDefaultTransactionLogTarget|resolveFinanceTransactionTarget/);
+  assert.doesNotMatch(dashboard, /showAccountRouteMenu|tps-finances-account-route/);
+  assert.match(atomicStore, /financePath\(this\.folder, "Transactions",/);
 });
 
 test("transaction moves and updates preserve concurrent note edits atomically", () => {
@@ -2329,7 +2307,6 @@ test("disconnect and logging behavior protect financial integrations", () => {
   assert.doesNotMatch(main, /logger\.[a-z]+\([^\n]*(accessToken|providerItemId)/);
   assert.match(main, /this\.createPlaidClient\(item\.environment, item\.plaidSecretName, item\.plaidClientIdSecretName\)/);
   assert.match(main, /if \(!failures\.length && \(allAccounts\.length \|\| allHoldings\.length\)\)/);
-  assert.match(main, /gcmApi\.frontmatter\.process\(file,.*financeProperties\(this.app\)\.mutate\(raw, mutator\)/);
   assert.match(main, /externalActions\.register/);
   assert.match(main, /renderHomeSummary/);
   assert.match(main, /openTransactionSource/);
@@ -2466,7 +2443,7 @@ test('root dashboard identifies accounts and snapshots without mistaking holding
  assert.equal(plugin.readAccountsFromVault(null).length,1);assert.deepEqual(plugin.accountFiles().map(f=>f.path),['Wallet.md']);assert.equal(plugin.latestSnapshotFile().path,'Old/Snapshot.md');
 });
 
-test('Browse all transactions opens the selected atomic or line Base without loading the dashboard',async()=>{
+test('Browse all transactions opens the whole-note Base without loading the dashboard',async()=>{
  const File=globalThis.__tpsMainActionTFile;
  const base=new File(),alternate=new File();
  base.path='Finances/Transactions.base';alternate.path='Finances/Transactions (Atomic notes).base';
@@ -2478,7 +2455,7 @@ test('Browse all transactions opens the selected atomic or line Base without loa
  await plugin.openFinanceBase('Transactions');
  plugin.settings.recordMode='atomic-line';await plugin.openFinanceBase('Transactions');
  plugin.settings.recordMode='atomic-note';files.delete(alternate.path);await plugin.openFinanceBase('Transactions');
- assert.deepEqual(opened,[alternate,base,base]);assert.equal(reveals,3);
+ assert.deepEqual(opened,[alternate,alternate,base]);assert.equal(reveals,3);
  assert.deepEqual({scans,reads},{scans:0,reads:0});
  files.delete(base.path);await assert.rejects(plugin.openFinanceBase('Transactions'),/Transactions\.base could not be found/);
  assert.equal(reveals,3,'a missing Base must not open a new tab');

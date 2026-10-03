@@ -2,7 +2,6 @@ import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS } from "./fin
 import { previewPropertyMigration, propertyChanges } from "./property-migration";
 import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type TPSFinancesPlugin from "./main";
-import type { TransactionLogTarget } from "./types";
 
 type FinanceSettingsRoute = "data" | "rules" | "properties";
 
@@ -13,8 +12,8 @@ const FINANCE_SETTINGS_ROUTES: Array<{
 }> = [
   {
     id: "data",
-    title: "Data & routing",
-    description: "Choose storage, history, and transaction ownership.",
+    title: "Data & storage",
+    description: "Choose the Finance folder and review older transaction entries.",
   },
   {
     id: "rules",
@@ -126,7 +125,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       this.propertyDraft = Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key => [key, this.propertyBaseline!.key(key)]));
     }
     new Setting(parent).setName("Property names")
-      .setDesc("Choose Finance field names, not tag or property classification. GCM uses the core tags and kind keys for mapped records. Saving asks whether to rename existing properties. IDs stay fixed; atomic-line fields are unchanged.")
+      .setDesc("Choose Finance field names, not tag or property classification. GCM uses the core tags and kind keys for mapped records. Saving asks whether to rename existing properties. IDs stay fixed.")
       .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
         button.setDisabled(true);
         try {
@@ -160,34 +159,26 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
   }
 
   private renderDataSettings(parent: HTMLElement): void {
-    new Setting(parent).setName("Record format")
-      .addDropdown(dropdown => dropdown.addOption("atomic-note", "Atomic note").addOption("atomic-line", "Atomic line")
-        .setValue(this.plugin.settings.recordMode).onChange(async value => {
-          try { await this.plugin.setRecordMode(value === "atomic-line" ? "atomic-line" : "atomic-note"); }
-          catch (error) { new Notice(String(error)); }
-          this.display();
-        }));
-    if (this.plugin.settings.recordMode === "atomic-note") {
-      new Setting(parent).setName("Convert existing transactions")
-        .setDesc("Save each ledger entry as a note, then replace the original line with a link. Unresolved entries remain in place.")
-        .addButton(button => button.setButtonText("Convert to atomic notes").onClick(async () => {
-          button.setDisabled(true);
-          try { await this.plugin.migrateAtomicTransactions(); }
-          catch (error) { new Notice(String(error)); }
-          finally { button.setDisabled(false); }
-        }));
-      const discovery = new Setting(parent).setName("Transaction discovery")
-        .setDesc("Atomic notes only skips the vault-wide inline transaction scan on dashboards and sync. Enabling checks every note for remaining financeId markers. If an external tool later adds inline entries, choose Include inline entries again to see them.")
-        .addDropdown(dropdown => dropdown.addOption("discover", "Include inline entries").addOption("atomic-only", "Atomic notes only")
-          .setValue(this.plugin.settings.legacyTransactionDiscovery).onChange(async value => {
-            dropdown.setDisabled(true);
-            discovery.setDesc(value === "atomic-only" ? "Checking all Markdown notes for inline financeId markers…" : "Restoring inline transaction discovery…");
-            await new Promise<void>(resolve => setTimeout(resolve, 0));
-            try { await this.plugin.setLegacyTransactionDiscovery(value === "atomic-only" ? "atomic-only" : "discover"); }
-            catch (error) { new Notice(String(error)); }
-            this.display();
-          }));
-    }
+    new Setting(parent).setName("Legacy inline transactions")
+      .setDesc(this.plugin.legacyReviewRequired()
+        ? "Older inline entries may still exist. Transaction notes are the active format; adding and syncing transactions stay paused until a full check finds no remaining markers. Existing notes are left untouched."
+        : "Transaction notes are the active format. Check older inline entries when reviewing an imported or older vault; the check changes no notes.")
+      .addButton(button => button.setButtonText("Check old entries").onClick(async () => {
+        button.setDisabled(true);
+        try {
+          const result = await this.plugin.reviewLegacyTransactionMarkers();
+          new Notice(result.markers
+            ? `${result.markers} inline financeId marker${result.markers === 1 ? "" : "s"} remain; first file: ${result.firstPath}. Review or convert them before syncing. No notes changed.`
+            : "No inline financeId markers remain. Transaction writes are ready.", 12000);
+        } catch (error) { new Notice(String(error), 12000); }
+        finally { this.renderSettings(false, "Legacy inline transactions"); }
+      }))
+      .addButton(button => button.setButtonText("Convert to transaction notes").onClick(async () => {
+        button.setDisabled(true);
+        try { await this.plugin.migrateAtomicTransactions(); }
+        catch (error) { new Notice(String(error), 12000); }
+        finally { button.setDisabled(false); }
+      }));
 
     new Setting(parent)
       .setName("Finance folder")
@@ -205,16 +196,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       }));
 
-    if (this.plugin.settings.recordMode === "atomic-line") new Setting(parent)
-      .setName("Default transaction location")
-      .setDesc("Daily notes are the TPS default. Individual accounts can override this from their dashboard card.")
-      .addDropdown((dropdown) => dropdown
-        .addOption("daily-note", "Transaction date's daily note")
-        .addOption("account-note", "The transaction's account note")
-        .setValue(this.plugin.settings.transactionLogTarget)
-        .onChange(async (value) => {
-          await this.plugin.setDefaultTransactionLogTarget(value as TransactionLogTarget);
-        }));
   }
 
   private renderRulesSettings(parent: HTMLElement): void {

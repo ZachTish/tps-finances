@@ -1,12 +1,12 @@
 import type { PropertyMigration } from "./property-migration";
 import type { FinancePropertyNames } from "./finance-properties";
 export type PlaidEnvironment = "sandbox" | "development" | "production";
-export type TransactionLogTarget = "daily-note" | "account-note";
 
 export interface TPSFinancesSettings {
   propertyNames: FinancePropertyNames;
   propertyMigration: PropertyMigration | null;
   financeFolder: string;
+  /** Upgrade review markers only. Neither value selects a runtime storage mode. */
   recordMode: "atomic-note" | "atomic-line";
   legacyTransactionDiscovery: "discover" | "atomic-only";
   plaidEnvironment: PlaidEnvironment;
@@ -14,7 +14,6 @@ export interface TPSFinancesSettings {
   plaidSecretSecret: string;
   oauthRedirectUri: string;
   transactionHistoryDays: number;
-  transactionLogTarget: TransactionLogTarget;
   enableLogging: boolean;
 }
 
@@ -23,13 +22,12 @@ export const DEFAULT_SETTINGS: TPSFinancesSettings = {
   propertyMigration: null,
   financeFolder: "Finances",
   recordMode: "atomic-note",
-  legacyTransactionDiscovery: "discover",
+  legacyTransactionDiscovery: "atomic-only",
   plaidEnvironment: "sandbox",
   plaidClientIdSecret: "tps-finances-plaid-client-id",
   plaidSecretSecret: "tps-finances-plaid-secret",
   oauthRedirectUri: "",
   transactionHistoryDays: 730,
-  transactionLogTarget: "daily-note",
   enableLogging: false,
 };
 
@@ -71,8 +69,6 @@ export interface FinanceAccount {
   manual?: boolean;
   openingBalance?: number;
   valuationDate?: string;
-  transactionLogTarget?: TransactionLogTarget | "default";
-  effectiveTransactionLogTarget?: TransactionLogTarget;
 }
 
 export interface FinanceTransaction {

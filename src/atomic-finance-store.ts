@@ -15,7 +15,7 @@ type Fields = Record<string, any>;
 
 /** Atomic notes own persisted data; the line codec is only a dashboard compatibility adapter. */
 export class AtomicFinanceStore extends FinanceStore {
-  constructor(private readonly vaultApp: App, private readonly folder: string, private readonly legacyDiscovery: "discover" | "atomic-only" = "discover") { super(vaultApp, folder); }
+  constructor(private readonly vaultApp: App, private readonly folder: string) { super(vaultApp, folder); }
 
   async ensureStructure(): Promise<void> {
     await super.ensureStructure();
@@ -34,13 +34,6 @@ export class AtomicFinanceStore extends FinanceStore {
           if (!this.vaultApp.vault.getAbstractFileByPath(atomicPath)) await this.vaultApp.vault.create(atomicPath, body);
         }
       }
-    }
-  }
-
-  async restoreLineBases(): Promise<void> {
-    for(const name of ["Transactions","Holdings"]){
-      const file=this.vaultApp.vault.getAbstractFileByPath(financePath(this.folder, "", `${name}.base`));
-      if(file instanceof TFile)await this.vaultApp.vault.process(file,content=>content===financeProperties(this.vaultApp).base(atomicBase(this.folder,name))?financeProperties(this.vaultApp).base(name==="Transactions"?transactionsBaseBody(this.folder):holdingsBaseBody(this.folder)):content);
     }
   }
 
@@ -222,14 +215,6 @@ export class AtomicFinanceStore extends FinanceStore {
       Object.defineProperty(record, "sourceFile", {value:file});
       records.push(record);
     }
-    // Explicit atomic-only discovery retires the vault-wide legacy source scan.
-    if (this.legacyDiscovery === "discover") {
-      this.transactionIndex = null;
-      for (const record of await this.readLegacyTransactionRecords(source)) {
-        const accountPath=field(record.line,"account").replace(/^\[\[|\]\]$/g,"");
-        if (accountPath.startsWith(financePrefix(this.folder, "Accounts")) && !index.has(field(record.line,"financeId"))) records.push(record);
-      }
-    }
     return records;
   }
 
@@ -252,7 +237,7 @@ export class AtomicFinanceStore extends FinanceStore {
       return true;
     }
     const file = (await this.index()).get(id);
-    if (!file) return this.legacyDiscovery === "atomic-only" ? false : super.updateTransactionMetadata(id, categoryOverride, tags);
+    if (!file) return false;
     await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
     return true;
   }
