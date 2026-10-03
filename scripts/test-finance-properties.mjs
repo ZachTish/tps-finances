@@ -566,7 +566,7 @@ function configurableListCodec(){
    next[listKey]=[...new Set([...(Array.isArray(old)?old:[]),...(Array.isArray(next[listKey])?next[listKey]:[]),definition.kindList.value])];
    return next;
   },
-  decode:fields=>{const kinds=Object.keys(paths).filter(kind=>matches(fields,kind));if(kinds.length>1)throw Error('Ambiguous kind');return kinds.length?{...fields,kind:kinds[0]}:{...fields};},
+  decode:(fields,expectedKind)=>{const kinds=Object.keys(paths).filter(kind=>matches(fields,kind));if(expectedKind&&kinds.includes(expectedKind))return {...fields,kind:expectedKind};if(kinds.length>1)return {...fields};return kinds.length?{...fields,kind:kinds[0]}:{...fields};},
   configure:(kind,path)=>{paths[kind]=path;},setScheduleKey:key=>{scheduleKey=key;},setListKey:key=>{listKey=key;},setWriterEnabled:(kind,enabled)=>{if(enabled)disabled.delete(kind);else disabled.add(kind);},
  };
 }
@@ -587,6 +587,21 @@ test('GCM v2 owns configurable kind lists and Scheduled key, while old scalar, t
  codec.setScheduleKey('amount');assert.throws(()=>new FinanceProperties(undefined,financeKindCodec(codec)),/conflicts with a Finance field/);
  codec.setScheduleKey('plannedAt');codec.setListKey('amount');
  assert.throws(()=>new FinanceProperties(undefined,financeKindCodec(codec)),/Record classification property.*conflicts with a Finance field/);
+});
+test('shared visible Finance kinds decode through existing configured transaction type',()=>{
+ const codec=configurableListCodec();
+ codec.setListKey('kind');
+ codec.configure('finance-transaction','transaction/financial');
+ codec.configure('investment-transaction','transaction/financial');
+ const properties=new FinanceProperties({keys:{type:'recordType'}},financeKindCodec(codec));
+ for(const recordType of ['transaction','investmentTransaction']){
+  const raw=properties.write({kind:recordType,type:recordType,date:'2026-10-03',financeId:'tx'});
+  assert.deepEqual(raw.kind,['transaction/financial']);
+  assert.equal(raw.recordType,recordType);
+  assert.equal(properties.read(raw).kind,recordType);
+  assert.equal(properties.read(raw).type,recordType);
+ }
+ assert.deepEqual(codec.decode({kind:['transaction/financial']}).kind,['transaction/financial']);
 });
 test('GCM v2 Finance sync and generated views follow configured mappings without losing rule order',async()=>{
  const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};

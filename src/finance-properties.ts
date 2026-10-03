@@ -33,7 +33,7 @@ type KindDefinition = { parentKind: string; key: string; value: string } | { tag
 interface KindCodec {
   version?: number;
   encode(fields: Fields, existing?: Fields): Fields;
-  decode(fields: Fields): Fields;
+  decode(fields: Fields, expectedKind?: string): Fields;
   definition(kind: string): KindDefinition | null;
   readDefinitions?(kind: string): KindDefinition[];
   matches?(fields: Fields, kind: string): boolean;
@@ -68,7 +68,9 @@ export class FinanceProperties {
     const fields = {...raw};
     // GCM owns classification and the scheduled key in its v2 contract. Keep
     // Finance's saved kind/date names as read-only aliases during this rollout.
-    const decodedKind = this.kinds?.version === 2 ? this.kinds.decode(raw).kind : undefined;
+    const typeValue = raw[this.names.keys.type || "type"];
+    const expectedKind = typeof typeValue === "string" ? typeValue : undefined;
+    const decodedKind = this.kinds?.version === 2 ? this.kinds.decode(raw, expectedKind).kind : undefined;
     for (const canonical of FINANCE_PROPERTY_KEYS) {
       delete fields[canonical];
       delete fields[this.key(canonical)];
@@ -84,7 +86,7 @@ export class FinanceProperties {
       else if (typeof oldKind === "string") fields.kind = oldKind;
       else if (Array.isArray(decodedKind)) fields.kind = decodedKind;
       const primary = typeof fields.kind === "string" ? this.kinds.definition(fields.kind) : null;
-      if (primary && "kindList" in primary) delete fields[primary.kindList.key];
+      if (primary && "kindList" in primary && primary.kindList.key !== "kind") delete fields[primary.kindList.key];
       const scheduledKey = this.key("date");
       if (fields.date === undefined || fields.date === null || fields.date === "") {
         for (const legacyKey of new Set([this.names.keys.date || "date", "date"])) {
@@ -204,8 +206,9 @@ export function financeKindCodec(api: KindCodec | undefined): KindCodec | undefi
         && !api.definition(kind)) throw new Error(`Configure the ${kind} record classification in Global Context Menu before writing Finance notes.`);
       return api.encode(api.definition(kind) ? { ...fields, kind } : fields, existing);
     },
-    decode: fields => {
-      const decoded = api.decode(fields);
+    decode: (fields, expectedKind) => {
+      const hint = expectedKind && (canonical[expectedKind] || (api.definition(expectedKind) ? expectedKind : undefined));
+      const decoded = api.decode(fields, hint);
       return original[decoded.kind] && api.definition(decoded.kind) ? { ...decoded, kind: original[decoded.kind] } : decoded;
     },
   };
