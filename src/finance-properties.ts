@@ -121,6 +121,16 @@ export class FinanceProperties {
     // Unconfigured properties, including old names left after declining migration,
     // remain untouched. Only fields exposed to the mutator can be changed.
     for (const key of Object.keys(this.write(before, raw))) if (!own(next, key)) delete raw[key];
+    if (this.kinds?.version === 2) {
+      const tagsKey = this.key("tags");
+      if (own(before, "tags") && !own(next, tagsKey)) delete raw[tagsKey];
+      const scheduledKey = this.key("date");
+      if (own(next, scheduledKey)) {
+        for (const oldKey of new Set([this.names.keys.date || "date", "date"])) {
+          if (oldKey !== scheduledKey && own(raw, oldKey) && raw[oldKey] === before.date) delete raw[oldKey];
+        }
+      }
+    }
     Object.assign(raw, next);
   }
 
@@ -208,7 +218,31 @@ export function financeKindCodec(api: KindCodec | undefined): KindCodec | undefi
     },
     decode: (fields, expectedKind) => {
       const hint = expectedKind && (canonical[expectedKind] || (api.definition(expectedKind) ? expectedKind : undefined));
-      const decoded = api.decode(fields, hint);
+      let decoded: Fields;
+      try {
+        decoded = api.decode(fields, hint);
+      } catch (error) {
+        // Older investment transactions can carry the ordinary transaction's
+        // former tag. Their type distinguishes the two records, but only when
+        // GCM now maps both to the same configured kind-list value. A present
+        // kind list remains authoritative and must not be silently overridden.
+        const primary = hint && api.definition(hint);
+        let legacy: Fields | undefined;
+        try { legacy = api.decode(fields); } catch { /* Keep the original mismatch. */ }
+        const previous = typeof legacy?.kind === "string" && original[legacy.kind] ? api.definition(legacy.kind) : null;
+        if (api.version !== 2 || !hint || !original[hint] || !primary || !("kindList" in primary)) throw error;
+        const listKeys = Object.keys(fields).filter(key => key.toLowerCase() === primary.kindList.key.toLowerCase());
+        if (listKeys.length > 1) throw error;
+        const list = listKeys.length ? fields[listKeys[0]] : undefined;
+        const sharedLegacy = list === undefined && previous && "kindList" in previous
+          && primary.kindList.key.toLowerCase() === previous.kindList.key.toLowerCase()
+          && primary.kindList.value.toLowerCase() === previous.kindList.value.toLowerCase();
+        const sharedCurrent = Array.isArray(list)
+          && list.some(value => typeof value === "string" && value.toLowerCase() === primary.kindList.value.toLowerCase())
+          && api.matches?.(fields, hint) === true;
+        if (!sharedLegacy && !sharedCurrent) throw error;
+        decoded = { ...fields, kind: hint };
+      }
       return original[decoded.kind] && api.definition(decoded.kind) ? { ...decoded, kind: original[decoded.kind] } : decoded;
     },
   };

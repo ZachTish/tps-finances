@@ -564,9 +564,15 @@ function configurableListCodec(){
    const next={...fields};delete next.kind;
    const old=existing?.[listKey];if(old!==undefined&&!Array.isArray(old)&&old!==scalar[kind])throw Error('Incompatible existing kind');
    next[listKey]=[...new Set([...(Array.isArray(old)?old:[]),...(Array.isArray(next[listKey])?next[listKey]:[]),definition.kindList.value])];
+   const retired=new Set(Object.keys(paths).filter(candidate=>paths[candidate]===definition.kindList.value)
+    .flatMap(candidate=>aliases[candidate]||[]).filter(alias=>'tag'in alias).map(alias=>alias.tag));
+   if(Array.isArray(next.tags)){
+    const kept=next.tags.filter(tag=>!retired.has(tag));
+    if(kept.length!==next.tags.length){if(kept.length)next.tags=kept;else delete next.tags;}
+   }
    return next;
   },
-  decode:(fields,expectedKind)=>{const kinds=Object.keys(paths).filter(kind=>matches(fields,kind));if(expectedKind&&kinds.includes(expectedKind))return {...fields,kind:expectedKind};if(kinds.length>1)return {...fields};return kinds.length?{...fields,kind:kinds[0]}:{...fields};},
+  decode:(fields,expectedKind)=>{const kinds=Object.keys(paths).filter(kind=>matches(fields,kind));if(expectedKind&&kinds.includes(expectedKind))return {...fields,kind:expectedKind};if(expectedKind&&kinds.length)throw Error('Expected record kind does not match its configured classification.');if(kinds.length>1)return {...fields};return kinds.length?{...fields,kind:kinds[0]}:{...fields};},
   configure:(kind,path)=>{paths[kind]=path;},setScheduleKey:key=>{scheduleKey=key;},setListKey:key=>{listKey=key;},setWriterEnabled:(kind,enabled)=>{if(enabled)disabled.delete(kind);else disabled.add(kind);},
  };
 }
@@ -602,6 +608,32 @@ test('shared visible Finance kinds decode through existing configured transactio
   assert.equal(properties.read(raw).type,recordType);
  }
  assert.deepEqual(codec.decode({kind:['transaction/financial']}).kind,['transaction/financial']);
+});
+test('legacy shared Finance classification uses configured path and the existing transaction type',()=>{
+ const codec=configurableListCodec();
+ codec.setListKey('kind');
+ codec.configure('finance-transaction','transaction/financial');
+ codec.configure('investment-transaction','transaction/financial');
+ const properties=new FinanceProperties(undefined,financeKindCodec(codec));
+ const legacy={tags:['kind/financial/transaction'],type:'investmentTransaction',financeId:'investment-1',date:'2026-09-30'};
+ assert.equal(properties.read(legacy).kind,'investmentTransaction');
+ assert.equal(properties.read(legacy).date,'2026-09-30');
+ assert.deepEqual(legacy.tags,['kind/financial/transaction']);
+ const updated=structuredClone(legacy);
+ properties.mutate(updated,fields=>{fields.amount=6;});
+ assert.deepEqual(updated.kind,['transaction/financial']);
+ assert.ok(!('tags'in updated)&&!('date'in updated));
+ assert.equal(updated.when,'2026-09-30');
+ assert.equal(properties.read(updated).kind,'investmentTransaction');
+ const labeled={...structuredClone(legacy),tags:['kind/financial/transaction','manual']};
+ properties.mutate(labeled,fields=>{fields.amount=6;});
+ assert.deepEqual(labeled.tags,['manual']);
+ codec.configure('investment-transaction','transaction/investment');
+ assert.throws(()=>properties.read(legacy),/Expected record kind/);
+ codec.configure('investment-transaction','transaction/financial');
+ assert.throws(()=>properties.read({...legacy,kind:['entity/food']}),/Expected record kind/);
+ assert.throws(()=>properties.read({...legacy,Kind:['entity/food']}),/Expected record kind/);
+ assert.throws(()=>properties.read({...legacy,Kind:'unrelated'}),/Expected record kind/);
 });
 test('GCM v2 Finance sync and generated views follow configured mappings without losing rule order',async()=>{
  const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};

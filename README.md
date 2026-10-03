@@ -1,5 +1,11 @@
 # TPS Finances
 
+## 2.1.1 — Preserve legacy investment updates during kind migration
+
+Some older investment transactions have `type: investmentTransaction` but carry the former ordinary-finance tag. Finance now uses that existing type to read the note when GCM settings map both transaction types to the same kind-list value. A differing configured path or a conflicting authored kind list still fails closed, including a differently cased kind property. A direct Finance update writes the configured list and Scheduled field, drops the superseded date field, and retains only tags that GCM's configured writer keeps. It does not scan or repair notes on startup, display, or navigation. Finance contains no fixed path or tag taxonomy; the shared path and aliases come from GCM settings.
+
+This backward-compatible patch changes no Finance settings or IDs and keeps minimum Obsidian 1.12.0. It is intended to run with GCM 7.0.1 so an update can retire old classification tags while keeping manual tags. Regression tests cover legacy reads, mutation round-trips, date folding, and conflicting classifications; a real GCM/Finance codec integration probe checks the installed contract. Full validation and Test-vault verification are in [2.1.1 release notes](release-notes/2.1.1.md).
+
 ## 2.1.0 — Configurable kind-list compatibility
 
 When TPS Global Context Menu exposes `frontmatterKinds` v2, Finance records use its configured kind-list mapping for new and updated account, transaction, investment, holding, snapshot, rule, and budget notes. Finances stores no duplicate taxonomy or kind-path setting. GCM's custom **Scheduled** property's key determines the date field written to these notes; Finances continues using its internal `date` value for provider logic and display. Existing Finance property-name settings for kind and date remain saved as read-only legacy aliases while this migration is in progress. In the Finances Properties page, GCM-owned keys are shown for reference and configured through the existing **Configure in GCM** handoff.
