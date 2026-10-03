@@ -78,6 +78,7 @@
 .tps-finances-section { margin-top: 22px; }
 .tps-finances-section h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 16px; }
 .tps-finances-section h2 svg { width: 17px; height: 17px; color: var(--text-muted); }
+.tps-finances-browse-button { margin-bottom: 10px; }
 .tps-finances-section-actions { margin-left: auto; }
 .tps-finances-section-actions button { padding: 4px 8px; border: 0; background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
 .tps-finances-budget-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
@@ -152,6 +153,7 @@
   .tps-finances-title { flex-direction: column; gap: 2px; }
   .tps-finances-button { min-width: 38px; padding: 0 9px; font-size: 0; }
   .tps-finances-button svg { width: 17px; height: 17px; }
+  .tps-finances-button.tps-finances-browse-button { width: 100%; min-height: 44px; height: auto; font-size: var(--font-ui-small); white-space: normal; }
   .tps-finances-summary { gap: 8px; }
   .tps-finances-row { padding: 10px; }
   .tps-finances-classify-button { opacity: 1; }

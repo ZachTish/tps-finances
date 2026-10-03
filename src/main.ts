@@ -110,10 +110,7 @@ export default class TPSFinancesPlugin extends Plugin {
       sync: (reason = "api") => this.syncAll(reason),
       getDashboardModel: () => this.getDashboardModel(),
       renderHomeSummary: (container: HTMLElement) => this.renderHomeSummary(container),
-      getTransactionsBasePath: () => {
-        const alternate=financePath(this.settings.financeFolder, "", "Transactions (Atomic notes).base");
-        return this.settings.recordMode === "atomic-note" && this.app.vault.getAbstractFileByPath(alternate) ? alternate : financePath(this.settings.financeFolder, "", "Transactions.base");
-      },
+      getTransactionsBasePath: () => this.getTransactionsBasePath(),
       getDailyNotePathForIsoDate: (isoDate: string) => this.getDailyNotePathForIsoDate(isoDate),
       classificationBases: { version: 1, preview: (change: {recordKind: string; from: {tag: string} | {parentKind: string; key: string; value: string}; to: {tag: string} | {parentKind: string; key: string; value: string}}) =>
         previewGeneratedBaseClassificationChange(this.app, this.settings.financeFolder, change),
@@ -726,8 +723,15 @@ export default class TPSFinancesPlugin extends Plugin {
     }).open();
   }
 
-  async openFinanceBase(name: "Rules" | "Budgets"): Promise<void> {
-    const path = financePath(this.settings.financeFolder, "", `${name}.base`);
+  private getTransactionsBasePath(): string {
+    const alternate = financePath(this.settings.financeFolder, "", "Transactions (Atomic notes).base");
+    return this.settings.recordMode === "atomic-note" && this.app.vault.getAbstractFileByPath(alternate)
+      ? alternate
+      : financePath(this.settings.financeFolder, "", "Transactions.base");
+  }
+
+  async openFinanceBase(name: "Rules" | "Budgets" | "Transactions"): Promise<void> {
+    const path = name === "Transactions" ? this.getTransactionsBasePath() : financePath(this.settings.financeFolder, "", `${name}.base`);
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) throw new Error(`${name}.base could not be found.`);
     const leaf = this.app.workspace.getLeaf("tab");

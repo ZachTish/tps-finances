@@ -60,7 +60,7 @@ function harness(full = false) {
   let current=model(),reader=()=>Promise.resolve(current);
   if (full) globalThis.document = {createElement:tag=>new Element(tag,{},doc),createTextNode:text=>new Element('#text',{text},doc)};
   const actions=[];
-  const plugin={getDashboardModel(sources){counts.models++;return reader(sources);},addMonthlyBudget(...args){actions.push(['add',...args]);},editMonthlyBudget(value){actions.push(['edit',value.id]);},async openTransactionSource(value){actions.push(['open',value.financeId]);}};
+  const plugin={getDashboardModel(sources){counts.models++;return reader(sources);},addMonthlyBudget(...args){actions.push(['add',...args]);},editMonthlyBudget(value){actions.push(['edit',value.id]);},async openTransactionSource(value){actions.push(['open',value.financeId]);},async openFinanceBase(name){actions.push(['base',name]);}};
   const view=new TPSFinancesView({root},plugin);
   if (!full) for(const key of ['renderHeader','renderAccounts','renderHoldings','renderTransactions','renderWelcome'])view[key]=()=>{};
   const summary=view.renderSummary.bind(view);
@@ -74,6 +74,22 @@ test('route changes redraw the current model without rereading it, even in a bur
   const h=harness();await h.view.onOpen();assert.equal(h.counts.models,1);
   for(let i=0;i<25;i++){h.click('budget');await h.settle();assert.equal(h.control('budget').getAttribute('aria-pressed'),'true');h.click('overview');await h.settle();}
   assert.equal(h.counts.models,1,'display-only route changes must not scan the vault');
+});
+
+test('overview caps recent rows at 80 and browses the complete Transactions Base without another model read',async()=>{
+  const h=harness(true),m=model();
+  m.transactions=Array.from({length:85},(_,index)=>({...m.transactions[0],financeId:`transaction-${index}`}));
+  h.setModel(m);
+  await h.view.onOpen();
+  assert.ok(h.root.all().some(element=>element.textContent==='Latest 80 transactions'));
+  assert.equal(h.root.all().filter(element=>element.className.includes('tps-finances-row--clickable')).length,80);
+  const browse=h.root.all().find(element=>element.attrs['aria-label']==='Browse all transactions');
+  assert.equal(browse?.tagName,'button');assert.equal(browse?.type,'button');
+  assert.ok(browse.className.includes('tps-finances-browse-button'));
+  assert.ok(browse.all().some(element=>element.textContent==='Browse all transactions'));
+  browse.fire('click');await Promise.resolve();
+  assert.deepEqual(h.actions,[['base','Transactions']]);
+  assert.equal(h.counts.models,1);
 });
 
 test('month, currency and expanded transactions use the loaded model and preserve focus',async()=>{
@@ -159,6 +175,7 @@ test('narrow dashboard layout wraps transaction context and gives its controls t
   for(const selector of ['.tps-finances-root .tps-finances-button','.tps-finances-view-routes button','.tps-finances-account-route','.tps-finances-budget-toolbar input','.tps-finances-budget-toolbar select','.tps-finances-plan-section button','.tps-finances-plan-section summary'])assert.ok(narrow.includes(selector),selector);
   assert.match(narrow,/\.tps-finances-plan-section summary \{ min-height: 44px; \}/);
   assert.match(narrow,/\.tps-finances-root \.tps-finances-button \{ min-width: 44px; \}/);
+  assert.match(css,/@media \(max-width: 520px\)[\s\S]*?\.tps-finances-button\.tps-finances-browse-button \{[^}]*min-height: 44px;[^}]*font-size: var\(--font-ui-small\);[^}]*white-space: normal/);
   for(const selector of ['.tps-finances-classify-button','.tps-finances-plan-edit','.tps-finances-plan-toggle'])assert.ok(narrow.includes(selector),selector);
   assert.match(narrow,/\.tps-finances-plan-toggle \{ width: 44px; min-width: 44px; height: 44px; \}/);
   assert.match(narrow,/\.tps-finances-plan-row \{ grid-template-columns:repeat\(3,minmax\(0,1fr\)\) 44px; gap:8px; \}/);
@@ -173,6 +190,7 @@ test('narrow dashboard layout wraps transaction context and gives its controls t
   await welcome.view.onOpen();assertRootAction(welcome,'Open connections');
   const manual=harness(true),accountModel=model();accountModel.accounts[0]={...accountModel.accounts[0],manual:true,type:'other',current:100};manual.setModel(accountModel);
   await manual.view.onOpen();assertRootAction(manual,'Open note');assertRootAction(manual,'Update value');
+  assertRootAction(manual,'Browse all transactions');
 });
 
 

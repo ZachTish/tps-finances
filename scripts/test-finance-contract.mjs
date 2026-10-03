@@ -132,6 +132,7 @@ const mainActionBuild = await build({
             "export class SecretComponent {}",
             "export class Setting {}",
             "export class TFile {}",
+            "globalThis.__tpsMainActionTFile = TFile;",
             "export class WorkspaceLeaf {}",
             "export const Platform = { isDesktopApp: true };",
             "export const normalizePath = (value) => value;",
@@ -770,12 +771,13 @@ test("dashboard action-owned render errors remain visible without a silent fallb
   assert.match(dashboardNodeText(harness.view.contentEl), /action refresh failed/);
 });
 
-test("dashboard action wrapper is limited to self-refreshing mutations", () => {
+test("dashboard action wrapper is limited to owned mutations and navigation", () => {
   const actionTargets = [...dashboard.matchAll(/this\.runAction\(\(\) => this\.plugin\.(\w+)/g)]
     .map((match) => match[1])
     .sort();
   assert.deepEqual(actionTargets, [
     "addCashTransaction",
+    "openFinanceBase",
     "setAccountTransactionLogTarget",
     "setAccountTransactionLogTarget",
     "setAccountTransactionLogTarget",
@@ -2462,6 +2464,24 @@ test('root dashboard identifies accounts and snapshots without mistaking holding
  const plugin=new mainActionModule.default({vault:{getMarkdownFiles:()=>files},metadataCache:{getFileCache:f=>({frontmatter:f.fm})}});
  plugin.settings={financeFolder:'',recordMode:'atomic-note'};
  assert.equal(plugin.readAccountsFromVault(null).length,1);assert.deepEqual(plugin.accountFiles().map(f=>f.path),['Wallet.md']);assert.equal(plugin.latestSnapshotFile().path,'Old/Snapshot.md');
+});
+
+test('Browse all transactions opens the selected atomic or line Base without loading the dashboard',async()=>{
+ const File=globalThis.__tpsMainActionTFile;
+ const base=new File(),alternate=new File();
+ base.path='Finances/Transactions.base';alternate.path='Finances/Transactions (Atomic notes).base';
+ const files=new Map([[base.path,base],[alternate.path,alternate]]),opened=[];
+ let scans=0,reads=0,reveals=0;
+ const leaf={async openFile(file){opened.push(file);}};
+ const app={vault:{getAbstractFileByPath:path=>files.get(path)||null,getMarkdownFiles(){scans++;return[];},cachedRead(){reads++;throw Error('unexpected body read');}},workspace:{getLeaf:mode=>{assert.equal(mode,'tab');return leaf;},revealLeaf(value){assert.equal(value,leaf);reveals++;}}};
+ const plugin=new mainActionModule.default(app);plugin.settings={financeFolder:'Finances',recordMode:'atomic-note'};
+ await plugin.openFinanceBase('Transactions');
+ plugin.settings.recordMode='atomic-line';await plugin.openFinanceBase('Transactions');
+ plugin.settings.recordMode='atomic-note';files.delete(alternate.path);await plugin.openFinanceBase('Transactions');
+ assert.deepEqual(opened,[alternate,base,base]);assert.equal(reveals,3);
+ assert.deepEqual({scans,reads},{scans:0,reads:0});
+ files.delete(base.path);await assert.rejects(plugin.openFinanceBase('Transactions'),/Transactions\.base could not be found/);
+ assert.equal(reveals,3,'a missing Base must not open a new tab');
 });
 
 test('dashboard passes its display or source mode to the budget reader',async()=>{

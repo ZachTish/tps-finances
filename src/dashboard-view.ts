@@ -72,7 +72,7 @@ interface FinancesViewPlugin {
   addCategorizationRule(): void;
   addMonthlyBudget(bucket?: BudgetBucket, currency?: string): void;
   editMonthlyBudget(budget: FinanceBudget): void;
-  openFinanceBase(name: "Rules" | "Budgets"): Promise<void>;
+  openFinanceBase(name: "Rules" | "Budgets" | "Transactions"): Promise<void>;
   setAccountTransactionLogTarget(account: FinanceAccount, target: "default" | "daily-note" | "account-note"): Promise<void>;
 }
 
@@ -335,7 +335,10 @@ export class TPSFinancesView extends ItemView {
   }
 
   private renderTransactions(root: HTMLElement, transactions: DashboardTransaction[]): void {
-    const section = sectionEl(root, "Recent transactions", "receipt-text");
+    const section = sectionEl(root, "Latest 80 transactions", "receipt-text");
+    const browse = actionButton("table", "Browse all transactions", () => void this.runAction(() => this.plugin.openFinanceBase("Transactions")));
+    browse.addClass("tps-finances-browse-button");
+    section.appendChild(browse);
     const list = section.createDiv({ cls: "tps-finances-list" });
     for (const transaction of transactions.slice(0, 80)) {
       const row = list.createDiv({ cls: "tps-finances-row tps-finances-row--clickable" });
