@@ -9,6 +9,7 @@ import { boundedWork } from "./bounded-work";
 import * as logger from "./logger";
 import { providerTransactionFields, proposedTransactionTitle, titleSignature, transactionTitle, type TransactionTitleChange } from "./transaction-titles";
 import { absentProviderProperties, compactTransactionProperties, emptyTransactionProperties } from "./transaction-properties";
+import type { DashboardFileSnapshot } from "./dashboard-file-snapshot";
 
 type Fields = Record<string, any>;
 
@@ -69,7 +70,7 @@ export class AtomicFinanceStore extends FinanceStore {
     return financeProperties(this.vaultApp).read(match ? parseYaml(match[1]) || {} : {});
   }
 
-  private async index(fieldsByFile?: Map<TFile, Fields>, source: TransactionReadSource = "source", requiredIds?: Set<string>): Promise<Map<string, TFile>> {
+  private async index(fieldsByFile?: Map<TFile, Fields>, source: TransactionReadSource = "source", requiredIds?: Set<string>, snapshot?: DashboardFileSnapshot): Promise<Map<string, TFile>> {
     // Keep the configuration gate; financeId itself is fixed and never mapped.
     financeProperties(this.vaultApp);
     const result = new Map<string, TFile>();
@@ -78,10 +79,12 @@ export class AtomicFinanceStore extends FinanceStore {
     const missingCache = new Set<TFile>();
     const order = new Map<TFile, number>();
     const transactionPrefix = financePrefix(this.folder, "Transactions");
-    for (const [position, file] of this.vaultApp.vault.getMarkdownFiles().entries()) {
+    for (const [position, file] of (snapshot?.files ?? this.vaultApp.vault.getMarkdownFiles()).entries()) {
       const inTransactionFolder = Boolean(this.folder) && file.path.startsWith(transactionPrefix);
       // The path already makes these files candidates. Inspect checks metadata
       // or current source once below, so this preliminary cache lookup is redundant.
+      // Even in a dashboard snapshot, root candidates need a fresh metadata
+      // preflight; a previous consumer's memo cannot decide transaction identity.
       const cache = inTransactionFolder ? null : this.vaultApp.metadataCache.getFileCache(file);
       if (inTransactionFolder || cache?.frontmatter?.financeId) {
         files.push(file);
@@ -209,10 +212,10 @@ export class AtomicFinanceStore extends FinanceStore {
     await this.applyTransactions(transactions, [], [], {plaidUserId:"",items:[],providerIdentityMap:{}}, accountPaths);
   }
 
-  async readTransactionRecords(source: TransactionReadSource = "source"): Promise<{line:string;path:string;lineNumber:number;sourceFile?:TFile}[]> {
+  async readTransactionRecords(source: TransactionReadSource = "source", snapshot?: DashboardFileSnapshot): Promise<{line:string;path:string;lineNumber:number;sourceFile?:TFile}[]> {
     const records: {line:string;path:string;lineNumber:number;sourceFile?:TFile}[] = [];
     const fieldsByFile = new Map<TFile, Fields>();
-    const index = await this.index(fieldsByFile, source);
+    const index = await this.index(fieldsByFile, source, undefined, snapshot);
     for (const file of index.values()) {
       const fm = fieldsByFile.get(file)!;
       const record: {line:string;path:string;lineNumber:number;sourceFile?:TFile} = {line: fieldsLine(fm), path:file.path, lineNumber:0};

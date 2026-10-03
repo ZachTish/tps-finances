@@ -1095,14 +1095,14 @@ test("monthly budget aggregation traverses transactions once regardless of budge
 });
 
 test("snapshot reads reuse one document and select the latest file in one pass", () => {
-  const latestSnapshotStart = main.indexOf("private latestSnapshotFile()");
+  const latestSnapshotStart = main.indexOf("private latestSnapshotFile(");
   const latestSnapshotImplementation = main.slice(latestSnapshotStart, main.indexOf("private accountFiles()", latestSnapshotStart));
-  assert.match(latestSnapshotImplementation, /for \(const file of this\.app\.vault\.getMarkdownFiles\(\)\)/);
+  assert.match(latestSnapshotImplementation, /for \(const file of files\?\.files \?\? this\.app\.vault\.getMarkdownFiles\(\)\)/);
   assert.doesNotMatch(latestSnapshotImplementation, /\.filter\(|\.sort\(/);
 
   const readDocumentStart = main.indexOf("private async readLatestSnapshotDocument");
   const readDocumentImplementation = main.slice(readDocumentStart, main.indexOf("private parseSnapshotBalanceMap", readDocumentStart));
-  assert.match(readDocumentImplementation, /const file = this\.latestSnapshotFile\(\)/);
+  assert.match(readDocumentImplementation, /const file = this\.latestSnapshotFile\(files\)/);
   assert.match(readDocumentImplementation, /const date = String\(/);
   assert.match(readDocumentImplementation, /const content = await this\.app\.vault\.cachedRead\(file\)/);
   assert.match(readDocumentImplementation, /lines: content\.split\("\\n"\)/);
@@ -1126,8 +1126,8 @@ test("snapshot reads reuse one document and select the latest file in one pass",
   const dashboardImplementation = main.slice(dashboardStart, dashboardEnd);
   assert.equal((dashboardImplementation.match(/readLatestSnapshotDocument\([^)]*\)/g) || []).length, 1);
   assert.match(dashboardImplementation, /const accountLabels = new Map<string, AccountLabel>\(\)/);
-  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot, accountLabels, sourcePaths\)/);
-  assert.match(dashboardImplementation, /parseSnapshotHoldings\(snapshot, accounts, sourcePaths\)/);
+  assert.match(dashboardImplementation, /readAccountsFromVault\(snapshot, accountLabels, sourcePaths, files\)/);
+  assert.match(dashboardImplementation, /parseSnapshotHoldings\(snapshot, accounts, sourcePaths, files\)/);
 
   const syncStart = main.indexOf("async syncAll(");
   const syncImplementation = main.slice(syncStart, dashboardStart);
@@ -1270,7 +1270,7 @@ test("dashboard account labels reuse the account scan without changing label sem
     sourcePath: "Daily/2026-07-15.md",
     sourceLine: 7,
   }]);
-  assert.equal(fileListReads, 2, "the dashboard must list Markdown files only for snapshot selection and one account scan");
+  assert.equal(fileListReads, 1, "one model-scoped file list feeds snapshot selection and account labels");
   assert.equal(metadataReads, 2, "each account note's metadata must be read once while account cards and labels are built");
 });
 
@@ -1333,7 +1333,7 @@ test("dashboard model reads one coherent snapshot document for balances and hold
     holdingValue: model.holdings[0].value,
   }, {
     snapshotReads: 1,
-    fileListReads: 2,
+    fileListReads: 1,
     balance: 100,
     available: 90,
     holdingValue: 100,
@@ -1395,7 +1395,7 @@ test("snapshot reuse preserves no-snapshot and rich parsing semantics", async ()
 
   const noSnapshotModel = await snapshotDashboardPlugin(noSnapshotApp).getDashboardModel();
 
-  assert.equal(fileListReads, 2);
+  assert.equal(fileListReads, 1);
   assert.equal(snapshotReads, 0);
   assert.deepEqual(noSnapshotModel.accounts.map((account) => ({
     id: account.financeAccountId,
@@ -1454,7 +1454,7 @@ test("snapshot reuse preserves no-snapshot and rich parsing semantics", async ()
   const semanticModel = await snapshotDashboardPlugin(semanticApp).getDashboardModel();
   const accountsById = new Map(semanticModel.accounts.map((account) => [account.financeAccountId, account]));
 
-  assert.equal(fileListReads, 2);
+  assert.equal(fileListReads, 1);
   assert.equal(snapshotReads, 1);
   assert.deepEqual({
     checking: {
@@ -2331,7 +2331,7 @@ test("disconnect and logging behavior protect financial integrations", () => {
   assert.match(main, /externalActions\.register/);
   assert.match(main, /renderHomeSummary/);
   assert.match(main, /openTransactionSource/);
-  assert.match(main, /financeProperties\(this.app\)\.cache\(this.app, file\)\?\.date/);
+  assert.match(main, /files\?\.fields\(file\).*financeProperties\(this.app\)\.cache\(this.app, file\).*\?\.date/);
   assert.match(store, /Accounts\.base/);
   assert.match(store, /Transactions\.base/);
   assert.match(store, /Holdings\.base/);
@@ -2465,7 +2465,7 @@ test('root dashboard identifies accounts and snapshots without mistaking holding
 });
 
 test('dashboard passes its display or source mode to the budget reader',async()=>{
- const plugin=new mainActionModule.default({});plugin.settings={financeFolder:'Finances',recordMode:'atomic-note'};
+ const plugin=new mainActionModule.default({vault:{getMarkdownFiles:()=>[]},metadataCache:{getFileCache:()=>null}});plugin.settings={financeFolder:'Finances',recordMode:'atomic-note'};
  plugin.readLatestSnapshotDocument=async()=>null;plugin.readAccountsFromVault=()=>[];plugin.parseSnapshotHoldings=()=>[];
  plugin.getConnectedItems=()=>[];plugin.getRelayStatus=()=>null;plugin.getPlaidSetupStatus=()=>({state:'ready'});
  const observed=[];plugin.createStore=()=>({readTransactionRecords:async source=>{observed.push(['transactions',source]);return [];},readRules:()=>[],readBudgetEntries:async(_paths,source)=>{observed.push(['budgets',source]);return [];}});

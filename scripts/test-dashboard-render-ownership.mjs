@@ -237,6 +237,33 @@ test('metadata bursts during a read coalesce and closing releases the view depen
   const h=eventHarness();await h.view.onOpen();const pending=deferred();let n=0;h.setReader(sources=>{sources?.add('Fresh.md');return ++n===1?pending.promise:Promise.resolve(model(-19));});const load=h.view.render();await Promise.resolve();
   const work=[];for(let i=0;i<50;i++)work.push(h.event('changed',new EventFile('Account.md'),'changed source'));pending.resolve(model(-2));await Promise.all([load,...work]);assert.equal(h.counts.models,3);assert.equal(h.view.lastOverview.transactions[0].amount,-19);await h.view.onClose();assert.equal(h.view.sourcePaths,null);
 });
+test('metadata publication of a new atomic note schedules a model after an in-flight file snapshot',async()=>{
+ const h=eventHarness('Finances');await h.view.onOpen();
+ const pending=deferred(),latest=model(-23);let calls=0;
+ h.setReader(sources=>{sources?.add('Finances/Accounts/Checking.md');return ++calls===1?pending.promise:Promise.resolve(latest)});
+ const inFlight=h.view.render();await Promise.resolve();
+ const published=h.event('changed',new EventFile('Finances/Transactions/New.md',{financeId:'new',type:'transaction'}),'');
+ pending.resolve(model(-10));await Promise.all([inFlight,published]);
+ assert.equal(h.counts.models,3,'initial, in-flight, then the metadata-triggered replacement');
+ assert.equal(h.view.lastOverview,latest,'the later model wins over the captured file list');
+});
+test('classification-style explicit refresh and metadata event can cost one or two model builds',async t=>{
+  const together=eventHarness();await together.view.onOpen();
+  await Promise.all([together.event('changed',new EventFile('Journal.md'),'updated'),together.owner.refreshDashboard()]);
+  assert.equal(together.counts.models,2,'same-turn event and explicit refresh share one model build');
+
+  const during=eventHarness();await during.view.onOpen();const pending=deferred();let calls=0;
+  during.setReader(sources=>{sources?.add('Journal.md');return ++calls===1?pending.promise:Promise.resolve(model(-19));});
+  const event= during.event('changed',new EventFile('Journal.md'),'updated');await Promise.resolve();
+  assert.equal(during.counts.models,2,'metadata event started one new model');
+  const explicit=during.owner.refreshDashboard();pending.resolve(model(-2));await Promise.all([event,explicit]);
+  assert.equal(during.counts.models,3,'explicit refresh during the read starts a second model');
+
+  const later=eventHarness();await later.view.onOpen();await later.owner.refreshDashboard();
+  await later.event('changed',new EventFile('Journal.md'),'updated');
+  assert.equal(later.counts.models,3,'metadata event after explicit refresh starts a second model');
+  t.diagnostic(`classification-style save: same-turn ${together.counts.models-1} model build; event during/after read ${during.counts.models-1}/${later.counts.models-1} builds`);
+});
 
 test('dashboard explicitly requests indexed properties on open and data refresh',async()=>{
  const h=harness(),sources=[];h.view.plugin.getDashboardModel=async(paths,source)=>{sources.push(source);paths.add('Account.md');return model();};

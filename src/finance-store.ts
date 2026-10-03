@@ -7,6 +7,7 @@ import { providerIdentityKey } from "./identity";
 import { appendTransactionIfMissing, removeTransactionContent, upsertTransactionContent } from "./transaction-content";
 import { boundedWork } from "./bounded-work";
 import { budgetInputError, budgetOverlapError, budgetBucket, budgetCurrency, accountLinkPath } from "./flex-budget";
+import type { DashboardFileSnapshot } from "./dashboard-file-snapshot";
 
 const GENERATED_START = "<!-- tps-finances:generated:start -->";
 const GENERATED_END = "<!-- tps-finances:generated:end -->";
@@ -214,7 +215,7 @@ export class FinanceStore {
     return path;
   }
 
-  async readTransactionRecords(_source: TransactionReadSource = "source"): Promise<TransactionRecord[]> {
+  async readTransactionRecords(_source: TransactionReadSource = "source", _files?: DashboardFileSnapshot): Promise<TransactionRecord[]> {
     return this.readLegacyTransactionRecords("source");
   }
 
@@ -272,11 +273,12 @@ export class FinanceStore {
     return { moved, skipped };
   }
 
-  readRules(sourcePaths?: Set<string>): FinanceRule[] {
+  readRules(sourcePaths?: Set<string>, files?: DashboardFileSnapshot): FinanceRule[] {
     const prefix = financePrefix(this.rootFolder, "Rules");
-    return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || financeProperties(this.app).cache(this.app, file)?.kind === "financeRule")).map((file) => {
+    const fields = (file: TFile) => files?.fields(file) ?? financeProperties(this.app).cache(this.app, file);
+    return (files?.files ?? this.app.vault.getMarkdownFiles()).filter((file) => file.path.startsWith(prefix) && (Boolean(this.rootFolder) || fields(file)?.kind === "financeRule")).map((file) => {
       sourcePaths?.add(file.path);
-      const value = financeProperties(this.app).cache(this.app, file) || {};
+      const value = fields(file) || {};
       return {
         id: String(value.financeRuleId || file.path),
         name: String(value.title || file.basename),
@@ -318,17 +320,17 @@ export class FinanceStore {
     return this.app.vault.create(path, financeProperties(this.app).note(body));
   }
 
-  async readBudgetEntries(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<FinanceBudget[]> {
+  async readBudgetEntries(sourcePaths?: Set<string>, source: TransactionReadSource = "source", snapshot?: DashboardFileSnapshot): Promise<FinanceBudget[]> {
     const records: FinanceBudget[] = [];
     const prefix = financePrefix(this.rootFolder, "Budgets");
-    const properties = financeProperties(this.app);
+    const properties = snapshot?.properties ?? financeProperties(this.app);
     const files: { file: TFile; indexed: ReturnType<typeof properties.read> | null }[] = [];
-    for (const file of this.app.vault.getMarkdownFiles()) {
+    for (const file of snapshot?.files ?? this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(prefix)) continue;
-      const raw = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      const raw = (snapshot ? snapshot.cache(file) : this.app.metadataCache.getFileCache(file))?.frontmatter;
       // A missing or empty index can hide a newly-created root budget. Indexed
       // ordinary notes can be excluded without entering the content read queue.
-      const indexed = raw && Object.keys(raw).some(key => key !== "position") ? properties.read(raw) : null;
+      const indexed = raw && Object.keys(raw).some(key => key !== "position") ? snapshot?.fields(file) ?? properties.read(raw) : null;
       if (indexed && indexed.kind !== "financeBudget" && !indexed.financeBudgetId && (source === "metadata" || !this.rootFolder)) continue;
       files.push({ file, indexed: source === "metadata" ? indexed : null });
     }

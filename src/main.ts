@@ -23,6 +23,7 @@ import { PlaidClient } from "./plaid-client";
 import { assertLocalPlaidLinkAvailable, openLocalPlaidLink } from "./plaid-link";
 import { TPSFinancesSettingTab } from "./settings";
 import { CoalescedSnapshotWriter, reconcilePersistedSnapshot } from "./settings-persistence";
+import { DashboardFileSnapshot } from "./dashboard-file-snapshot";
 import {
   DEFAULT_SETTINGS,
   DeviceItemState,
@@ -588,17 +589,18 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async getDashboardModel(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<DashboardModel> {
-    const snapshot = await this.readLatestSnapshotDocument(sourcePaths);
+    const files = new DashboardFileSnapshot(this.app);
+    const snapshot = await this.readLatestSnapshotDocument(sourcePaths, files);
     const accountLabels = new Map<string, AccountLabel>();
-    const accounts = this.readAccountsFromVault(snapshot, accountLabels, sourcePaths);
-    const holdings = this.parseSnapshotHoldings(snapshot, accounts, sourcePaths);
+    const accounts = this.readAccountsFromVault(snapshot, accountLabels, sourcePaths, files);
+    const holdings = this.parseSnapshotHoldings(snapshot, accounts, sourcePaths, files);
     const store = this.createStore();
     // Manual records are always atomic notes, also when provider logging uses atomic lines.
     const transactionStore = accounts.some(account => account.manual) && this.settings.recordMode === "atomic-line"
       ? new AtomicFinanceStore(this.app, this.settings.financeFolder) : store;
-    const transactionRecords = await transactionStore.readTransactionRecords(source);
+    const transactionRecords = await transactionStore.readTransactionRecords(source, files);
     if (sourcePaths) for (const record of transactionRecords) sourcePaths.add(record.path);
-    const rules = store.readRules(sourcePaths);
+    const rules = store.readRules(sourcePaths, files);
     const classifyForDashboard = prepareTransactionClassifier(rules);
     const transactions: DashboardTransaction[] = [];
     for (const record of transactionRecords) {
@@ -614,7 +616,7 @@ export default class TPSFinancesPlugin extends Plugin {
     transactions.sort((left, right) => right.date.localeCompare(left.date));
     applyManualCashBalances(accounts, transactions);
     const month = localDate(new Date()).slice(0, 7);
-    const budgetEntries = await store.readBudgetEntries(sourcePaths, source);
+    const budgetEntries = await store.readBudgetEntries(sourcePaths, source, files);
     const budgets = calculateMonthlyBudgetProgress(budgetEntries.filter(budget=>budgetBucket(budget)==="category" && budgetCurrency(budget)==="USD"), transactions, month);
     const lastSyncAt = this.getConnectedItems().map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
@@ -1078,13 +1080,14 @@ export default class TPSFinancesPlugin extends Plugin {
     snapshot: StoredFinanceSnapshot | null,
     accountLabels?: Map<string, AccountLabel>,
     sourcePaths?: Set<string>,
+    files?: DashboardFileSnapshot,
   ): FinanceAccount[] {
     const prefix = financePrefix(this.settings.financeFolder, "Accounts");
     const balances = this.parseSnapshotBalanceMap(snapshot?.lines || []);
     const accounts: FinanceAccount[] = [];
-    for (const file of this.app.vault.getMarkdownFiles()) {
+    for (const file of files?.files ?? this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(prefix)) continue;
-      const frontmatter = financeProperties(this.app).cache(this.app, file) || {};
+      const frontmatter = files?.fields(file) ?? financeProperties(this.app).cache(this.app, file) ?? {};
       if (!this.settings.financeFolder && frontmatter.kind !== "account") continue;
       sourcePaths?.add(file.path);
       if (accountLabels) {
@@ -1128,11 +1131,11 @@ export default class TPSFinancesPlugin extends Plugin {
       || left.name.localeCompare(right.name));
   }
 
-  private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[], sourcePaths?: Set<string>): FinanceHolding[] {
+  private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[], sourcePaths?: Set<string>, files?: DashboardFileSnapshot): FinanceHolding[] {
     if(this.settings.recordMode === "atomic-note") {
-      const notes=this.app.vault.getMarkdownFiles().filter(file=>file.path.startsWith(financePrefix(this.settings.financeFolder, "Holdings")))
+      const notes=(files?.files ?? this.app.vault.getMarkdownFiles()).filter(file=>file.path.startsWith(financePrefix(this.settings.financeFolder, "Holdings")))
         .map(file => {
-          const fm = financeProperties(this.app).cache(this.app, file) || {};
+          const fm = files?.fields(file) ?? financeProperties(this.app).cache(this.app, file) ?? {};
           if (fm.type === "holding") sourcePaths?.add(file.path);
           return fm;
         }).filter(fm=>fm.type==="holding");
@@ -1167,11 +1170,11 @@ export default class TPSFinancesPlugin extends Plugin {
     });
   }
 
-  private async readLatestSnapshotDocument(sourcePaths?: Set<string>): Promise<StoredFinanceSnapshot | null> {
-    const file = this.latestSnapshotFile();
+  private async readLatestSnapshotDocument(sourcePaths?: Set<string>, files?: DashboardFileSnapshot): Promise<StoredFinanceSnapshot | null> {
+    const file = this.latestSnapshotFile(files);
     if (!file) return null;
     sourcePaths?.add(file.path);
-    const date = String(financeProperties(this.app).cache(this.app, file)?.date || file.basename);
+    const date = String((files?.fields(file) ?? financeProperties(this.app).cache(this.app, file))?.date || file.basename);
     const content = await this.app.vault.cachedRead(file);
     return {
       date,
@@ -1191,13 +1194,13 @@ export default class TPSFinancesPlugin extends Plugin {
     return map;
   }
 
-  private latestSnapshotFile(): TFile | null {
+  private latestSnapshotFile(files?: DashboardFileSnapshot): TFile | null {
     const prefix = financePrefix(this.settings.financeFolder, "Snapshots");
     let latest: TFile | null = null;
     let latestDate = "";
-    for (const file of this.app.vault.getMarkdownFiles()) {
+    for (const file of files?.files ?? this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(prefix)) continue;
-      const fm = financeProperties(this.app).cache(this.app, file);
+      const fm = files?.fields(file) ?? financeProperties(this.app).cache(this.app, file);
       if (!this.settings.financeFolder && fm?.type !== "financeSnapshot") continue;
       const date = String(fm?.date || "");
       const dateOrder = date.localeCompare(latestDate);

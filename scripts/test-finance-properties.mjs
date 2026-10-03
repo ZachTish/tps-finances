@@ -327,7 +327,7 @@ test('atomic-only classification targets one rendered file without reading 10,00
  scans=metadata=cached=fresh=frontmatterWrites=legacyWrites=0;
  const refreshStarted=performance.now();const refreshed=await p.plugin.getDashboardModel(new Set(),'metadata');const refreshMs=performance.now()-refreshStarted;
  assert.equal(refreshed.transactions.length,10000);
- assert.ok(scans>0);assert.ok(metadata>=10000);assert.equal(frontmatterWrites,0);assert.equal(legacyWrites,0);
+ assert.equal(scans,1,'one model uses one shared Markdown file list');assert.equal(metadata,30000,'root readers memoize one lookup and atomic discovery rechecks candidates twice');assert.equal(cached,0);assert.equal(fresh,0);assert.equal(frontmatterWrites,0);assert.equal(legacyWrites,0);
  t.diagnostic(`synthetic 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${scans} enumerations, ${metadata} metadata lookups, ${cached} cached reads, ${fresh} fresh reads, 0 writes`);
 });
 test('folder-mode save is path-bound while dashboard and home summaries use indexed display reads',async t=>{
@@ -343,14 +343,81 @@ test('folder-mode save is path-bound while dashboard and home summaries use inde
  const saveStarted=performance.now();await classificationSave(p.plugin,row);const saveMs=performance.now()-saveStarted;
  assert.deepEqual({scans,metadata,cached,fresh,writes},{scans:0,metadata:0,cached:0,fresh:0,writes:1});reset();
  const refreshStarted=performance.now();const model=await p.plugin.getDashboardModel(new Set(),'metadata');const refreshMs=performance.now()-refreshStarted;
- assert.equal(model.transactions.length,10000);assert.equal(metadata,10000,'transaction folder candidates need only their inspection lookup');assert.equal(cached,0);assert.equal(fresh,0);assert.equal(writes,0);
+ assert.equal(model.transactions.length,10000);assert.equal(scans,1);assert.equal(metadata,10000,'transaction folder candidates need only their inspection lookup');assert.equal(cached,0);assert.equal(fresh,0);assert.equal(writes,0);
  const refreshCounts={scans,metadata,cached,fresh,writes};reset();
  const sourceStarted=performance.now();await p.plugin.getDashboardModel();const sourceMs=performance.now()-sourceStarted;
- assert.equal(cached,10000,'the old source-backed home model reads every atomic body');assert.equal(metadata,0,'folder candidates need no metadata preflight for source reads');const sourceCounts={scans,metadata,cached,fresh,writes};reset();
+ assert.equal(scans,1);assert.equal(cached,10000,'the old source-backed home model reads every atomic body');assert.equal(metadata,0,'folder candidates need no metadata preflight for source reads');const sourceCounts={scans,metadata,cached,fresh,writes};reset();
  const element={empty(){},addClass(){},createDiv(){return this},createEl(){return this},createSpan(){return this},addEventListener(){}};
  const homeStarted=performance.now();await p.plugin.renderHomeSummary(element);const homeMs=performance.now()-homeStarted;
- assert.equal(cached,0,'read-only home display uses the indexed model');assert.equal(metadata,10000);assert.equal(fresh,0);assert.equal(writes,0);
+ assert.equal(scans,1);assert.equal(cached,0,'read-only home display uses the indexed model');assert.equal(metadata,10000);assert.equal(fresh,0);assert.equal(writes,0);
  t.diagnostic(`synthetic folder 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${JSON.stringify(refreshCounts)}; old source model: ${sourceMs.toFixed(1)} ms, ${JSON.stringify(sourceCounts)}; home summary: ${homeMs.toFixed(1)} ms, ${JSON.stringify({scans,metadata,cached,fresh,writes})}`);
+});
+test('model-scoped discovery enumerates once with 90,000 indexed unrelated notes',async t=>{
+ for(const folder of ['', 'Finances']){
+  const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const transactionPath=folder?'Finances/Transactions/selected.md':'Transactions/selected.md';
+  await h.add(transactionPath,classificationFields('selected'));
+  for(let i=0;i<90000;i++)await h.app.vault.create(`Other/ordinary-${i}.md`,'Ordinary note\n');
+  const getFileCache=h.app.metadataCache.getFileCache,ordinary={frontmatter:{kind:'task'}};
+  h.app.metadataCache.getFileCache=file=>file.path.startsWith('Other/')?ordinary:getFileCache(file);
+  let scans=0,metadata=0,cached=0,fresh=0;
+  const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead,read=h.app.vault.read,cache=h.app.metadataCache.getFileCache;
+  h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};
+  h.app.metadataCache.getFileCache=file=>{metadata++;return cache(file)};
+  h.app.vault.cachedRead=async file=>{cached++;return cachedRead(file)};
+  h.app.vault.read=async file=>{fresh++;return read(file)};
+  const model=await p.plugin.getDashboardModel(new Set(),'metadata');
+  assert.deepEqual(model.transactions.map(row=>row.financeId),['selected']);
+  assert.equal(scans,1);assert.equal(metadata,folder?90001:180003);assert.equal(cached,0);assert.equal(fresh,0);
+  t.diagnostic(`synthetic 90k unrelated ${folder||'root'}: ${scans} enumeration, ${metadata} metadata lookups, ${cached} cached reads, ${fresh} fresh reads`);
+ }
+});
+test('model snapshot keeps atomic discovery fresh when metadata changes or disappears between readers',async()=>{
+ for(const phase of ['late-candidate','vanished-inspection']){
+  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  const path=phase==='late-candidate'?'Accounts/Edited transaction.md':'Inbox/Edited transaction.md';
+  const fields=classificationFields('edited',{account:'[[Accounts/Checking]]'});
+  await h.add(path,fields);
+  let targetLookups=0,scans=0,bodyReads=0;
+  const originalCache=h.app.metadataCache.getFileCache,originalList=h.app.vault.getMarkdownFiles,originalRead=h.app.vault.cachedRead;
+  h.app.metadataCache.getFileCache=file=>{
+   if(file.path!==path)return originalCache(file);
+   targetLookups++;
+   if(phase==='late-candidate'&&targetLookups===1)return {frontmatter:{kind:'account'}};
+   if(phase==='vanished-inspection'&&targetLookups===2)return null;
+   return originalCache(file);
+  };
+  h.app.vault.getMarkdownFiles=()=>{scans++;return originalList()};
+  h.app.vault.cachedRead=async file=>{bodyReads++;return originalRead(file)};
+  const model=await p.plugin.getDashboardModel(new Set(),'metadata');
+  assert.deepEqual(model.transactions.map(row=>row.financeId),['edited'],phase);
+  assert.equal(scans,1);assert.equal(targetLookups,phase==='late-candidate'?3:2);
+  assert.equal(bodyReads,phase==='late-candidate'?0:1,'only a missing inspection cache needs current source');
+ }
+});
+test('one model keeps its file list while a later model sees a note created during the read',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const snapshot=await h.add('Snapshots/Latest.md',{type:'financeSnapshot',date:'2026-09-20'});
+ const originalRead=h.app.vault.cachedRead;let created=false,scans=0;
+ const originalList=h.app.vault.getMarkdownFiles;
+ h.app.vault.getMarkdownFiles=()=>{scans++;return originalList()};
+ h.app.vault.cachedRead=async file=>{
+  if(file===snapshot&&!created){created=true;await h.add('Transactions/New.md',classificationFields('new'));}
+  return originalRead(file);
+ };
+ const first=await p.plugin.getDashboardModel(new Set(),'metadata');
+ assert.equal(created,true);assert.deepEqual(first.transactions,[]);assert.equal(scans,1);
+ const second=await p.plugin.getDashboardModel(new Set(),'metadata');
+ assert.deepEqual(second.transactions.map(row=>row.financeId),['new']);assert.equal(scans,2);
+});
+test('model snapshot still rejects duplicate atomic IDs before presenting a model',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ await h.add('Transactions/First.md',classificationFields('same'));
+ await h.add('Transactions/Second.md',classificationFields('same'));
+ let writes=0;const process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args)};
+ await assert.rejects(p.plugin.getDashboardModel(new Set(),'metadata'),/Duplicate atomic transaction identity/);
+ assert.equal(writes,0);
 });
 test('rendered manual cash classification uses the same atomic-only target',async()=>{
  const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
@@ -571,4 +638,47 @@ test('indexed dashboard preserves mapped results while default API remains sourc
   const current=await p.getDashboardModel(),sourceReads=reads;reads=0;const sources=new Set(),indexed=await p.getDashboardModel(sources,'metadata');
   assert.deepEqual(indexed,current);assert.equal(reads,sourceReads-1);assert.ok(sources.has('tx1.md'));assert.ok(sources.has(paths.get('account1')));
  }
+});
+test('model snapshot preserves complete source and indexed results with mapped GCM kinds in root and folder modes',async()=>{
+ const defs={account:{parentKind:'entity',key:'entityKind',value:'account'},'finance-transaction':{parentKind:'transaction',key:'transactionKind',value:'financial'},holding:{parentKind:'entity',key:'entityKind',value:'holding'},'finance-rule':{parentKind:'rule',key:'ruleKind',value:'finance'},'finance-budget':{parentKind:'budget',key:'budgetKind',value:'finance'}};
+ const codec={definition:k=>defs[k]||null,encode:f=>{const d=defs[f.kind];return d?{...f,kind:d.parentKind,[d.key]:d.value}:{...f}},decode:f=>{const entry=Object.entries(defs).find(([,d])=>f.kind===d.parentKind&&f[d.key]===d.value);if(!entry)return {...f};const result={...f,kind:entry[0]};delete result[entry[1].key];return result}};
+ for(const folder of ['', 'Finances']){
+  const h=harness(mapped()),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+  h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+  const prefix=folder?`${folder}/`:'';
+  const add=(section,name,fields)=>h.add(`${prefix}${section}/${name}.md`,financeProperties(h.app).write(fields));
+  await add('Accounts','Checking',{kind:'account',financeAccountId:'checking',accountName:'Checking',accountType:'depository',accountSubtype:'checking',currency:'USD',current:100,available:100});
+  await add('Holdings','Fund',{kind:'holding',type:'holding',financeAccountId:'checking',securityId:'fund',name:'Fund',ticker:'FND',quantity:2,price:50,value:100,currency:'USD',active:true});
+  await add('Transactions','Coffee',{...classificationFields('coffee',{account:`[[${prefix}Accounts/Checking]]`,categoryOverride:'Dining',tags:['cafe']}),kind:'transaction'});
+  await add('Rules','Coffee rule',{kind:'financeRule',financeRuleId:'rule',title:'Coffee rule',enabled:true,priority:1,nameContains:'Coffee',category:'Dining',tags:['matched']});
+  await add('Budgets','Dining',{kind:'financeBudget',financeBudgetId:'budget',title:'Dining',category:'Dining',monthlyLimit:100,currency:'USD'});
+  await add('Snapshots','Latest',{type:'financeSnapshot',date:'2026-09-20'});
+  const sourcePaths=new Set(),indexedPaths=new Set();
+  const source=await p.plugin.getDashboardModel(sourcePaths,'source');
+  const indexed=await p.plugin.getDashboardModel(indexedPaths,'metadata');
+  assert.deepEqual(indexed,source,`${folder||'root'} indexed model matches current source`);
+  assert.deepEqual([...indexedPaths].sort(),[...sourcePaths].sort());
+  assert.deepEqual([...indexedPaths].sort(),['Accounts/Checking','Budgets/Dining','Holdings/Fund','Rules/Coffee rule','Snapshots/Latest','Transactions/Coffee'].map(path=>`${prefix}${path}.md`).sort());
+  assert.equal(indexed.accounts.length,1);assert.equal(indexed.accounts[0].financeAccountId,'checking');assert.equal(indexed.accounts[0].current,100);
+  assert.equal(indexed.holdings.length,1);assert.equal(indexed.holdings[0].securityId,'fund');assert.equal(indexed.holdings[0].value,100);
+  assert.equal(indexed.transactions.length,1);assert.equal(indexed.transactions[0].financeId,'coffee');assert.equal(indexed.transactions[0].category,'Dining');
+  assert.equal(indexed.transactions[0].ruleId,'rule');assert.deepEqual(indexed.transactions[0].tags,['#cafe','#matched']);
+  assert.equal(indexed.budgetEntries?.length,1);assert.equal(indexed.budgetEntries[0].id,'budget');assert.equal(indexed.budgets.length,1);
+ }
+});
+test('root ambiguous budget metadata still reads source and stale ordinary metadata waits for indexing',async()=>{
+ const h=harness(),p=pluginHarness(h);await p.plugin.setLegacyTransactionDiscovery('atomic-only');
+ const ambiguous=await h.add('Budgets/Ambiguous.md',{kind:'financeBudget',financeBudgetId:'ambiguous',title:'Ambiguous',category:'Dining',monthlyLimit:20});
+ const stale=await h.add('Budgets/Stale.md',{kind:'financeBudget',financeBudgetId:'stale',title:'Stale',category:'Dining',monthlyLimit:30});
+ const originalCache=h.app.metadataCache.getFileCache,originalRead=h.app.vault.cachedRead;
+ h.app.metadataCache.getFileCache=file=>file===ambiguous?null:file===stale?{frontmatter:{kind:'task'}}:originalCache(file);
+ const paths=[];h.app.vault.cachedRead=async file=>{paths.push(file.path);return originalRead(file)};
+ const first=await p.plugin.getDashboardModel(new Set(),'metadata');
+ assert.deepEqual(first.budgetEntries?.map(entry=>entry.id),['ambiguous']);
+ assert.deepEqual(paths,['Budgets/Ambiguous.md','Budgets/Ambiguous.md'],'an unindexed root note is inspected for atomic identity and budget content');
+ h.app.metadataCache.getFileCache=file=>file===ambiguous?null:originalCache(file);
+ paths.length=0;
+ const second=await p.plugin.getDashboardModel(new Set(),'metadata');
+ assert.deepEqual(second.budgetEntries?.map(entry=>entry.id).sort(),['ambiguous','stale']);
+ assert.deepEqual(paths,['Budgets/Ambiguous.md','Budgets/Ambiguous.md']);
 });
