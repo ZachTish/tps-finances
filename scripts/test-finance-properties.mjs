@@ -39,6 +39,23 @@ test('configured names validate duplicates, blank names, identity collisions and
  assert.throws(()=>mapped().assertIdentityKey('custom type'),/identity/);
  assert.throws(()=>propertyChanges(new FinanceProperties({keys:{type:'custom'}}),new FinanceProperties({keys:{kind:'custom'}})),/currently used/);
  assert.deepEqual(normalizePropertyNames(),{keys:{}});
+ assert.throws(()=>normalizePropertyNames({keys:{currency:null}}),/Choose a plain, nonempty property name/);
+});
+test('explicit canonical property names survive normalization without changing note or Base behavior',()=>{
+ const keys=Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key=>[key,key]));
+ assert.deepEqual(normalizePropertyNames({keys}),{keys});
+ const properties=new FinanceProperties({keys});
+ assert.deepEqual(properties.names,{keys});
+ assert.equal(properties.customized,false);
+ assert.deepEqual(propertyChanges(new FinanceProperties(),properties),[]);
+ const note='---\nkind: account\ncurrency: USD\n---\nPersonal body\n';
+ assert.equal(properties.note(note),note);
+ const base='filters:\n  and:\n    - kind == "account"\nviews: []\n';
+ assert.equal(properties.base(base),base);
+ const changed=new FinanceProperties({keys:{...keys,amount:'total'}});
+ assert.equal(changed.customized,true);
+ assert.deepEqual(propertyChanges(properties,changed),[{from:'amount',to:'total'}]);
+ assert.equal(changed.read(changed.write({amount:0,currency:'USD'})).amount,0);
 });
 test('mutation callback failures are atomic',()=>{
  const raw={transactionType:'transaction',type:'keep',custom:'keep'},before=structuredClone(raw);
@@ -108,6 +125,15 @@ test('migration updates recognized generated Bases but preserves customized defi
 test('settings expose every group, preserve existing actions, and explicitly ask migration or decline',()=>{
  const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & storage','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Configure in GCM','Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/api\?\.ui\?\.openCustomPropertySettings/);assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
  const properties=readFileSync('src/finance-properties.ts','utf8');assert.doesNotMatch(properties,/aliases\(/);assert.doesNotMatch(readFileSync('src/types.ts','utf8'),/propertyDraft|propertyGroup/);
+});
+test('property editor keeps a sparse explicit map and exposes a generic reset control',()=>{
+ const source=readFileSync('src/settings.ts','utf8');
+ assert.match(source,/this\.propertyDraft = \{ \.\.\.this\.propertyBaseline\.names\.keys \}/);
+ assert.match(source,/setValue\(this\.propertyDraft!\[key\] \?\? key\)/);
+ assert.match(source,/addToggle\(toggle => \{/);
+ assert.match(source,/delete this\.propertyDraft!\[key\]/);
+ assert.match(source,/Store \$\{propertyLabel\(key\)\} name explicitly/);
+ assert.match(source,/JSON\.stringify\(from\.names\) === JSON\.stringify\(to\.names\)/);
 });
 function pluginHarness(h){
  const plugin=new FinancePlugin(h.app);plugin.settings={propertyNames:h.plugin.settings.propertyNames,propertyMigration:null,financeFolder:'',recordMode:'atomic-note',legacyTransactionDiscovery:'discover'};h.app.plugins.plugins['tps-finances']=plugin;
@@ -488,6 +514,28 @@ test('saving with migration renames first, then commits settings; no previous na
 test('declining migration saves strict new names without touching old note values',async()=>{
  const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction',amount:-4});const before=h.contents.get('A.md');
  await p.plugin.changePropertyNames(from,to,false);assert.equal(h.contents.get('A.md'),before);assert.equal(financeProperties(h.app).read(h.fm('A.md')).type,undefined);assert.equal((await h.store.readTransactionRecords()).length,0);assert.deepEqual(p.disk().propertyNames,to.names);
+});
+test('pin-only property saves and resets keep other pins without scanning or rewriting notes',async()=>{
+ const h=harness(),p=pluginHarness(h),fields=['institution','accountName','accountType','currency','current','available','limit','providerTitle','providerName','merchant','account','amount','pending','subtype'];
+ const keys=Object.fromEntries(fields.map(key=>[key,key]));
+ await h.add('Account.md',{financeAccountId:'account',type:'account',currency:'USD'});
+ const before=h.contents.get('Account.md');
+ h.app.vault.getMarkdownFiles=()=>{throw Error('Unexpected vault scan')};
+ await p.plugin.changePropertyNames(new FinanceProperties(),new FinanceProperties({keys}),false);
+ assert.deepEqual(p.disk().propertyNames,{keys});
+ assert.equal(h.contents.get('Account.md'),before);
+ assert.equal(new FinanceProperties(p.disk().propertyNames).customized,false);
+ const rest={...keys};delete rest.currency;
+ await p.plugin.changePropertyNames(new FinanceProperties({keys}),new FinanceProperties({keys:rest}),false);
+ assert.deepEqual(p.disk().propertyNames,{keys:rest});
+ assert.equal(h.contents.get('Account.md'),before);
+});
+test('failed pin-only settings save reconciles the persisted property map',async()=>{
+ const h=harness(),p=pluginHarness(h),to=new FinanceProperties({keys:{currency:'currency'}});
+ p.failSave(1);
+ await assert.rejects(p.plugin.changePropertyNames(new FinanceProperties(),to,false),/settings write failure/);
+ assert.deepEqual(p.plugin.settings.propertyNames,{keys:{}});
+ assert.deepEqual(p.disk().propertyNames,{keys:{}});
 });
 test('journal is durable before writes; initial settings failure leaves all notes unchanged',async()=>{
  const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction'});const before=h.contents.get('A.md');p.failSave(1);await assert.rejects(p.plugin.changePropertyNames(from,to,true),/settings write failure/);assert.equal(h.contents.get('A.md'),before);assert.equal(p.plugin.settings.propertyMigration,null);

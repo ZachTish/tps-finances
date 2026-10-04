@@ -1,6 +1,6 @@
 import { FinanceConnectionSettings } from "./connection-settings";
 import { parseWalletParts, walletTransactionID } from "./finance-wallet";
-import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration, previewGeneratedBaseClassificationChange } from "./property-migration";
+import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration, previewGeneratedBaseClassificationChange, propertyChanges } from "./property-migration";
 import { financeProperties, FinanceProperties, normalizePropertyNames } from "./finance-properties";
 import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
 import type { FinanceBudget } from "./types";
@@ -170,6 +170,17 @@ export default class TPSFinancesPlugin extends Plugin {
     to.assertIdentityKey((this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
     this.syncing = true;
     try {
+      if (!propertyChanges(from, to).length) {
+        this.settings.propertyNames = to.names;
+        try { await this.saveSettings(); }
+        catch (error) {
+          try { this.settings.propertyNames = normalizeSettings(await this.loadData()).propertyNames; }
+          catch { this.settings.propertyNames = from.names; throw new Error("Could not verify saved finance property names. Reload TPS Finances before using finance records."); }
+          throw error;
+        }
+        logger.flow("Properties", "names-saved", { migrated: 0 });
+        return;
+      }
       const {journal, conflicts} = await previewPropertyMigration(this.app, from, to, this.settings.financeFolder);
       if (migrate && conflicts.length) throw new Error(conflicts[0]);
       if (!migrate) journal.notes = [];

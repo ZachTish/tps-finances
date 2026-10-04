@@ -17,13 +17,14 @@ export function normalizePropertyNames(value?: Partial<FinancePropertyNames>): F
   const result: FinancePropertyNames = { keys: {} };
   const owners = new Map<string, string>();
   for (const canonical of FINANCE_PROPERTY_KEYS) {
-    const key = value?.keys?.[canonical] ?? canonical;
+    const explicit = Boolean(value?.keys && own(value.keys, canonical));
+    const key = explicit ? value!.keys![canonical] : canonical;
     if (typeof key !== "string" || !key.trim() || key !== key.trim() || /[\r\n\t\[\]#.:]/.test(key) || reserved.has(key)) {
       throw new Error(`Choose a plain, nonempty property name for ${canonical}.`);
     }
     if ((FINANCE_PROPERTY_KEYS.includes(key) && key !== canonical) || owners.has(key)) throw new Error(`Property “${key}” is already used by another finance field.`);
     owners.set(key, canonical);
-    if (key !== canonical) result.keys[canonical] = key;
+    if (explicit) result.keys[canonical] = key;
   }
   return result;
 }
@@ -62,7 +63,7 @@ export class FinanceProperties {
     if (canonical === "date" && this.kinds?.version === 2) return this.kinds.propertyKey?.("scheduled") || this.names.keys.date || "date";
     return this.names.keys[canonical] || canonical;
   }
-  get customized(): boolean { return Boolean(this.kinds || Object.keys(this.names.keys).length); }
+  get customized(): boolean { return Boolean(this.kinds || Object.entries(this.names.keys).some(([field, key]) => field !== key)); }
 
   read(raw: Fields = {}): Fields {
     const fields = {...raw};

@@ -1,6 +1,6 @@
 import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS } from "./finance-properties";
 import { previewPropertyMigration, propertyChanges } from "./property-migration";
-import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting, ToggleComponent } from "obsidian";
 import type TPSFinancesPlugin from "./main";
 
 type FinanceSettingsRoute = "data" | "rules" | "properties";
@@ -122,16 +122,23 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     }
     if (!this.propertyDraft) {
       this.propertyBaseline = new FinanceProperties(this.plugin.settings.propertyNames);
-      this.propertyDraft = Object.fromEntries(FINANCE_PROPERTY_KEYS.map(key => [key, this.propertyBaseline!.key(key)]));
+      this.propertyDraft = { ...this.propertyBaseline.names.keys };
     }
     new Setting(parent).setName("Property names")
-      .setDesc("Choose Finance field names. Global Context Menu owns record classification and the Scheduled property; saved Finance kind and date names remain legacy read aliases. Saving asks whether to rename existing Finance properties. IDs stay fixed.")
+      .setDesc("Choose Finance field names. The toggle beside a field stores its current name explicitly; turning it off restores the default. Global Context Menu owns record classification and the Scheduled property; saved Finance kind and date names remain legacy read aliases. Renames ask whether to update existing notes. IDs stay fixed.")
       .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
         button.setDisabled(true);
         try {
           const from = this.propertyBaseline!, to = new FinanceProperties({keys: this.propertyDraft!});
           to.assertIdentityKey((this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
-          if (!propertyChanges(from, to).length) { new Notice("No property names changed."); return; }
+          if (JSON.stringify(from.names) === JSON.stringify(to.names)) { new Notice("No property names changed."); return; }
+          if (!propertyChanges(from, to).length) {
+            await this.plugin.changePropertyNames(from, to, false);
+            this.propertyDraft = null;
+            new Notice("Finance property names saved.");
+            this.renderSettings(false, "Property names");
+            return;
+          }
           const preview = await previewPropertyMigration(this.app, from, to, this.plugin.settings.financeFolder);
           new PropertyNamesModal(this.app, from, to, preview, async migrate => {
             await this.plugin.changePropertyNames(from, to, migrate);
@@ -154,13 +161,28 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       if (gcmKinds?.version === 2 && (key === "kind" || key === "date")) {
         const currentKey = gcmKinds.propertyKey?.(key === "date" ? "scheduled" : "kind");
         new Setting(parent).setName(key === "date" ? "Scheduled" : "Record kind")
-          .setDesc(`Managed in Global Context Menu${currentKey ? ` as “${currentKey}”` : ""}. Legacy Finance key “${this.propertyDraft![key]}” remains readable during migration.`);
+          .setDesc(`Managed in Global Context Menu${currentKey ? ` as “${currentKey}”` : ""}. Legacy Finance key “${this.propertyDraft![key] ?? key}” remains readable during migration.`);
         continue;
       }
+      let explicitToggle: ToggleComponent | null = null;
       new Setting(parent).setName(propertyLabel(key)).addText(text => {
-        text.setValue(this.propertyDraft![key]).onChange(value => { this.propertyDraft![key] = value.trim(); });
+        text.setValue(this.propertyDraft![key] ?? key).onChange(value => {
+          this.propertyDraft![key] = value.trim();
+          explicitToggle?.setValue(true);
+        });
         text.inputEl.setAttribute("aria-label", `${propertyLabel(key)} property name`);
         text.inputEl.spellcheck = false;
+      }).addToggle(toggle => {
+        explicitToggle = toggle;
+        toggle.setValue(Object.prototype.hasOwnProperty.call(this.propertyDraft, key)).onChange(explicit => {
+          if (explicit) this.propertyDraft![key] = this.propertyDraft![key] ?? key;
+          else {
+            delete this.propertyDraft![key];
+            this.renderSettings(false, propertyLabel(key));
+          }
+        });
+        toggle.setTooltip("Store this property name explicitly in Finance settings; turn off to restore its default name.");
+        toggle.toggleEl.setAttribute("aria-label", `Store ${propertyLabel(key)} name explicitly`);
       });
     }
   }

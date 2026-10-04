@@ -1,6 +1,6 @@
 {
   "name": "tps-finances",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Accounts, transactions, and investments as atomic notes for TPS.",
   "main": "main.js",
   "scripts": {

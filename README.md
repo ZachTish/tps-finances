@@ -1,5 +1,9 @@
 # TPS Finances
 
+## 2.1.2 — Explicit Finance field names for external writers
+
+Finances now preserves an explicitly saved property name even when it equals the default. The Properties editor lets you pin or reset each editable name. Pin-only saves change settings without scanning or rewriting notes or Bases; actual renames keep the existing preview and migration flow. This lets external writers read the physical field names from one Finances-owned map and refuse an incomplete configuration. Kind paths and shared Scheduled, title, and record identity keys remain owned by GCM. Minimum Obsidian remains 1.12.0. Validation and release artifacts are in [2.1.2 release notes](release-notes/2.1.2.md).
+
 ## 2.1.1 — Preserve legacy investment updates during kind migration
 
 Some older investment transactions have `type: investmentTransaction` but carry the former ordinary-finance tag. Finance now uses that existing type to read the note when GCM settings map both transaction types to the same kind-list value. A differing configured path or a conflicting authored kind list still fails closed, including a differently cased kind property. A direct Finance update writes the configured list and Scheduled field, drops the superseded date field, and retains only tags that GCM's configured writer keeps. It does not scan or repair notes on startup, display, or navigation. Finance contains no fixed path or tag taxonomy; the shared path and aliases come from GCM settings.
@@ -262,6 +266,8 @@ Add `ZachTish/tps-finances` to BRAT. Use manual updates with `Latest`, or freeze
 ## Configurable finance properties — 1.7.0
 
 **Settings → Properties** configures every non-ID frontmatter name written by Finances. Common fields include **Record kind** (`kind`), **Record type** (`type`), title, date, currency, tags and finance source. The five property groups are Common, Transactions, Accounts & assets, Holdings, and Rules & budgets. Provider imports, manual cash/asset records, corrections, budgets, categorization, dashboards, title cleanup and generated Bases use the same mapping. Classification values are unchanged. IDs remain fixed, except the existing identity property owned by Global Context Menu.
+
+The toggle beside each editable field controls whether its name is stored explicitly in `propertyNames.keys`. An explicit name may equal the default, which lets companion tools confirm the agreed field name from Finance settings. Editing a name makes it explicit; turning its toggle off restores the default. Saving or resetting one field preserves the other explicit names. A save that only adds or removes default-valued entries changes no note or Base format and does not scan or rewrite notes; actual renames keep the existing migration confirmation. Finances reads and writes the same physical keys whether a default name is implicit or explicit, and uses this one map for both cases.
 
 Edit names, then choose **Save property names**. The confirmation lists old → new names and the count of affected finance notes, with **Migrate and save**, **Save without migrating**, and **Cancel**. Migration is explicit and covers identified finance notes throughout the vault, including records in older folders. It moves each value to the new key and removes its old key, preserving bodies, paths, IDs and unrelated properties. A conflicting destination value blocks migration; identical duplicate values can be consolidated. Declining migration leaves existing properties untouched. Finances reads only the currently configured name: there are no fallback aliases, historical property-name lists or background migrations. Older unmigrated records can disappear from finance views until their properties are updated.
 
