@@ -165,7 +165,9 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         continue;
       }
       let explicitToggle: ToggleComponent | null = null;
-      new Setting(parent).setName(propertyLabel(key)).addText(text => {
+      const field = new Setting(parent).setName(propertyLabel(key));
+      if (key === "type" && gcmKinds?.version === 2) field.setDesc("Reads older records and distinguishes transaction kinds that share one list value. Finances omits it when the configured kind values differ.");
+      field.addText(text => {
         text.setValue(this.propertyDraft![key] ?? key).onChange(value => {
           this.propertyDraft![key] = value.trim();
           explicitToggle?.setValue(true);

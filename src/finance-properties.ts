@@ -1,6 +1,11 @@
 import { App, TFile, parseYaml, stringifyYaml } from "obsidian";
 
 type Fields = Record<string, any>;
+const RECORD_TYPE_FOR_KIND: Record<string, string> = {
+  transaction: "transaction",
+  investmentTransaction: "investmentTransaction",
+  holding: "holding",
+};
 export interface FinancePropertyNames { keys: Record<string, string>; }
 export const PROPERTY_GROUPS: Record<string, readonly string[]> = {
   "Common": ["kind", "type", "title", "date", "currency", "tags", "financeSource"],
@@ -65,6 +70,16 @@ export class FinanceProperties {
   }
   get customized(): boolean { return Boolean(this.kinds || Object.entries(this.names.keys).some(([field, key]) => field !== key)); }
 
+  private needsTypeDiscriminator(kind: string): boolean {
+    if (kind !== "transaction" && kind !== "investmentTransaction") return false;
+    const other = kind === "transaction" ? "investmentTransaction" : "transaction";
+    const current = this.kinds?.definition(kind);
+    const counterpart = this.kinds?.definition(other);
+    return Boolean(current && counterpart && "kindList" in current && "kindList" in counterpart
+      && current.kindList.key.toLowerCase() === counterpart.kindList.key.toLowerCase()
+      && current.kindList.value.toLowerCase() === counterpart.kindList.value.toLowerCase());
+  }
+
   read(raw: Fields = {}): Fields {
     const fields = {...raw};
     // GCM owns classification and the scheduled key in its v2 contract. Keep
@@ -86,6 +101,11 @@ export class FinanceProperties {
       if (typeof decodedKind === "string") fields.kind = decodedKind;
       else if (typeof oldKind === "string") fields.kind = oldKind;
       else if (Array.isArray(decodedKind)) fields.kind = decodedKind;
+      if (!RECORD_TYPE_FOR_KIND[fields.kind] && raw.financeId && this.kinds.matches?.(raw, "transaction")
+        && this.kinds.matches?.(raw, "investmentTransaction")) {
+        throw new Error("Finance transaction classification is ambiguous. Configure distinct kinds or a discriminator in Global Context Menu.");
+      }
+      if (typeof fields.kind === "string" && RECORD_TYPE_FOR_KIND[fields.kind]) fields.type = RECORD_TYPE_FOR_KIND[fields.kind];
       const primary = typeof fields.kind === "string" ? this.kinds.definition(fields.kind) : null;
       if (primary && "kindList" in primary && primary.kindList.key !== "kind") delete fields[primary.kindList.key];
       const scheduledKey = this.key("date");
@@ -107,7 +127,16 @@ export class FinanceProperties {
       throw new Error("Configure the Scheduled custom-property key in Global Context Menu before writing Finance dates.");
     }
     const raw: Fields = {};
-    for (const [canonical, value] of Object.entries(this.kinds ? this.kinds.encode(fields, existing) : fields)) {
+    const source = { ...fields };
+    if (this.kinds?.version === 2 && typeof source.kind === "string" && RECORD_TYPE_FOR_KIND[source.kind]
+      && own(source, "type") && source.type !== RECORD_TYPE_FOR_KIND[source.kind]) {
+      throw new Error(`Finance record type conflicts with ${source.kind} classification.`);
+    }
+    if (this.kinds?.version === 2 && typeof source.kind === "string"
+      && RECORD_TYPE_FOR_KIND[source.kind] === source.type && !this.needsTypeDiscriminator(source.kind)) {
+      delete source.type;
+    }
+    for (const [canonical, value] of Object.entries(this.kinds ? this.kinds.encode(source, existing) : source)) {
       const key = canonical === "kind" && this.kinds?.version === 2 ? canonical : this.key(canonical);
       if (own(raw, key)) throw new Error(`Finance property collision: ${key}.`);
       raw[key] = value;
@@ -123,6 +152,9 @@ export class FinanceProperties {
     // remain untouched. Only fields exposed to the mutator can be changed.
     for (const key of Object.keys(this.write(before, raw))) if (!own(next, key)) delete raw[key];
     if (this.kinds?.version === 2) {
+      const typeKey = this.key("type");
+      if (own(raw, typeKey) && !own(next, typeKey) && raw[typeKey] === before.type
+        && typeof before.kind === "string" && RECORD_TYPE_FOR_KIND[before.kind] === before.type) delete raw[typeKey];
       const tagsKey = this.key("tags");
       if (own(before, "tags") && !own(next, tagsKey)) delete raw[tagsKey];
       const scheduledKey = this.key("date");
@@ -175,10 +207,7 @@ export class FinanceProperties {
           : "scalar" in definition
             ? `note[${JSON.stringify(definition.scalar.key)}] == ${JSON.stringify(definition.scalar.value)}`
           : `(kind == ${JSON.stringify(definition.parentKind)} && note[${JSON.stringify(definition.key)}] == ${JSON.stringify(definition.value)})`;
-      const matches = this.kinds?.version === 2
-        ? (this.kinds.readDefinitions?.(kind) || [mapping]).map(expression)
-        : [expression(mapping)];
-      const match = this.kinds?.version === 2 ? `(${[...new Set(matches)].join(" || ")})` : matches[0];
+      const match = expression(mapping);
       return operator === '!=' ? `!${match}` : match;
     });
       return classified.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_][A-Za-z0-9_]*\b/g, (token, offset) => {

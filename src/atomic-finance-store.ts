@@ -390,5 +390,5 @@ export function legacyFields(line:string):Fields|null {
 }
 export function atomicBase(root:string,name:string):string {
   const transactions=name==='Transactions';
-  return stringifyYaml({filters:{and:[...(root ? [`file.inFolder(${JSON.stringify(financeDirectory(root,name))})`] : []),...(transactions?['financeId != null']:['type == "holding"','active == true'])]},views:[{type:'table',name,order:transactions?['file.name','date','account','title','amount','currency','pending','categoryOverride','tags']:['file.name','account','name','quantity','price','value','currency','asOf','stale'],sort:[{property:transactions?'date':'value',direction:'DESC'}]}]});
+  return stringifyYaml({filters:{and:[...(root ? [`file.inFolder(${JSON.stringify(financeDirectory(root,name))})`] : []),...(transactions?['(kind == "transaction" || kind == "investmentTransaction")','financeId != null']:['kind == "holding"','active == true'])]},views:[{type:'table',name,order:transactions?['file.name','date','account','title','amount','currency','pending','categoryOverride','tags']:['file.name','account','name','quantity','price','value','currency','asOf','stale'],sort:[{property:transactions?'date':'value',direction:'DESC'}]}]});
 }

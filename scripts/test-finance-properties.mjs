@@ -92,7 +92,8 @@ test('budgets, savings links, rules and legacy snapshots use configured keys',as
  const lines=new FinanceStore(h.app,'');const path=await lines.writeSnapshot([],[],new Map(),new Date('2026-09-20T12:00:00Z'));assert.equal(h.fm(path)['custom type'],'financeSnapshot');assert.equal(await lines.writeSnapshot([],[],new Map(),new Date('2026-09-20T12:00:00Z')),path);
 });
 test('generated Bases use only configured names; atomic-line columns stay unchanged',()=>{
- const p=mapped(),base=parse(p.base(atomicBase('','Holdings')));assert.match(base.filters.and[0],/note\["custom type"\]/);assert.doesNotMatch(base.filters.and[0],/if\(/);assert.equal(base.views[0].order[1],'custom account');assert.equal(base.views[0].sort[0].property,'custom value');
+ const p=mapped(),base=parse(p.base(atomicBase('','Holdings')));assert.match(base.filters.and[0],/note\["custom kind"\]/);assert.doesNotMatch(base.filters.and[0],/if\(/);assert.equal(base.views[0].order[1],'custom account');assert.equal(base.views[0].sort[0].property,'custom value');
+ const transactions=parse(p.base(atomicBase('','Transactions')));assert.match(transactions.filters.and[0],/custom kind/);assert.match(transactions.filters.and[0],/investmentTransaction/);assert.ok(transactions.filters.and.includes('financeId != null'));
  const lines=parse(p.base(transactionsBaseBody('')));assert.equal(lines.views[0].order[0],'date');assert.equal(lines.filters.and[0],'file.ext == "md"');
 });
 test('migration preview identifies finance records only and changes no data',async()=>{
@@ -134,6 +135,7 @@ test('property editor keeps a sparse explicit map and exposes a generic reset co
  assert.match(source,/delete this\.propertyDraft!\[key\]/);
  assert.match(source,/Store \$\{propertyLabel\(key\)\} name explicitly/);
  assert.match(source,/JSON\.stringify\(from\.names\) === JSON\.stringify\(to\.names\)/);
+ assert.match(source,/Finances omits it when the configured kind values differ/);
 });
 function pluginHarness(h){
  const plugin=new FinancePlugin(h.app);plugin.settings={propertyNames:h.plugin.settings.propertyNames,propertyMigration:null,financeFolder:'',recordMode:'atomic-note',legacyTransactionDiscovery:'discover'};h.app.plugins.plugins['tps-finances']=plugin;
@@ -621,7 +623,7 @@ function configurableListCodec(){
    return next;
   },
   decode:(fields,expectedKind)=>{const kinds=Object.keys(paths).filter(kind=>matches(fields,kind));if(expectedKind&&kinds.includes(expectedKind))return {...fields,kind:expectedKind};if(expectedKind&&kinds.length)throw Error('Expected record kind does not match its configured classification.');if(kinds.length>1)return {...fields};return kinds.length?{...fields,kind:kinds[0]}:{...fields};},
-  configure:(kind,path)=>{paths[kind]=path;},setScheduleKey:key=>{scheduleKey=key;},setListKey:key=>{listKey=key;},setWriterEnabled:(kind,enabled)=>{if(enabled)disabled.delete(kind);else disabled.add(kind);},
+  configure:(kind,path)=>{paths[kind]=path;},addAlias:(kind,definition)=>{aliases[kind]=[...(aliases[kind]||[]),definition];},setScheduleKey:key=>{scheduleKey=key;},setListKey:key=>{listKey=key;},setWriterEnabled:(kind,enabled)=>{if(enabled)disabled.delete(kind);else disabled.add(kind);},
  };
 }
 test('GCM v2 owns configurable kind lists and Scheduled key, while old scalar, tag and date forms remain readable',()=>{
@@ -656,6 +658,7 @@ test('shared visible Finance kinds decode through existing configured transactio
   assert.equal(properties.read(raw).type,recordType);
  }
  assert.deepEqual(codec.decode({kind:['transaction/financial']}).kind,['transaction/financial']);
+ assert.throws(()=>properties.read({kind:['transaction/financial'],financeId:'undecidable'}),/classification is ambiguous/);
 });
 test('legacy shared Finance classification uses configured path and the existing transaction type',()=>{
  const codec=configurableListCodec();
@@ -683,6 +686,75 @@ test('legacy shared Finance classification uses configured path and the existing
  assert.throws(()=>properties.read({...legacy,Kind:['entity/food']}),/Expected record kind/);
  assert.throws(()=>properties.read({...legacy,Kind:'unrelated'}),/Expected record kind/);
 });
+test('distinct configured Finance kinds identify transactions and holdings without a type property',async()=>{
+ const codec=configurableListCodec();codec.setListKey('kind');
+ codec.configure('finance-transaction','transaction/financial');
+ codec.configure('investment-transaction','transaction/financial/investment');
+ codec.configure('holding','entity/holding');
+ const h=harness(new FinanceProperties({keys:{type:'recordType'}}));
+ h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const paths=await h.store.upsertAccounts([account]);
+ const investment={...tx,financeId:'investment-1',providerTransactionId:'investment-provider',kind:'investmentTransaction',investmentType:''};
+ await h.store.applyTransactions([tx,investment],[],[],structuredClone(state),paths);
+ const ordinary=h.fm('tx1.md'),trade=h.fm('investment-1.md');
+ assert.deepEqual(ordinary.kind,['transaction/financial']);
+ assert.deepEqual(trade.kind,['transaction/financial/investment']);
+ for(const raw of [ordinary,trade]){assert.ok(!('type'in raw));assert.ok(!('recordType'in raw));}
+ const properties=financeProperties(h.app);
+ assert.equal(properties.read(ordinary).type,'transaction');
+ assert.equal(properties.read(trade).type,'investmentTransaction');
+ assert.equal(properties.read(trade).investmentType,undefined,'an optional investment field is not used for identity');
+ assert.throws(()=>properties.write({kind:'transaction',type:'investmentTransaction',date:'2026-09-20'}),/type conflicts/);
+ const lines=await h.store.readTransactionRecords();
+ assert.equal(lines.length,2);assert.ok(lines.some(record=>record.line.includes('[type:: investmentTransaction]')));
+ let writes=0;const process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+ await h.store.applyTransactions([tx,investment],[],[],structuredClone(state),paths);
+ assert.equal(writes,0,'unchanged provider records do not reenter the write queue');
+ await h.store.applyTransactions([],[{...investment,amount:-9}],[],structuredClone(state),paths);
+ assert.equal(h.fm('investment-1.md').amount,-9);assert.ok(!('recordType'in h.fm('investment-1.md')));
+ const legacy={...h.fm('investment-1.md'),recordType:'investmentTransaction'};
+ properties.mutate(legacy,fields=>{fields.amount=-10;});
+ assert.equal(legacy.amount,-10);assert.ok(!('recordType'in legacy));
+ const cash=await h.manual.createAccount({kind:'cash',name:'Wallet',currency:'USD',value:20,valuationDate:'2026-09-20',purchaseTransaction:'',liabilityAccount:'',assetType:''});
+ const manual=await h.manual.createCashEntry({title:'Coffee',amount:5,date:'2026-09-20',accountPath:cash.path,kind:'expense',category:'',tags:[],counterpart:'',linkedTransaction:''});
+ assert.deepEqual(h.fm(manual.path).kind,['transaction/financial']);assert.ok(!('recordType'in h.fm(manual.path)));
+ await h.store.writeSnapshot([account],[holding],paths,new Date('2026-09-20T12:00:00Z'));
+ const position=h.fm('ABC — Bank Checking •1234.md');
+ assert.deepEqual(position.kind,['entity/holding']);assert.equal(position.holdingType,'equity');assert.ok(!('recordType'in position));
+ assert.equal(properties.read(position).type,'holding');
+ const plugin=pluginHarness(h).plugin;plugin.settings.legacyTransactionDiscovery='atomic-only';
+ plugin.getConnectedItems=()=>[];plugin.getRelayStatus=()=>null;plugin.getPlaidSetupStatus=()=>({state:'ready'});
+ const model=await plugin.getDashboardModel();
+ assert.ok(model.transactions.some(record=>record.financeId==='investment-1'&&record.type==='investmentTransaction'));
+ assert.ok(model.transactions.some(record=>record.financeId==='tx1'&&record.type==='transaction'));
+ assert.equal(model.holdings[0].type,'equity');
+ const transactionsBase=parse(properties.base(atomicBase('','Transactions')));
+ assert.match(transactionsBase.filters.and[0],/transaction\/financial/);
+ assert.match(transactionsBase.filters.and[0],/transaction\/financial\/investment/);
+ assert.doesNotMatch(transactionsBase.filters.and[0],/type|file\.hasTag/);
+ const holdingsBase=parse(properties.base(atomicBase('','Holdings')));
+ assert.match(holdingsBase.filters.and[0],/entity\/holding/);
+ assert.doesNotMatch(holdingsBase.filters.and[0],/type|file\.hasTag/);
+});
+test('a read-only legacy transaction type alias identifies old Wallet notes without affecting distinct investment kinds',()=>{
+ const codec=configurableListCodec();codec.setListKey('kind');
+ codec.configure('finance-transaction','transaction/financial');
+ codec.configure('investment-transaction','transaction/financial/investment');
+ codec.addAlias('finance-transaction',{scalar:{key:'type',value:'transaction'}});
+ const properties=new FinanceProperties(undefined,financeKindCodec(codec));
+ const wallet={type:'transaction',financeId:'wallet-1',amount:-4,date:'2026-09-30'};
+ assert.equal(properties.read(wallet).kind,'transaction');
+ assert.equal(properties.read(wallet).type,'transaction');
+ const migrated={...wallet};properties.mutate(migrated,fields=>{fields.amount=-5;});
+ assert.deepEqual(migrated.kind,['transaction/financial']);
+ assert.ok(!('type'in migrated));
+ assert.equal(properties.read(migrated).type,'transaction');
+ const investment={kind:['transaction/financial/investment'],financeId:'investment-1',amount:-10};
+ assert.equal(properties.read(investment).kind,'investmentTransaction');
+ assert.equal(properties.read(investment).type,'investmentTransaction');
+ assert.ok(!('type'in properties.write({kind:'investmentTransaction',type:'investmentTransaction',financeId:'investment-2'})));
+});
 test('GCM v2 Finance sync and generated views follow configured mappings without losing rule order',async()=>{
  const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);
@@ -708,8 +780,7 @@ test('GCM v2 Finance sync and generated views follow configured mappings without
  assert.equal(base.views[0].sort[0].property,'when');assert.ok(base.views[0].order.includes('when'));
  const accountBase=parse(financeProperties(h.app).base(accountsBaseBody('')));
  assert.match(accountBase.filters.and[0],/classifications.*contains.*entity\/bank/);
- assert.match(accountBase.filters.and[0],/kind.*account/);
- assert.match(accountBase.filters.and[0],/kind\/account\/entity/);
+ assert.doesNotMatch(accountBase.filters.and[0],/kind.*account|kind\/account\/entity/);
 });
 test('GCM v2 reads old account and transaction markers before migration without duplicating an account',async()=>{
  const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
@@ -771,7 +842,7 @@ test('classification change previews only exact generated Bases and leaves custo
  assert.ok(!changes.some(change=>change.path==='Transactions.base'));
  assert.equal(h.contents.get('Transactions.base'),'user-authored Base');
 });
-test('GCM v2 classification previews generated Bases with the proposed list path and configured legacy aliases',async()=>{
+test('GCM v2 classification previews generated Bases with the proposed primary list path only',async()=>{
  const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
  await h.store.ensureStructure();
  const from=codec.definition('account');
@@ -780,8 +851,7 @@ test('GCM v2 classification previews generated Bases with the proposed list path
  const accountChange=changes.find(change=>change.path==='Accounts.base');
  assert.ok(accountChange);assert.equal(accountChange.before,before);
  assert.match(accountChange.after,/entity\/new-choice/);
- assert.match(accountChange.after,/kind.*account/);
- assert.match(accountChange.after,/kind\/account\/entity/);
+ assert.doesNotMatch(accountChange.after,/kind.*account|kind\/account\/entity/);
  assert.equal(h.contents.get('Accounts.base'),before);
 });
 test('finance classification rejects subkind keys owned by finance fields or record IDs',async()=>{
