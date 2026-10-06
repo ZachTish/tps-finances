@@ -219,9 +219,10 @@ test('unrelated rename/edit bursts do no dashboard reads after initial load',asy
 test('metadata removal and legacy line removal refresh from the displayed source paths',async()=>{
   const h=eventHarness();await h.view.onOpen();await h.event('changed',new EventFile('Account.md'),'no finance frontmatter');await h.event('changed',new EventFile('Journal.md'),'legacy line removed');assert.equal(h.counts.models,3);
 });
-test('new inline records outside the finance folder and mapped records invalidate',async()=>{
+test('retired inline records outside the finance folder stay idle while mapped records invalidate',async()=>{
   const h=eventHarness('Finances');await h.view.onOpen();await h.event('changed',new EventFile('Daily/New.md'),'[financeId:: new]');
-  h.owner.settings.propertyNames={keys:{type:'recordType'}};await h.event('changed',new EventFile('New.md',{recordType:'holding'}),'');assert.equal(h.counts.models,3);
+  assert.equal(h.counts.models,1);
+  h.owner.settings.propertyNames={keys:{type:'recordType'}};await h.event('changed',new EventFile('New.md',{recordType:'holding'}),'');assert.equal(h.counts.models,2);
 });
 test('new reader candidates in a configured section refresh but unrelated folder documents do not',async()=>{
   const h=eventHarness('Finances');await h.view.onOpen();await h.event('rename',new EventFile('Finances/Readme.md'),'Finances/Old.md');assert.equal(h.counts.models,1);

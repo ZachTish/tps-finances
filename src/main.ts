@@ -581,7 +581,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async getDashboardModel(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<DashboardModel> {
-    const files = new DashboardFileSnapshot(this.app);
+    const files = new DashboardFileSnapshot(this.app, sourcePaths);
     const snapshot = await this.readLatestSnapshotDocument(sourcePaths, files);
     const accountLabels = new Map<string, AccountLabel>();
     const accounts = this.readAccountsFromVault(snapshot, accountLabels, sourcePaths, files);
@@ -959,12 +959,10 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private dashboardChangeMayIntroduceRecord(file: TAbstractFile, data?: string): boolean {
     if (file instanceof TFile) {
-      // Legacy transactions may live in ordinary daily notes outside the destination.
-      if (data?.includes("[financeId::")) return true;
       const fm = financeProperties(this.app).cache(this.app, file);
       if (fm.financeAccountId || fm.financeId || fm.financeRuleId || fm.financeBudgetId
         || ["account", "financeRule", "financeBudget"].includes(fm.kind)
-        || ["holding", "financeSnapshot", "financeTransactions"].includes(fm.type)) return true;
+        || ["holding", "financeSnapshot"].includes(fm.type)) return true;
     }
     if (!this.settings.financeFolder) return false;
     return ["Accounts", "Transactions", "Rules", "Budgets", "Holdings", "Snapshots"].some(section => {

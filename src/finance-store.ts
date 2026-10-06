@@ -335,33 +335,40 @@ export class FinanceStore {
       files.push({ file, indexed: source === "metadata" ? indexed : null });
     }
     await boundedWork(files, async ({ file, indexed }) => {
-      let fm = indexed;
-      if (!fm) {
-        const text = await this.app.vault.cachedRead(file);
-        const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-        if (!match) return;
-        const marked = /financeBudgetId|financeBudget/.test(match[1]);
-        // A mapped kind can identify a legacy budget without either literal marker.
-        if (!marked && !properties.customized) return;
-        let raw: Record<string, unknown>;
-        try { raw = parseYaml(match[1]) || {}; }
-        catch (error) {
-          if (marked) throw error;
-          return; // Unrelated, malformed frontmatter was never a budget candidate.
+      try {
+        let fm = indexed;
+        if (!fm) {
+          const text = await this.app.vault.cachedRead(file);
+          const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+          if (!match) return;
+          const marked = /financeBudgetId|financeBudget/.test(match[1]);
+          // A mapped kind can identify a legacy budget without either literal marker.
+          if (!marked && !properties.customized) return;
+          let raw: Record<string, unknown>;
+          try { raw = parseYaml(match[1]) || {}; }
+          catch (error) {
+            if (marked) throw error;
+            return; // Unrelated, malformed frontmatter was never a budget candidate.
+          }
+          fm = properties.read(raw);
         }
-        fm = properties.read(raw);
+        if (!fm || (!fm.financeBudgetId && fm.kind !== "financeBudget")) return;
+        sourcePaths?.add(file.path);
+        const links = Array.isArray(fm.accounts) ? fm.accounts : fm.accounts ? [fm.accounts] : [];
+        const accounts = links.map((value: unknown) => {
+          const raw = String(value), link = raw.replace(/^\[\[|\]\]$/g, "").split("|")[0];
+          const resolved = this.app.metadataCache.getFirstLinkpathDest?.(link, file.path);
+          return resolved ? `[[${resolved.path.replace(/\.md$/i, "")}]]` : raw;
+        });
+        records.push({id:String(fm.financeBudgetId || file.path),name:String(fm.title || file.basename),
+          category:String(fm.category || ""),monthlyLimit:fm.monthlyLimit == null || fm.monthlyLimit === "" ? NaN : Number(fm.monthlyLimit),
+          bucket:fm.bucket || "category",currency:String(fm.currency || "USD"),accounts,sourcePath:file.path,revision:budgetRevision(fm)});
+      } catch (error) {
+        // Preserve the failing source for repair/deletion invalidation without
+        // making successfully excluded ordinary notes dashboard dependencies.
+        sourcePaths?.add(file.path);
+        throw error;
       }
-      if (!fm || (!fm.financeBudgetId && fm.kind !== "financeBudget")) return;
-      sourcePaths?.add(file.path);
-      const links = Array.isArray(fm.accounts) ? fm.accounts : fm.accounts ? [fm.accounts] : [];
-      const accounts = links.map((value: unknown) => {
-        const raw = String(value), link = raw.replace(/^\[\[|\]\]$/g, "").split("|")[0];
-        const resolved = this.app.metadataCache.getFirstLinkpathDest?.(link, file.path);
-        return resolved ? `[[${resolved.path.replace(/\.md$/i, "")}]]` : raw;
-      });
-      records.push({id:String(fm.financeBudgetId || file.path),name:String(fm.title || file.basename),
-        category:String(fm.category || ""),monthlyLimit:fm.monthlyLimit == null || fm.monthlyLimit === "" ? NaN : Number(fm.monthlyLimit),
-        bucket:fm.bucket || "category",currency:String(fm.currency || "USD"),accounts,sourcePath:file.path,revision:budgetRevision(fm)});
     });
     return records.sort((a,b)=>a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   }

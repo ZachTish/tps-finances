@@ -80,7 +80,7 @@ export class TPSFinancesView extends ItemView {
   private renderPromise: Promise<void> | null = null;
   private closed = false;
   private amountsHidden = false;
-  // Dependencies of the displayed model, replaced on each successful read.
+  // Dependencies of the displayed model or failed read, replaced per attempt.
   private sourcePaths: Set<string> | null = null;
   private route: "overview" | "budget" = "overview";
   private readonly budgetState: BudgetViewState = {month:`${new Date().getFullYear()}-${String(new Date().getMonth()+1).padStart(2,"0")}`,currency:"USD",expanded:new Set()};
@@ -120,7 +120,7 @@ export class TPSFinancesView extends ItemView {
 
   dependsOnSource(path: string, isFolder = false): boolean {
     if (this.closed) return false;
-    // A read in flight (or an error) has no complete dependency boundary yet.
+    // A read in flight or an attempt with no known source remains conservative.
     if (this.renderPromise || this.sourcePaths === null) return true;
     if (!isFolder) return this.sourcePaths.has(path);
     for (const source of this.sourcePaths) if (source.startsWith(`${path}/`)) return true;
@@ -140,15 +140,18 @@ export class TPSFinancesView extends ItemView {
     try {
       while (!this.closed && this.renderRequested) {
         this.renderRequested = false;
+        const sourcePaths = new Set<string>();
         try {
-          const sourcePaths = new Set<string>();
           const model = await this.plugin.getDashboardModel(sourcePaths, "metadata");
           if (this.closed || this.renderRequested) continue;
           this.sourcePaths = sourcePaths;
           this.renderModel(model);
         } catch (error) {
           if (this.closed || this.renderRequested) continue;
-          this.sourcePaths = null;
+          // Readers retain blocking candidates before validation can throw.
+          // Keep the existing unknown-source fallback for configuration/host
+          // failures that occur before any file dependency is established.
+          this.sourcePaths = sourcePaths.size ? sourcePaths : null;
           this.contentEl.empty();
           this.contentEl.createDiv({ cls: "tps-finances-error", text: error instanceof Error ? error.message : String(error) });
         }

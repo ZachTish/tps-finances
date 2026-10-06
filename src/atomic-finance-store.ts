@@ -78,14 +78,18 @@ export class AtomicFinanceStore extends FinanceStore {
       // or current source once below, so this preliminary cache lookup is redundant.
       // Even in a dashboard snapshot, root candidates need a fresh metadata
       // preflight; a previous consumer's memo cannot decide transaction identity.
-      const cache = inTransactionFolder ? null : this.vaultApp.metadataCache.getFileCache(file);
+      let cache: ReturnType<App["metadataCache"]["getFileCache"]> = null;
+      try { cache = inTransactionFolder ? null : this.vaultApp.metadataCache.getFileCache(file); }
+      catch (error) { snapshot?.includeSource(file); throw error; }
       if (inTransactionFolder || cache?.frontmatter?.financeId) {
         files.push(file);
+        snapshot?.includeSource(file);
         order.set(file, position);
       } else if (!this.folder && !cache) {
         // At the vault root, atomic notes can have user-edited filenames. Until
         // Obsidian indexes one, its contents are the only way to discover its ID.
         files.push(file);
+        snapshot?.includeSource(file);
         missingCache.add(file);
         order.set(file, position);
       } else if (!this.folder && source === "source" && requiredIds?.size) {
@@ -93,6 +97,8 @@ export class AtomicFinanceStore extends FinanceStore {
         order.set(file, position);
       }
     }
+    // The candidate paths above remain dependencies even when inspection,
+    // duplicate identity, or line conversion validation fails below.
     const inspect = async (file: TFile): Promise<void> => {
       // The view follows Obsidian's index. Mutation/ordinary API callers verify
       // candidate source contents. Root notes without an index entry need a source

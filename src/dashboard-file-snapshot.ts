@@ -11,18 +11,32 @@ export class DashboardFileSnapshot {
   private readonly caches = new Map<TFile, FileCache>();
   private readonly decoded = new Map<TFile, Fields>();
 
-  constructor(private readonly app: App) {
+  constructor(private readonly app: App, private readonly sourcePaths?: Set<string>) {
     this.properties = financeProperties(app);
     this.files = app.vault.getMarkdownFiles();
   }
 
+  includeSource(file: TFile): void {
+    this.sourcePaths?.add(file.path);
+  }
+
   cache(file: TFile): FileCache {
-    if (!this.caches.has(file)) this.caches.set(file, this.app.metadataCache.getFileCache(file));
-    return this.caches.get(file) ?? null;
+    try {
+      if (!this.caches.has(file)) this.caches.set(file, this.app.metadataCache.getFileCache(file));
+      return this.caches.get(file) ?? null;
+    } catch (error) {
+      this.includeSource(file);
+      throw error;
+    }
   }
 
   fields(file: TFile): Fields {
-    if (!this.decoded.has(file)) this.decoded.set(file, this.properties.read(this.cache(file)?.frontmatter || {}));
-    return this.decoded.get(file)!;
+    try {
+      if (!this.decoded.has(file)) this.decoded.set(file, this.properties.read(this.cache(file)?.frontmatter || {}));
+      return this.decoded.get(file)!;
+    } catch (error) {
+      this.includeSource(file);
+      throw error;
+    }
   }
 }

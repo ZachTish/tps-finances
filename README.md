@@ -1,5 +1,40 @@
 # TPS Finances
 
+## 3.0.1 — Failed dashboard source ownership
+
+A settled dashboard error retains the source paths that contributed to or blocked
+that read. Ordinary unrelated note edits, renames, and deletions no longer rebuild
+the full dashboard after a record-validation failure. The existing per-model file
+snapshot records atomic candidates before inspection and records file-specific
+metadata/budget failures before rethrowing. Errors stay visible; no note is repaired
+or omitted to obtain a successful model. Correcting, deleting, declassifying, or
+moving a blocking source, introducing a relevant Finance record, and explicit
+owner/settings refreshes still use the existing render queue. In-flight reads and
+failures before any source is known retain their conservative invalidation behavior.
+No new cache, watcher, timer, retry, setting, or writer is added. This is a
+backward-compatible patch; minimum Obsidian remains 1.12.0.
+The candidate preflight also stops treating body-only `[financeId::` examples or
+legacy-only `type: financeTransactions` ledgers as new dashboard records: whole-note
+readers no longer consume them. Actual Finance fields, holding/snapshot types,
+configured reader sections, and existing source dependencies still invalidate.
+
+The installed 3.0.0 baseline had an existing cash-account validation error. Three
+separate body-only edits of one plain synthetic note each caused one full Finance
+model read and 16,757–16,818 all-plugin metadata lookups, with no unrelated vault
+events during those edit samples. Quiet idle performed no model or metadata work;
+this was event amplification, not an autonomous retry loop. Settings stayed
+unchanged and the fixture was archived with its exact final contents. The window
+was hidden/unfocused, so these are operation counts, not device-latency evidence.
+The focused dashboard suites passed 54 checks, including 24 new actual
+reader/view/event regressions with an in-memory Obsidian facade. The full versioned
+suite passed 405 checks (2 connection plus 403 Finance), with no failures or skips;
+its TypeScript-checked build and separate final build passed. After Test-vault
+deployment and targeted reload, the same three body edits caused zero Finance
+model reads and 227–282 all-plugin metadata lookups each. The existing validation
+error stayed visible, exact note contents and settings were preserved, and
+temporary observers were removed. These counts do not measure physical input
+latency. See the [release notes](release-notes/3.0.1.md) for full evidence and hashes.
+
 ## 3.0.0 — Kind-owned finance identity
 
 With GCM's `frontmatterKinds` v2, a Finance transaction or holding whose configured kind-list value uniquely identifies it no longer needs an authored `type` property. Finances derives the internal ordinary transaction, investment transaction, or holding type from GCM's decoded classification for sync, dashboards, budgets, titles, and identity checks. It writes the configured kind list and keeps `investmentType`, `holdingType`, IDs, dates, values, tags, and other finance fields. A configured shared kind-list value for ordinary and investment transactions still retains the `type` discriminator; Finances will not guess an investment identity from optional provider fields. The Finance property-name setting for `type` remains available to read older records and support shared mappings. A read-only GCM alias for `type: transaction` can identify old Wallet notes without causing new writes to include that key. GCM owns the kind values and any discriminator, so removing an active GCM discriminator is also necessary before new notes can be type-free.
