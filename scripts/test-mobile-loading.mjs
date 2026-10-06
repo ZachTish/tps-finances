@@ -40,6 +40,7 @@ function mobileHarness(code = mainBundle, desktop = false, desktopModules = {}, 
     },
     metadataCache: { on: () => ({}), getFileCache: file => ({ frontmatter: frontmatter(file) }) },
     workspace: {
+      on: () => ({}),
       onLayoutReady: () => {}, getLeavesOfType: () => [], detachLeavesOfType: () => {},
       getLeaf: () => ({ openFile: async () => {} }),
     },

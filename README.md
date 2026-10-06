@@ -1,5 +1,33 @@
 # TPS Finances
 
+## 3.0.2 — Late GCM menu readiness
+
+The existing **Open finances** GCM action now becomes available when GCM finishes
+loading after Finances. Finances listens to the existing API-readiness event and
+keeps one transient registration owner: repeated announcements for the same API
+do not replace the action, while replacement or unavailability releases its old
+registration before adding a new one. GCM's unload announcement is authoritative
+even while its old API remains discoverable. Finances unload removes its current
+action and the plugin-owned readiness listener. Labels, visibility and the
+dashboard click action are unchanged.
+
+Readiness performs no vault discovery, note reads/writes, dashboard model loads,
+provider calls or settings changes. No poller, persistent cache, background
+import, new configuration or public API is added. This backward-compatible patch
+fixes startup dependency correctness; it is not a measured UI-speed improvement.
+Minimum Obsidian remains 1.12.0. Fourteen actual-source in-memory regressions cover
+both load orders, repeated/replaced APIs, unload, unrelated/malformed events,
+failed registration/cleanup and preserved action behavior. Validation boundaries
+and artifacts are recorded in [3.0.2 release notes](release-notes/3.0.2.md).
+The versioned declared suite passes all 419 checks (2 connection and 417 Finance),
+with no failures or skips; its TypeScript-checked build passes in build-only mode.
+The separate final build deployed only to Test. The exact loaded lifecycle passes
+all eight isolated readiness checks, versus four before. Targeted reload leaves
+one real GCM Finances action; twenty same-API helper calls add no registrations.
+Eight active plugins' settings, data and enabled/loaded state stay unchanged.
+These hidden/unfocused operation checks do not measure physical input or UI speed;
+no production install or provider request was performed.
+
 ## 3.0.1 — Failed dashboard source ownership
 
 A settled dashboard error retains the source paths that contributed to or blocked
@@ -292,7 +320,7 @@ acceptance. This additive feature is a minor release; minimum Obsidian stays
 
 Accounts, transactions, investments, manual cash, budgets, and manually valued resale assets in Obsidian.
 
-Current release: [1.14.1](https://github.com/ZachTish/tps-finances/releases/tag/1.14.1) · Obsidian 1.12.0+ · Desktop and mobile.
+Current release: [3.0.2](https://github.com/ZachTish/tps-finances/releases/tag/3.0.2) · Obsidian 1.12.0+ · Desktop and mobile.
 
 ## Install with BRAT
 

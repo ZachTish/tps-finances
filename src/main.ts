@@ -56,6 +56,7 @@ export default class TPSFinancesPlugin extends Plugin {
   private deviceState: DeviceState = emptyDeviceState();
   private syncing = false;
   private unregisterGcmAction: (() => void) | null = null;
+  private registeredGcmApi: any = null;
   private settingsWriter: CoalescedSnapshotWriter<TPSFinancesSettings> | null = null;
 
   async onload(): Promise<void> {
@@ -86,6 +87,12 @@ export default class TPSFinancesPlugin extends Plugin {
     this.addCommand({ id: "add-cash-transaction", name: "Log cash transaction", callback: () => void this.runUserAction("Cash", "command", () => this.addCashTransaction()) });
     this.addCommand({ id: "review-transaction-titles", name: "Review transaction titles", callback: () => void this.runUserAction("Titles", "command", () => this.reviewTransactionTitles()) });
     this.addCommand({ id: "review-transaction-records", name: "Review transaction records", callback: () => void this.runUserAction("Titles", "records-command", () => this.reviewTransactionTitles(true)) });
+    this.registerEvent((this.app.workspace as any).on("tps:gcm-api-changed", (event: any) => {
+      if (event?.sourcePluginId !== "tps-global-context-menu"
+        || (event.available !== true && event.available !== false)
+        || (event.available && !event.api)) return;
+      this.registerGcmIntegration(event.available ? event.api : null);
+    }));
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file, data) => {
       if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, data });
@@ -125,8 +132,7 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
-    this.unregisterGcmAction?.();
-    this.unregisterGcmAction = null;
+    this.registerGcmIntegration(null);
     this.app.workspace.detachLeavesOfType(TPS_FINANCES_VIEW_TYPE);
   }
 
@@ -877,8 +883,12 @@ export default class TPSFinancesPlugin extends Plugin {
     return (this.app as any)?.plugins?.getPlugin?.("tps-global-context-menu")?.api || null;
   }
 
-  private registerGcmIntegration(): void {
-    const gcmApi = this.getGcmApi();
+  private registerGcmIntegration(gcmApi: any = this.getGcmApi()): void {
+    if (gcmApi === this.registeredGcmApi) return;
+    const unregister = this.unregisterGcmAction;
+    this.unregisterGcmAction = null;
+    this.registeredGcmApi = null;
+    unregister?.();
     if (typeof gcmApi?.externalActions?.register !== "function") return;
     this.unregisterGcmAction = gcmApi.externalActions.register({
       id: "open-finances",
@@ -893,6 +903,7 @@ export default class TPSFinancesPlugin extends Plugin {
       },
       onClick: () => this.openDashboard(),
     });
+    this.registeredGcmApi = gcmApi;
   }
 
   private loadControllerState(allowCreate = false): void {
