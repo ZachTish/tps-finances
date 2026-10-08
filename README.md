@@ -1,5 +1,66 @@
 # TPS Finances
 
+## 3.0.3 — Build Budget details when opened
+
+Budget keeps its plan, totals, actions and complete transaction drill-downs.
+Closed flexible transactions, Category limits and Review disclosures now contain
+only their summaries and empty content containers. Native disclosure toggles
+build or remove only their own content. A budget-row expansion updates that row's
+existing button and transaction container without rebuilding the dashboard or
+recalculating the plan. Keyboard focus, control identity and surrounding scroll
+are retained. Removed controls and repeated native toggle deliveries cannot alter
+the current Budget surface.
+
+The existing transient expanded set owns all disclosure and row state, including
+Review, across data refreshes and month/currency changes while the view remains
+open. A refresh still reads the latest dashboard model and recalculates normally;
+month/currency controls redraw from the current model. No persisted setting,
+background work, cache, new event listener on the vault or data migration is
+added. Disclosure depth, mobile touch targets, action owners and currency
+formatting are unchanged. One formatter is shared per Budget render. Calculation
+uses each row's existing identity-to-amount map instead of scanning its growing
+transaction array; both legs of a manual cash transfer still contribute to that
+same map entry and produce one detail row.
+
+This backward-compatible performance/correctness fix uses patch 3.0.3; all
+published tags and version metadata were checked before selecting it. Minimum
+Obsidian remains 1.12.0. The actual renderer and calculation regressions initially
+pass 63/70 on unchanged 3.0.2, then pass all 70 after the fix. They cover 1,000
+flexible purchases, lazy category/review controls, expansion bursts, model-read
+and calculation counts, native control identity, focus/scroll, stale controls,
+refreshed data, month/currency boundaries, 2,000 fixed movements, duplicate IDs
+and both manual-transfer legs. The closed synthetic Budget creates 141 nodes
+across the stubbed Overview/loading and Budget flow, zero transaction buttons,
+one formatter and one Budget calculation pass. A single Rent expansion creates
+six nodes, zero model reads/calculation passes/root clears/new formatters and
+keeps the original controls. These in-memory counts exclude real Obsidian icons
+and must be compared separately from SVG-inclusive installed counts.
+The full versioned suite passes all 428 checks
+(2 connection and 426 Finance), with no failures or skips; its TypeScript-checked
+build is build-only (`target=none reason=TPS_NO_DEPLOY`). A separate build-only
+TypeScript-checked build also passes after the documentation changes.
+
+Foreground Test-vault installed QA loads 3.0.3 with all eight active consumers
+enabled and the actual Finance view prototype/render queue/native controls on an
+isolated synthetic model. Initial Budget has 173 SVG-inclusive DOM nodes, zero
+transaction buttons and one formatter, versus 5,203 nodes, 1,002 hidden buttons
+and 1,024 formatters on 3.0.2. Native Rent expansion adds six nodes/one source
+button, retains all sampled control identities and focus, and adds zero model
+reads/full renders/root clears/formatters. Native Category/Food and Flex expansion
+constructs 1,000 visible source rows only when opened; closing removes them with
+no page redraw. Guarded DOM/Console checks cover Review, action callbacks, new
+data and currency changes where dynamic accessibility controls were unavailable.
+Refresh updates the selected synthetic purchase and preserves Review expansion;
+repeated Budget presentation performs one redraw/formatter and zero model reads.
+A 380-pixel container has no horizontal overflow and retains 44-by-44-pixel row
+buttons. Original error DOM/settings are preserved and temporary global/DOM/Intl
+instrumentation is removed. The existing real Test cash-account-link validation
+error was not remediated; populated provider data, cold startup and physical
+iPhone latency were not measured. Final build uses only the Test deployment
+target and preserves the QA artifact hashes. Tested in the Test vault and ready
+for the user's BRAT pull; production installation remains a separate step.
+Exact validation boundaries and hashes are in [3.0.3 release notes](release-notes/3.0.3.md).
+
 ## 3.0.2 — Late GCM menu readiness
 
 The existing **Open finances** GCM action now becomes available when GCM finishes

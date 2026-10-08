@@ -99,7 +99,11 @@ export function buildFlexBudget(
     seen.add(transaction.financeId);
     const category = normalized(transaction.category);
     const add = (row: BudgetRow | undefined, amount: number): void => {
-      if (row) { row.actual = (row.actual || 0) + amount; row.amounts.set(transaction.financeId,(row.amounts.get(transaction.financeId)||0)+amount); if (!row.transactions.includes(transaction)) row.transactions.push(transaction); }
+      if (row) {
+        if (!row.amounts.has(transaction.financeId)) row.transactions.push(transaction);
+        row.actual = (row.actual || 0) + amount;
+        row.amounts.set(transaction.financeId,(row.amounts.get(transaction.financeId)||0)+amount);
+      }
     };
     if (transaction.type === "transaction" && transaction.subtype === "income") {
       model.actual.income += transaction.amount;

@@ -13,7 +13,8 @@ export interface BudgetViewActions {
 export function renderBudgetView(root:HTMLElement, data:DashboardModel, state:BudgetViewState, actions:BudgetViewActions):void {
   const entries=data.budgetEntries || [];
   const currencies=Array.from(new Set([state.currency,...entries.map(budgetCurrency),...data.accounts.map(a=>a.currency),...data.transactions.map(t=>t.currency)].filter(value=>/^[A-Z]{3}$/.test(value)))).sort();
-  const money=(value:number):string=>new Intl.NumberFormat(undefined,{style:"currency",currency:state.currency,maximumFractionDigits:2}).format(value);
+  const formatter=new Intl.NumberFormat(undefined,{style:"currency",currency:state.currency,maximumFractionDigits:2});
+  const money=(value:number):string=>formatter.format(value);
   const toolbar=root.createDiv({cls:"tps-finances-budget-toolbar"});
   toolbar.createEl("h2",{text:"Budget"});
   const month=toolbar.createEl("input",{type:"month",value:state.month,attr:{"aria-label":"Budget month","data-budget-focus":"month"}});
@@ -42,17 +43,39 @@ export function renderBudgetView(root:HTMLElement, data:DashboardModel, state:Bu
       button.createSpan({text:money(amount)});button.addEventListener("click",()=>actions.open(transaction));
     }
   };
+  const disclosure=(parent:HTMLElement,key:string,title:string,render:(content:HTMLElement)=>void,cls?:string):void=>{
+    const details=parent.createEl("details",{cls});details.open=state.expanded.has(key);
+    details.createEl("summary",{text:title});const content=details.createDiv();
+    if(details.open)render(content);
+    details.addEventListener("toggle",()=>{
+      // Native toggle can also arrive after initialization or after a data refresh.
+      if(!details.isConnected||details.open===state.expanded.has(key))return;
+      details.open?state.expanded.add(key):state.expanded.delete(key);
+      content.empty();if(details.open)render(content);
+    });
+  };
   const renderRow=(parent:HTMLElement,row:BudgetRow):void=>{
     const wrapper=parent.createDiv({cls:"tps-finances-plan-entry"});const line=wrapper.createDiv({cls:"tps-finances-plan-row"});
     const label=line.createDiv({cls:"tps-finances-plan-name"});
     const hasTransactions=row.transactions.some(t=>Math.abs(row.amounts.get(t.financeId)||0)>=0.005);
-    if(hasTransactions){const expand=label.createEl("button",{type:"button",cls:"tps-finances-plan-toggle",attr:{"data-budget-focus":`expand-${row.budget.id}`,"aria-label":`Transactions for ${row.budget.name}`,"aria-expanded":String(state.expanded.has(row.budget.id))}});setIcon(expand,state.expanded.has(row.budget.id)?"chevron-down":"chevron-right");expand.addEventListener("click",()=>{state.expanded.has(row.budget.id)?state.expanded.delete(row.budget.id):state.expanded.add(row.budget.id);actions.render();});}
+    if(hasTransactions){
+      const expand=label.createEl("button",{type:"button",cls:"tps-finances-plan-toggle",attr:{"data-budget-focus":`expand-${row.budget.id}`,"aria-label":`Transactions for ${row.budget.name}`,"aria-expanded":String(state.expanded.has(row.budget.id))}});
+      const content=wrapper.createDiv();
+      setIcon(expand,state.expanded.has(row.budget.id)?"chevron-down":"chevron-right");
+      if(state.expanded.has(row.budget.id))transactions(content,row.transactions,row.amounts);
+      expand.addEventListener("click",()=>{
+        if(!wrapper.isConnected)return;
+        state.expanded.has(row.budget.id)?state.expanded.delete(row.budget.id):state.expanded.add(row.budget.id);
+        const open=state.expanded.has(row.budget.id);
+        expand.setAttribute("aria-expanded",String(open));setIcon(expand,open?"chevron-down":"chevron-right");
+        content.empty();if(open)transactions(content,row.transactions,row.amounts);
+      });
+    }
     label.createSpan({text:row.budget.name});
     number(line,"Planned",row.budget.monthlyLimit);number(line,"Actual",row.error?null:row.actual);
     number(line,"Remaining",row.error||row.actual===null?null:row.budget.monthlyLimit-row.actual);
     const edit=line.createEl("button",{type:"button",cls:"tps-finances-plan-edit",attr:{"aria-label":`Edit ${row.budget.name}`}});setIcon(edit,"pencil");edit.addEventListener("click",()=>actions.edit(row.budget));
     if(row.error)wrapper.createEl("small",{cls:"tps-finances-error",text:row.error});
-    if(hasTransactions&&state.expanded.has(row.budget.id))transactions(wrapper,row.transactions,row.amounts);
   };
   for(const bucket of ["income","fixed","flex","savings"] as const){
     const section=root.createEl("section",{cls:`tps-finances-plan-section tps-finances-plan-${bucket}`});const header=section.createDiv({cls:"tps-finances-plan-heading"});header.createEl("h3",{text:BUDGET_BUCKETS[bucket]});
@@ -64,14 +87,15 @@ export function renderBudgetView(root:HTMLElement, data:DashboardModel, state:Bu
     if(bucket!=="flex")for(const row of model.rows[bucket])renderRow(section,row);
     if(!model.rows[bucket].length)section.createEl("small",{cls:"tps-finances-plan-empty",text:bucket==="flex"?"Set one allowance for spending outside fixed categories.":bucket==="savings"?"Add a target and choose its contribution accounts.":"No monthly targets yet."});
     if(bucket==="flex"){
-      if(model.flexTransactions.length){const details=section.createEl("details");details.open=state.expanded.has("flex-transactions");details.createEl("summary",{text:`${model.flexTransactions.length} flexible transactions`});details.addEventListener("toggle",()=>{details.open?state.expanded.add("flex-transactions"):state.expanded.delete("flex-transactions");});transactions(details,model.flexTransactions);}
-      const limits=section.createEl("details");limits.open=state.expanded.has("category-limits");limits.createEl("summary",{text:"Category limits"});limits.addEventListener("toggle",()=>{limits.open?state.expanded.add("category-limits"):state.expanded.delete("category-limits");});
-      const addLimit=limits.createEl("button",{text:"Add category limit",type:"button"});addLimit.addEventListener("click",()=>actions.add("category",state.currency));
-      limits.createEl("small",{cls:"tps-finances-budget-caption",text:"Optional caps; these do not change your flexible allowance."});
-      for(const row of model.rows.category)renderRow(limits,row);
+      if(model.flexTransactions.length)disclosure(section,"flex-transactions",`${model.flexTransactions.length} flexible transactions`,content=>transactions(content,model.flexTransactions));
+      disclosure(section,"category-limits","Category limits",content=>{
+        const addLimit=content.createEl("button",{text:"Add category limit",type:"button"});addLimit.addEventListener("click",()=>actions.add("category",state.currency));
+        content.createEl("small",{cls:"tps-finances-budget-caption",text:"Optional caps; these do not change your flexible allowance."});
+        for(const row of model.rows.category)renderRow(content,row);
+      });
     }
   }
   const notes=[model.pendingCount?`${model.pendingCount} pending transactions included in income/spending; savings uses posted transfers.`:"",model.uncategorizedCount?`${model.uncategorizedCount} uncategorized transactions count toward flexible spending.`:""].filter(Boolean);
   if(notes.length)root.createEl("small",{cls:"tps-finances-budget-caption",text:notes.join(" ")});
-  if(model.review.length){const details=root.createEl("details",{cls:"tps-finances-status is-warning"});details.createEl("summary",{text:`Review ${model.review.length} unclassified movements`});transactions(details,model.review,new Map(model.review.map(t=>[t.financeId,t.amount])));}
+  if(model.review.length)disclosure(root,"review-transactions",`Review ${model.review.length} unclassified movements`,content=>transactions(content,model.review,new Map(model.review.map(t=>[t.financeId,t.amount]))),"tps-finances-status is-warning");
 }

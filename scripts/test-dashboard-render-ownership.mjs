@@ -11,12 +11,14 @@ class Element {
     this.tagName = tag; this.children = []; this.listeners = {}; this.attrs = {...options.attr};
     this.textContent = options.text || ''; this.value = options.value || ''; this.scrollTop = 0;
     this.ownerDocument = doc; this.className = options.cls || ''; this.type = options.type;
+    if (doc?.counts) doc.counts.nodes++;
   }
+  get isConnected() { return this.parentElement ? this.parentElement.isConnected : this.connected === true; }
   createEl(tag, options = {}) { const child = new Element(tag, options, this.ownerDocument); this.children.push(child); child.parentElement = this; return child; }
   createDiv(options = {}) { return this.createEl('div', options); }
   createSpan(options = {}) { return this.createEl('span', options); }
   addClass(cls) { this.className += ` ${cls}`; }
-  empty() { this.children = []; }
+  empty() { if (this === this.ownerDocument?.root) this.ownerDocument.counts.rootClears++; for (const child of this.children) child.parentElement = null; this.children = []; }
   setText(value) { this.textContent = value; this.children = []; }
   setAttr(key, value) { this.setAttribute(key, value); }
   appendChild(child) { this.children.push(child); child.parentElement = this; return child; }
@@ -56,18 +58,42 @@ const model = (amount = -10) => ({accounts:[{path:'Checking.md',name:'Checking',
 ],transactions:[{financeId:'fixture',name:'Purchase',date:'2026-09-18',amount,currency:'USD',category:'Groceries',subtype:'purchase',type:'transaction',accountPath:'Checking',account:'Checking',pending:false,tags:[]}],lastSyncAt:''});
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 function harness(full = false) {
-  const doc={activeElement:null},root=new Element('div',{},doc),counts={models:0,paint:0};
+  const counts={models:0,paint:0,nodes:0,rootClears:0,renders:0},doc={activeElement:null,counts},root=new Element('div',{},doc);doc.root=root;root.connected=true;
   let current=model(),reader=()=>Promise.resolve(current);
   if (full) globalThis.document = {createElement:tag=>new Element(tag,{},doc),createTextNode:text=>new Element('#text',{text},doc)};
   const actions=[];
   const plugin={getDashboardModel(sources){counts.models++;return reader(sources);},addMonthlyBudget(...args){actions.push(['add',...args]);},editMonthlyBudget(value){actions.push(['edit',value.id]);},async openTransactionSource(value){actions.push(['open',value.financeId]);},async openFinanceBase(name){actions.push(['base',name]);}};
   const view=new TPSFinancesView({root},plugin);
+  const renderModel=view.renderModel.bind(view);view.renderModel=(...args)=>{counts.renders++;return renderModel(...args);};
   if (!full) for(const key of ['renderHeader','renderAccounts','renderHoldings','renderTransactions','renderWelcome'])view[key]=()=>{};
   const summary=view.renderSummary.bind(view);
   view.renderSummary=(_root,m)=>{counts.paint++;view.lastOverview=m;if(full)summary(_root,m);};
   view.budgetState.month='2026-09';
   const control=key=>{const el=root.all().find(e=>e.attrs['data-budget-focus']===key);assert.ok(el,`Control ${key}`);return el;};
-  return {view,root,doc,counts,actions,control,setModel(m){current=m;},setReader(fn){reader=fn;},click(key){const el=control(key);el.focus();el.fire('click');},change(key,value){const el=control(key);el.value=value;el.focus();el.fire('change');},settle:()=>view.renderPromise||Promise.resolve()};
+  const details=summary=>{const el=root.all().find(e=>e.tagName==='summary'&&e.textContent.includes(summary))?.parentElement;assert.ok(el,`Disclosure ${summary}`);return el;};
+  return {view,root,doc,counts,actions,control,details,toggle(summary,open){const el=details(summary);el.open=open;el.fire('toggle');},setModel(m){current=m;},setReader(fn){reader=fn;},click(key){const el=control(key);el.focus();el.fire('click');},change(key,value){const el=control(key);el.value=value;el.focus();el.fire('change');},settle:()=>view.renderPromise||Promise.resolve()};
+}
+
+function populatedBudget(count=1000) {
+  const data=model();
+  data.budgetEntries.push({id:'rent',name:'Rent',bucket:'fixed',monthlyLimit:100,category:'Rent',currency:'USD'},
+    {id:'flex',name:'Flexible allowance',bucket:'flex',monthlyLimit:1500,category:'',currency:'USD'});
+  data.transactions=Array.from({length:count},(_,index)=>({...data.transactions[0],financeId:`purchase-${index}`,name:`Purchase ${index}` }));
+  data.transactions.push({...data.transactions[0],financeId:'rent-payment',name:'Rent payment',category:'Rent',amount:-25},
+    ...[1,2].map(index=>({...data.transactions[0],financeId:`review-${index}`,name:`Unknown ${index}`,subtype:'unknown'})));
+  return data;
+}
+async function budgetOperations(run) {
+  const h=harness(),data=populatedBudget();let formatters=0,scans=0;
+  const originalFormatter=Intl.NumberFormat,iterator=data.transactions[Symbol.iterator];
+  data.transactions[Symbol.iterator]=function*(){scans++;yield* iterator.call(this);};
+  Intl.NumberFormat=new Proxy(originalFormatter,{construct(target,args){formatters++;return Reflect.construct(target,args);}});
+  try {
+    h.setModel(data);await h.view.onOpen();h.click('budget');await h.settle();
+    const snapshot=()=>({...h.counts,formatters,scans});
+    const rows=()=>h.root.all().filter(el=>el.className==='tps-finances-plan-transaction');
+    await run({...h,data,snapshot,rows});
+  } finally {Intl.NumberFormat=originalFormatter;}
 }
 
 test('route changes redraw the current model without rereading it, even in a burst',async()=>{
@@ -96,6 +122,7 @@ test('month, currency and expanded transactions use the loaded model and preserv
   const h=harness();await h.view.onOpen();h.click('budget');await h.settle();
   h.root.scrollTop=220;h.change('month','2026-08');await h.settle();assert.equal(h.view.budgetState.month,'2026-08');assert.equal(h.control('month').value,'2026-08');assert.equal(h.doc.activeElement,h.control('month'));assert.equal(h.root.scrollTop,220);
   h.change('month','2026-09');await h.settle();h.change('currency','EUR');await h.settle();assert.equal(h.control('currency').value,'EUR');h.change('currency','USD');await h.settle();
+  h.toggle('Category limits',true);
   h.click('expand-food');await h.settle();assert.equal(h.control('expand-food').getAttribute('aria-expanded'),'true');
   assert.ok(h.root.all().some(e=>e.textContent==='Purchase'));
   h.click('expand-food');await h.settle();assert.equal(h.control('expand-food').getAttribute('aria-expanded'),'false');
@@ -131,6 +158,7 @@ test('closing during a data refresh prevents late or detached-control painting',
 
 test('budget mutating/navigation actions keep their existing owners',async()=>{
   const h=harness();await h.view.onOpen();h.click('budget');await h.settle();
+  h.toggle('Category limits',true);
   h.root.all().find(e=>e.attrs['aria-label']==='Add income').fire('click');
   h.root.all().find(e=>e.attrs['aria-label']==='Edit Food').fire('click');
   h.click('expand-food');await h.settle();h.root.all().find(e=>e.className==='tps-finances-plan-transaction').fire('click');await Promise.resolve();
@@ -193,6 +221,94 @@ test('narrow dashboard layout wraps transaction context and gives its controls t
   assertRootAction(manual,'Browse all transactions');
 });
 
+
+test('closed Budget disclosures construct no transaction or category editor controls and one formatter',async t=>{
+  await budgetOperations(async h=>{
+    assert.equal(h.rows().length,0,'1000 flexible purchases and two review movements remain unconstructed');
+    assert.ok(!h.root.all().some(el=>el.attrs['aria-label']==='Edit Food'),'closed category limits do not build editors');
+    assert.ok(h.counts.nodes<250,`bounded closed surface: ${h.counts.nodes} created nodes`);
+    assert.equal(h.snapshot().formatters,1,'one currency formatter is shared by the complete Budget render');
+    assert.equal(h.snapshot().scans,1,'one calculation pass');assert.equal(h.counts.models,1);
+    t.diagnostic(`closed 1000-purchase Budget: ${JSON.stringify(h.snapshot())}, transaction buttons=${h.rows().length}`);
+  });
+});
+
+test('Budget disclosure bursts build only opened content without recalculation, root replacement or new formatters',async()=>{
+  await budgetOperations(async h=>{
+    const month=h.control('month'),rent=h.control('expand-rent'),before=h.snapshot();
+    h.root.scrollTop=321;month.focus();
+    for(let i=0;i<5;i++){
+      h.toggle('flexible transactions',true);assert.equal(h.rows().length,1000);
+      h.toggle('flexible transactions',false);assert.equal(h.rows().length,0);
+      h.toggle('Review',true);assert.equal(h.rows().length,2);
+      h.toggle('Review',false);assert.equal(h.rows().length,0);
+    }
+    const after=h.snapshot();
+    for(const key of ['models','renders','rootClears','formatters','scans'])assert.equal(after[key],before[key],key);
+    assert.ok(h.control('month')===month);assert.ok(h.control('expand-rent')===rent);
+    assert.ok(h.doc.activeElement===month);assert.equal(h.root.scrollTop,321);
+  });
+});
+
+test('one Budget row expands locally and retains the native control, focus, scroll and action owner',async t=>{
+  await budgetOperations(async h=>{
+    const rent=h.control('expand-rent'),month=h.control('month'),limits=h.details('Category limits'),before=h.snapshot();
+    h.root.scrollTop=228;h.click('expand-rent');await h.settle();
+    assert.equal(h.rows().length,1);assert.ok(h.control('expand-rent')===rent);assert.equal(rent.attrs['aria-expanded'],'true');
+    assert.ok(h.control('month')===month);assert.ok(h.details('Category limits')===limits);
+    assert.ok(h.doc.activeElement===rent);assert.equal(h.root.scrollTop,228);
+    const after=h.snapshot();for(const key of ['models','renders','rootClears','formatters','scans'])assert.equal(after[key],before[key],key);
+    assert.ok(after.nodes-before.nodes<=10,`one row creates ${after.nodes-before.nodes} nodes`);
+    t.diagnostic(`one-row expansion deltas: ${JSON.stringify(Object.fromEntries(Object.keys(after).map(key=>[key,after[key]-before[key]])))}`);
+    h.rows()[0].fire('click');await Promise.resolve();assert.deepEqual(h.actions,[['open','rent-payment']]);
+    h.click('expand-rent');assert.equal(h.rows().length,0);assert.ok(h.control('expand-rent')===rent);
+  });
+});
+
+test('category limits lazily preserve row expansion while independent native rows remain unchanged',async()=>{
+  await budgetOperations(async h=>{
+    const rent=h.control('expand-rent'),before=h.snapshot();
+    h.toggle('Category limits',true);const food=h.control('expand-food');
+    h.root.all().find(el=>el.attrs['aria-label']==='Edit Food').fire('click');
+    h.root.all().find(el=>el.textContent==='Add category limit').fire('click');
+    h.click('expand-food');assert.equal(h.rows().length,1000);assert.ok(h.control('expand-food')===food);
+    h.toggle('Category limits',false);assert.equal(h.rows().length,0);assert.ok(!h.root.all().includes(food));
+    h.toggle('Category limits',true);assert.equal(h.rows().length,1000);assert.equal(h.control('expand-food').attrs['aria-expanded'],'true');
+    assert.ok(h.control('expand-rent')===rent);
+    const after=h.snapshot();for(const key of ['models','renders','rootClears','formatters','scans'])assert.equal(after[key],before[key],key);
+    assert.deepEqual(h.actions,[['edit','food'],['add','category','USD']]);
+  });
+});
+
+test('queued toggle deliveries and controls detached by refresh cannot rebuild or change the new Budget surface',async()=>{
+  await budgetOperations(async h=>{
+    h.toggle('Category limits',true);const oldFood=h.control('expand-food'),oldLimits=h.details('Category limits');
+    const beforeQueued=h.snapshot();oldLimits.fire('toggle');oldLimits.fire('toggle');
+    assert.equal(h.snapshot().nodes,beforeQueued.nodes,'unchanged open state creates no repeated controls');
+    const latest=populatedBudget(2);latest.transactions[0]={...latest.transactions[0],name:'Fresh purchase',amount:-37};
+    h.setModel(latest);await h.view.render();const month=h.control('month'),beforeDetached=h.snapshot();
+    oldFood.fire('click');oldLimits.open=false;oldLimits.fire('toggle');
+    assert.ok(h.control('month')===month,'detached controls do not replace current controls');assert.ok(h.view.budgetState.expanded.has('category-limits'));
+    assert.ok(!h.view.budgetState.expanded.has('food'),'stale row click cannot toggle the current state');
+    for(const key of ['nodes','models','renders','rootClears','formatters'])assert.equal(h.snapshot()[key],beforeDetached[key],key);
+    h.click('expand-food');assert.equal(h.rows().length,2);assert.ok(h.rows().some(el=>el.all().some(child=>child.textContent==='Fresh purchase')));
+  });
+});
+
+test('open disclosures and row details follow refreshed data, selected month and currency',async()=>{
+  await budgetOperations(async h=>{
+    h.toggle('flexible transactions',true);h.toggle('Review',true);h.click('expand-rent');
+    const latest=populatedBudget(2);latest.transactions[0]={...latest.transactions[0],name:'Fresh purchase',amount:-37};
+    latest.transactions.push({...latest.transactions[0],financeId:'euro-purchase',name:'Euro purchase',currency:'EUR',amount:-3});
+    h.setModel(latest);await h.view.render();
+    assert.equal(h.counts.models,2);assert.equal(h.rows().length,5);assert.equal(h.details('Review').open,true);
+    assert.ok(h.rows().some(el=>el.all().some(child=>child.textContent==='Fresh purchase')));
+    h.change('month','2026-10');assert.equal(h.rows().length,0);
+    h.change('month','2026-09');h.change('currency','EUR');assert.equal(h.rows().length,1);
+    assert.ok(h.rows()[0].all().some(child=>child.textContent==='Euro purchase'));
+    h.change('currency','USD');assert.equal(h.rows().length,5);assert.equal(h.counts.models,2);
+  });
+});
 
 const mainSource=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');
 const mainAst=ts.createSourceFile('main.ts',mainSource,ts.ScriptTarget.Latest,true),methods=[],eventSources={};
@@ -340,7 +456,7 @@ test('individual reveal uses only that value and never opens its transaction sou
 
 test('privacy is Overview-only, survives refreshes while open and remasks individual reveals', async () => {
   const h=privacyHarness();await h.view.onOpen();h.click('amount-privacy');h.masked()[0].fire('click');
-  h.click('budget');assert.equal(h.masked().length,0);assert.ok(!h.root.all().some(el=>el.getAttribute('data-budget-focus')==='amount-privacy'));assert.match(h.text(),/100.00/);
+  h.click('budget');assert.equal(h.masked().length,0);assert.ok(!h.root.all().some(el=>el.getAttribute('data-budget-focus')==='amount-privacy'));assert.match(h.text(),/43.21/);
   h.click('overview');assert.ok(h.masked().every(el=>el.textContent==='••••'));
   h.masked()[0].fire('click');await h.view.render();assert.ok(h.masked().every(el=>el.textContent==='••••'));assert.equal(h.counts.models,2);
   h.click('amount-privacy');assert.equal(h.masked().length,0);assert.match(h.text(),/12,345.67/);

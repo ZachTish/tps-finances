@@ -21,6 +21,30 @@ test('transfers, credit-card payments and security trades are excluded from spen
 test('savings counts posted net contributions, not pending deposits or balances',()=>{const m=run(plan,[tx(300,{accountPath:'Savings',subtype:'transfer-in'}),tx(-50,{accountPath:'Savings',subtype:'transfer-out'}),tx(900,{accountPath:'Savings',subtype:'transfer-in',pending:true}),tx(800,{accountPath:'Savings',subtype:'income'})],[account('Savings')]);assert.equal(m.actual.savings,250);assert.equal(m.actual.income,800);assert.equal(m.pendingCount,1);});
 test('bank transfers between accounts in one goal cancel; outflows reduce contributions',()=>{const m=run([budget('Save','savings',500,{accounts:['[[Savings]]','[[Brokerage]]']})],[tx(-300,{accountPath:'Savings',subtype:'transfer-out'}),tx(300,{accountPath:'Brokerage',subtype:'deposit',investmentType:'cash',type:'investmentTransaction'})],[account('Savings'),account('Brokerage',{type:'investment'})]);assert.equal(m.actual.savings,0);});
 test('single manual cash transfer derives the counterpart once and nets internal movements',()=>{const accounts=[account('Wallet',{manual:true,subtype:'cash'}),account('Safe',{manual:true,subtype:'cash'})];const movement=tx(-25,{manual:true,subtype:'transfer-out',accountPath:'Wallet',transferAccount:'[[Safe]]'});assert.equal(run([budget('Save','savings',100,{accounts:['[[Safe]]']})],[movement],accounts).actual.savings,25);assert.equal(run([budget('Save','savings',100,{accounts:['[[Safe]]','[[Wallet]]']})],[movement],accounts).actual.savings,0);});
+test('both legs of each manual cash transfer share one savings row identity and net amount',()=>{
+ const accounts=[account('Wallet',{manual:true,subtype:'cash'}),account('Safe',{manual:true,subtype:'cash'})];
+ const movements=Array.from({length:100},()=>tx(-25,{manual:true,subtype:'transfer-out',accountPath:'Wallet',transferAccount:'[[Safe]]'}));
+ const internal=run([budget('Save','savings',100,{accounts:['[[Safe]]','[[Wallet]]']})],movements,accounts),row=internal.rows.savings[0];
+ assert.equal(internal.actual.savings,0);assert.equal(row.actual,0);assert.deepEqual(row.transactions,movements);
+ assert.equal(row.amounts.size,100);for(const movement of movements)assert.equal(row.amounts.get(movement.financeId),0);
+ const incoming=run([budget('Save','savings',100,{accounts:['[[Safe]]']})],movements,accounts);
+ const outgoing=run([budget('Save','savings',100,{accounts:['[[Wallet]]']})],movements,accounts);
+ assert.equal(incoming.actual.savings,2500);assert.equal(outgoing.actual.savings,-2500);
+});
+test('large fixed rows use indexed identity membership while retaining every amount and order',()=>{
+ const transactions=Array.from({length:2000},()=>tx(-2,{category:'Rent'}));let objectMembership=0;
+ const includes=Array.prototype.includes;Array.prototype.includes=function(value,...args){if(value&&typeof value==='object'&&'financeId'in value)objectMembership++;return includes.call(this,value,...args);};
+ let result;try{result=run([budget('Rent','fixed',5000,{category:'Rent'})],transactions);}finally{Array.prototype.includes=includes;}
+ assert.equal(objectMembership,0,'growing transaction arrays must not be scanned for each contribution');
+ assert.equal(result.actual.fixed,4000);assert.deepEqual(result.rows.fixed[0].transactions,transactions);
+ assert.equal(result.rows.fixed[0].amounts.size,2000);for(const transaction of transactions)assert.equal(result.rows.fixed[0].amounts.get(transaction.financeId),2);
+});
+test('a second object with the same transaction identity cannot contribute or replace the first row detail',()=>{
+ const first=tx(-10,{category:'Rent'}),duplicate={...first,amount:-99,name:'Conflicting duplicate'};
+ const result=run([budget('Rent','fixed',100,{category:'Rent'})],[first,duplicate]);
+ assert.equal(result.actual.fixed,10);assert.deepEqual(result.rows.fixed[0].transactions,[first]);
+ assert.equal(result.rows.fixed[0].amounts.get(first.financeId),10);assert.equal(result.errors.length,1);
+});
 test('manual transfer to a bank uses its imported leg without double counting',()=>{const m=run([budget('Save','savings',100,{accounts:['[[Bank]]']})],[tx(-25,{manual:true,subtype:'transfer-out',accountPath:'Wallet',transferAccount:'[[Bank]]'}),tx(25,{subtype:'transfer-in',accountPath:'Bank'})],[account('Wallet',{manual:true,subtype:'cash'}),account('Bank')]);assert.equal(m.actual.savings,25);});
 test('buy/contribution is new money invested; normal buys, sales and dividends are not contributions',()=>{assert.equal(savingsContribution(tx(-200,{type:'investmentTransaction',investmentType:'buy',subtype:'contribution'})),200);for(const subtype of ['buy','sell','dividend','interest','return_of_capital'])assert.equal(savingsContribution(tx(200,{type:'investmentTransaction',investmentType:'cash',subtype})),0);assert.equal(savingsContribution(tx(-75,{type:'investmentTransaction',investmentType:'cash',subtype:'withdrawal'})),-75);});
 test('ambiguous old contribution direction is flagged instead of guessed',()=>{const t=tx(-50,{type:'investmentTransaction',subtype:'contribution',accountPath:'Savings'});const m=run(plan,[t],[account('Savings')]);assert.equal(m.actual.savings,0);assert.deepEqual(m.review,[t]);});
