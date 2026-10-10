@@ -164,6 +164,28 @@ test('an unavailable or non-property GCM storage profile blocks Finance rather t
  assert.throws(()=>financeProperties(h.app),/shared identity property/);assert.equal(h.files.size,0);
 });
 
+test('account import rejects unavailable GCM authority and repeatedly reuses its arbitrarily named kind-list account',async()=>{
+ const h=harness(),kinds=configurableListCodec();kinds.setListKey('kind');kinds.configure('account','entity/account');
+ configurePrimaryIdentity(h,'tpsId',kinds);
+ const path='Inbox/An independently renamed account.md',body='Keep this account body exactly.\n';
+ await h.add(path,{kind:['entity/account'],tpsId:account.financeAccountId,financeAccountId:account.financeAccountId,title:'My account',accountName:account.name,accountType:account.type,currency:account.currency},body);
+ const original=h.contents.get(path);let creates=0,writes=0;
+ const create=h.app.vault.create,process=h.app.fileManager.processFrontMatter;
+ h.app.vault.create=async(...args)=>{creates++;return create(...args);};
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args);};
+ delete h.app.plugins.plugins['tps-global-context-menu'].api;
+ await assert.rejects(h.store.upsertAccounts([account]),/Global Context Menu/);
+ assert.equal(creates,0);assert.equal(writes,0);assert.equal(h.contents.get(path),original);
+ configurePrimaryIdentity(h,'tpsId',kinds);
+ for(let attempt=0;attempt<5;attempt++){
+  const paths=await h.store.upsertAccounts([{...account,current:account.current+attempt}]);
+  assert.equal(paths.get(account.financeAccountId),path);
+ }
+ assert.equal(creates,0);assert.equal(writes,5);assert.deepEqual(h.app.vault.getMarkdownFiles().map(file=>file.path),[path]);
+ assert.equal(h.fm(path).tpsId,account.financeAccountId);assert.deepEqual(h.fm(path).kind,['entity/account']);
+ assert.equal(h.fm(path).current,account.current+4);assert.ok(h.contents.get(path).endsWith(body));
+});
+
 test('primary-only kind-list records remain visible at root and same-mtime identity changes are current',async()=>{
  const h=harness(),kinds=configurableListCodec();configurePrimaryIdentity(h,'recordId',kinds);
  const file=await h.add('Inbox/Readable title.md',{recordId:'first',classifications:['transaction/money'],when:'2026-09-20',account:'[[Checking]]',financeAccountId:'account-foreign',amount:-5,currency:'USD'});

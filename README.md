@@ -1,5 +1,26 @@
 # TPS Finances
 
+### Account import startup regression — 2026-10-10
+
+Tagged 3.0.3 can create a suffixed duplicate of an existing account when GCM is
+installed but its API is unavailable. Without that codec, a list-valued configured
+kind remains a list and fails the root account lookup's scalar-kind check. The
+existing 4.0.0 identity-authority guard rejects that operation before creating or
+writing a note; it also protects classification because GCM publishes those APIs
+together. A regression now exercises the actual account upsert with an arbitrary
+existing filename: unavailable authority performs zero creates/writes, then five
+imports after readiness reuse the one original account and preserve its identity,
+kind and body. This adds tests and documentation only, with no runtime change or
+new version. Historical duplicate timestamps alone do not prove the exact API
+timing of each import. Independent missing/stale metadata is a separate lookup
+limitation, not evidence for adding a recovery scan to this diagnosed route.
+
+Validation: the declared suite passes **468/468** checks with no failures or
+skips. A separate TypeScript-checked build reports the Test runtime unchanged;
+the installed Test vault has Finance 4.0.0, ready GCM and all eight active TPS
+consumers enabled. The runtime is byte-identical to the already published 4.0.0
+artifact. No provider import or production plugin deployment was performed.
+
 ## 4.0.0 — One primary record ID
 
 Finance uses the shared identity property reported by GCM's public
