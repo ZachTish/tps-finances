@@ -379,7 +379,7 @@ test("account upsert indexes existing notes once while preserving first-wins pat
     app,
     "Finances",
     async (file, mutator) => {
-      const frontmatter = {};
+      const frontmatter = { ...cachedFrontmatter.get(file) };
       mutator(frontmatter);
       processed.push({ file, frontmatter });
     },
@@ -411,6 +411,9 @@ test("account upsert indexes existing notes once while preserving first-wins pat
       accountMask: String(index),
       currency: "USD",
       financeAccountId: `account-${index}`,
+      current: 0,
+      available: 0,
+      limit: null,
     });
   }
 });
@@ -468,7 +471,7 @@ test("account upsert retains live recovery after awaited work and reuses a new n
     app,
     "Finances",
     async (file, mutator) => {
-      mutator({});
+      mutator({ financeAccountId: file === knownFile ? "known-account" : file === lateFile ? "late-account" : "new-account" });
       await Promise.resolve();
       if (file === knownFile) lateMetadataVisible = true;
       processedFiles.push(file);
@@ -495,7 +498,7 @@ test("account upsert retains live recovery after awaited work and reuses a new n
   assert.equal(processedFiles[0], knownFile);
   assert.equal(processedFiles[1], lateFile);
   assert.equal(processedFiles[2], created[0]);
-  assert.equal(processedFiles[3], created[0]);
+  assert.equal(processedFiles.length, 3, "creation writes initial account fields once; only the repeated provider revision enters the update callback");
   assert.equal(markdownListCalls, 3, "one initial index plus one live scan for each genuine initial miss");
 });
 
@@ -597,7 +600,7 @@ test("account upsert revalidates indexed hits after awaited vault changes", asyn
       app,
       "Finances",
       async (file, mutator) => {
-        mutator({});
+        mutator({ financeAccountId: accountIds.get(file) });
         if (file === firstFile) {
           await Promise.resolve();
           if (mode === "id-move") {

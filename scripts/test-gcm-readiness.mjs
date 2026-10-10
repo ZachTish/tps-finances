@@ -97,6 +97,26 @@ test('Finances loads before GCM and registers when the existing API readiness ev
   assert.equal(h.counts.registrations, 1); assert.ok(h.action()); h.assertNoDataWork();
 });
 
+test('late or replaced identity authority refreshes only a mounted Finance consumer once',async()=>{
+ const h=harness();await h.plugin.onload();
+ let refreshed=0;h.plugin.refreshDashboard=async()=>{refreshed++};
+ h.workspace.getLeavesOfType=()=>[{view:{}}];
+ const ready={...h.firstApi,nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'recordId'})}};
+ h.setCurrentApi(ready);h.emit(true);assert.equal(refreshed,1);
+ for(let i=0;i<20;i++)h.emit(true);assert.equal(refreshed,1);
+ const replacement={...h.makeApi('replacement'),nativeRecords:ready.nativeRecords};
+ h.setCurrentApi(replacement);h.emit(true);assert.equal(refreshed,2);
+ h.assertNoDataWork();
+});
+
+test('identity authority readiness with no mounted consumer performs no refresh or data work',async()=>{
+ const h=harness();await h.plugin.onload();
+ h.plugin.refreshDashboard=()=>assert.fail('No mounted consumer');
+ const ready={...h.firstApi,nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'recordId'})}};
+ h.setCurrentApi(ready);h.emit(true);for(let i=0;i<20;i++)h.emit(true);
+ h.assertNoDataWork();
+});
+
 test('GCM ready before Finances retains the existing initial menu registration', async () => {
   const h = harness(true); await h.plugin.onload();
   assert.equal(h.counts.registrations, 1); assert.equal(h.registry.size, 1); h.assertNoDataWork();

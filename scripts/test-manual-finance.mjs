@@ -17,6 +17,27 @@ function harness(){
 const input={name:'Wallet',kind:'cash',value:100,currency:'USD',valuationDate:'2026-09-13',assetType:'car',purchaseTransaction:'',liabilityAccount:''};
 const entry={title:'Lunch',amount:12.5,date:'2026-09-13',kind:'expense',category:'Food',tags:['#food'],counterpart:'',linkedTransaction:''};
 
+test('manual accounts and one-note transfers use configured primary IDs and preserve foreign links',async()=>{
+ const h=harness();h.app.plugins={plugins:{'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'wrongSavedKey'},api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'recordId'})}}}}};
+ const wallet=await h.store.createAccount(input),safe=await h.store.createAccount({...input,name:'Safe',value:200});
+ const walletId=h.fm(wallet.path).recordId,safeId=h.fm(safe.path).recordId;
+ assert.ok(walletId);assert.ok(safeId);assert.notEqual(walletId,safeId);
+ for(const account of [wallet,safe]){assert.equal(h.fm(account.path).financeAccountId,undefined);assert.equal(h.fm(account.path).tpsId,undefined);assert.equal(h.fm(account.path).wrongSavedKey,undefined);}
+ const transfer=await h.store.createCashEntry({...entry,accountPath:wallet.path,kind:'transfer-out',counterpart:safe.path});
+ const fields=h.fm(transfer.path);assert.ok(fields.recordId);assert.equal(fields.financeId,undefined);assert.equal(fields.financeAccountId,walletId);assert.equal(fields.account,`[[${wallet.path.replace(/\.md$/,'')}]]`);assert.equal(fields.transferAccount,`[[${safe.path.replace(/\.md$/,'')}]]`);
+ assert.equal((await h.atomic.readTransactionRecords('metadata')).length,1);assert.equal(h.app.vault.getMarkdownFiles().length,3);
+ const asset=await h.store.createAccount({...input,kind:'asset',name:'Car',purchaseTransaction:transfer.path});
+ const before=h.fm(asset.path);await h.store.updateValue(asset.path,90,'2026-09-14');
+ assert.equal(h.fm(asset.path).recordId,before.recordId);assert.equal(h.fm(asset.path).financeAccountId,undefined);assert.equal(h.fm(asset.path).purchaseTransaction,`[[${transfer.path.replace(/\.md$/,'')}]]`);assert.match(h.text.get(asset.path),/Keep body/);
+});
+
+test('conflicting manual account IDs block cash creation before any note is written',async()=>{
+ const h=harness();h.app.plugins={plugins:{'tps-global-context-menu':{api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'recordId'})}}}}};
+ const account=await h.store.createAccount(input);await h.app.fileManager.processFrontMatter(account,raw=>{raw.financeAccountId='different-legacy-owner'});
+ const before=new Map(h.text);let attempts=0;const create=h.app.vault.create;h.app.vault.create=async(...args)=>{attempts++;return create(...args)};
+ await assert.rejects(h.store.createCashEntry({...entry,accountPath:account.path}),/identity|identifier|conflict/i);assert.equal(attempts,0);assert.deepEqual(h.text,before);
+});
+
 function cashFormHarness() {
  const h=harness(),forms=[],notices=[],counts={models:0,snapshots:0,accounts:0,refreshes:0};
  const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8');

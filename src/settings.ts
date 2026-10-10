@@ -1,4 +1,5 @@
-import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS } from "./finance-properties";
+import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS, financeIdentityKey } from "./finance-properties";
+import type { FinanceIdentityMigrationPreview } from "./identity-migration";
 import { previewPropertyMigration, propertyChanges } from "./property-migration";
 import { App, Modal, Notice, PluginSettingTab, Setting, ToggleComponent } from "obsidian";
 import type TPSFinancesPlugin from "./main";
@@ -120,17 +121,33 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         }));
       return;
     }
+    new Setting(parent).setName("Record IDs")
+      .setDesc("New finance notes use one record ID. Review existing notes to remove matching duplicate self IDs. Notes with only an older ID stay unchanged and readable. Account and security references remain unchanged.")
+      .addButton(button => button.setButtonText("Review existing IDs").onClick(async () => {
+        button.setDisabled(true);
+        try {
+          const preview = await this.plugin.previewFinanceIdentityConsolidation();
+          if (!preview.notes.length && !preview.bases.length && !preview.conflicts.length) {
+            new Notice("No matching duplicate finance IDs or generated views need changes.");
+            return;
+          }
+          new FinanceIdentityModal(this.app, preview,
+            reviewed => this.plugin.consolidateFinanceIdentities(reviewed),
+            () => this.renderSettings(false, "Record IDs")).open();
+        } catch (error) { new Notice(String(error), 12000); }
+        finally { button.setDisabled(false); }
+      }));
     if (!this.propertyDraft) {
       this.propertyBaseline = new FinanceProperties(this.plugin.settings.propertyNames);
       this.propertyDraft = { ...this.propertyBaseline.names.keys };
     }
     new Setting(parent).setName("Property names")
-      .setDesc("Choose Finance field names. The toggle beside a field stores its current name explicitly; turning it off restores the default. Global Context Menu owns record classification and the Scheduled property; saved Finance kind and date names remain legacy read aliases. Renames ask whether to update existing notes. IDs stay fixed.")
+      .setDesc("Choose Finance field names. The toggle beside a field stores its current name explicitly; turning it off restores the default. Global Context Menu owns record classification, Scheduled and record IDs. Renames ask whether to update existing notes; stable ID values stay unchanged.")
       .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
         button.setDisabled(true);
         try {
           const from = this.propertyBaseline!, to = new FinanceProperties({keys: this.propertyDraft!});
-          to.assertIdentityKey((this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
+          to.assertIdentityKey(financeIdentityKey(this.app));
           if (JSON.stringify(from.names) === JSON.stringify(to.names)) { new Notice("No property names changed."); return; }
           if (!propertyChanges(from, to).length) {
             await this.plugin.changePropertyNames(from, to, false);
@@ -258,6 +275,54 @@ function propertyLabel(key: string): string {
   if (key === "kind") return "Record kind";
   const words = key.replace(/([A-Z])/g, " $1").toLowerCase();
   return words[0].toUpperCase() + words.slice(1);
+}
+
+export class FinanceIdentityModal extends Modal {
+  private busy = false;
+  constructor(app: App, private preview: FinanceIdentityMigrationPreview,
+    private apply: (preview: FinanceIdentityMigrationPreview) => Promise<number>, private finished: () => void) {
+    super(app);
+    this.scope.register([], "Enter", () => {
+      const focused = this.contentEl.ownerDocument.activeElement;
+      if (focused?.tagName !== "BUTTON" || !this.contentEl.contains(focused)) return true;
+      const button = focused as HTMLButtonElement;
+      if (!button.disabled) button.click();
+      return false;
+    });
+  }
+  onOpen(): void {
+    this.titleEl.setText("Consolidate finance record IDs?");
+    this.contentEl.addClass("tps-finances-property-confirm");
+    this.contentEl.createEl("p", {text: `Remove matching duplicate ID properties from ${this.preview.notes.length} finance notes, keeping each existing “${this.preview.primaryKey}” ID. Notes with only an older ID stay unchanged and readable.`});
+    if (this.preview.bases.length) this.contentEl.createEl("p", {text: `Update ${this.preview.bases.length} plugin-generated views to use the same ID property. Customized views stay unchanged.`});
+    this.contentEl.createEl("p", {text: "ID values, note paths, links, bodies, provider state and account/security references are preserved. Nothing changes until you confirm."});
+    const actions = this.contentEl.createDiv({cls: "tps-finances-title-actions"});
+    const apply = actions.createEl("button", {text: "Consolidate IDs", cls: "mod-cta", attr: {type: "button"}});
+    apply.disabled = !(this.preview.notes.length || this.preview.bases.length) || this.preview.conflicts.length > 0;
+    apply.onclick = () => void this.confirm();
+    const cancel = actions.createEl("button", {text: "Cancel", attr: {type: "button"}});
+    cancel.onclick = () => this.close();
+    if (this.preview.conflicts.length) {
+      const errors = this.contentEl.createDiv({attr: {role: "alert"}});
+      errors.createEl("p", {text: `${this.preview.conflicts.length} conflicts must be resolved before consolidation. No notes have changed.`});
+      for (const conflict of this.preview.conflicts.slice(0, 10)) errors.createEl("p", {text: conflict});
+    }
+    const list = this.contentEl.createEl("ul");
+    for (const note of this.preview.notes.slice(0, 20)) list.createEl("li", {text: note.path});
+    for (const base of this.preview.bases) list.createEl("li", {text: base.path});
+    if (this.preview.notes.length > 20) this.contentEl.createEl("p", {text: `And ${this.preview.notes.length - 20} other notes.`});
+  }
+  private async confirm(): Promise<void> {
+    if (this.busy || this.preview.conflicts.length || !(this.preview.notes.length || this.preview.bases.length)) return;
+    this.busy = true;
+    this.contentEl.querySelectorAll<HTMLButtonElement>("button").forEach(button => { button.disabled = true; });
+    try {
+      const updated = await this.apply(this.preview);
+      new Notice(`Consolidated IDs in ${updated} finance notes${this.preview.bases.length ? " and updated generated views" : ""}.`);
+    } catch (error) { new Notice(String(error), 12000); }
+    finally { this.busy = false; this.close(); }
+  }
+  onClose(): void { this.finished(); }
 }
 
 class PropertyNamesModal extends Modal {

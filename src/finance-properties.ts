@@ -24,11 +24,11 @@ export function normalizePropertyNames(value?: Partial<FinancePropertyNames>): F
   for (const canonical of FINANCE_PROPERTY_KEYS) {
     const explicit = Boolean(value?.keys && own(value.keys, canonical));
     const key = explicit ? value!.keys![canonical] : canonical;
-    if (typeof key !== "string" || !key.trim() || key !== key.trim() || /[\r\n\t\[\]#.:]/.test(key) || reserved.has(key)) {
+    if (typeof key !== "string" || !key.trim() || key !== key.trim() || /[\r\n\t\[\]#.:]/.test(key) || [...reserved].some(value => value.toLowerCase() === key.toLowerCase())) {
       throw new Error(`Choose a plain, nonempty property name for ${canonical}.`);
     }
-    if ((FINANCE_PROPERTY_KEYS.includes(key) && key !== canonical) || owners.has(key)) throw new Error(`Property “${key}” is already used by another finance field.`);
-    owners.set(key, canonical);
+    if ((FINANCE_PROPERTY_KEYS.some(value => value.toLowerCase() === key.toLowerCase() && value !== canonical)) || owners.has(key.toLowerCase())) throw new Error(`Property “${key}” is already used by another finance field.`);
+    owners.set(key.toLowerCase(), canonical);
     if (explicit) result.keys[canonical] = key;
   }
   return result;
@@ -48,7 +48,8 @@ interface KindCodec {
 
 export class FinanceProperties {
   readonly names: FinancePropertyNames;
-  constructor(names?: Partial<FinancePropertyNames>, private readonly kinds?: KindCodec) {
+  constructor(names?: Partial<FinancePropertyNames>, private readonly kinds?: KindCodec,
+    readonly identityKey: string | null = null) {
     this.names = normalizePropertyNames(names);
     if (kinds?.version === 2) {
       const scheduled = kinds.propertyKey?.("scheduled");
@@ -63,12 +64,44 @@ export class FinanceProperties {
         throw new Error(`Record classification property “${kind}” conflicts with a Finance field. Configure a different key in Global Context Menu.`);
       }
     }
+    if (identityKey !== null) this.assertIdentityKey(identityKey);
   }
   key(canonical: string): string {
     if (canonical === "date" && this.kinds?.version === 2) return this.kinds.propertyKey?.("scheduled") || this.names.keys.date || "date";
     return this.names.keys[canonical] || canonical;
   }
-  get customized(): boolean { return Boolean(this.kinds || Object.entries(this.names.keys).some(([field, key]) => field !== key)); }
+  get customized(): boolean { return Boolean(this.identityKey || this.kinds || Object.entries(this.names.keys).some(([field, key]) => field !== key)); }
+
+  /** Logical DTO names remain stable; account IDs on other records are foreign keys. */
+  ownIdentityKey(fields: Fields): string | null {
+    const kind = typeof fields.kind === "string" ? fields.kind : fields.type;
+    if (kind === "transaction" || kind === "investmentTransaction") return "financeId";
+    if (kind === "account") return "financeAccountId";
+    if (kind === "financeRule") return "financeRuleId";
+    if (kind === "financeBudget") return "financeBudgetId";
+    return null;
+  }
+
+  private identityValue(raw: Fields, key: string): { key: string; value: string } | null {
+    const keys = Object.keys(raw).filter(candidate => candidate.toLowerCase() === key.toLowerCase());
+    if (keys.length > 1) throw new Error(`Duplicate Finance identity property: ${key}.`);
+    if (!keys.length) return null;
+    const value = raw[keys[0]];
+    if (typeof value !== "string" || !value.trim() || value !== value.trim()) throw new Error(`Invalid Finance identity property: ${key}.`);
+    return { key: keys[0], value };
+  }
+
+  private readIdentity(fields: Fields, raw: Fields): Fields {
+    if (!this.identityKey) return fields;
+    const self = this.ownIdentityKey(fields);
+    if (!self) return fields;
+    const primary = this.identityValue(raw, this.identityKey), legacy = this.identityValue(raw, self);
+    if (primary && legacy && primary.value !== legacy.value) throw new Error("Finance record IDs disagree. Resolve the conflict before editing or syncing this note.");
+    if (primary) delete fields[primary.key];
+    if (legacy) delete fields[legacy.key];
+    if (primary || legacy) fields[self] = (primary || legacy)!.value;
+    return fields;
+  }
 
   private needsTypeDiscriminator(kind: string): boolean {
     if (kind !== "transaction" && kind !== "investmentTransaction") return false;
@@ -101,7 +134,7 @@ export class FinanceProperties {
       if (typeof decodedKind === "string") fields.kind = decodedKind;
       else if (typeof oldKind === "string") fields.kind = oldKind;
       else if (Array.isArray(decodedKind)) fields.kind = decodedKind;
-      if (!RECORD_TYPE_FOR_KIND[fields.kind] && raw.financeId && this.kinds.matches?.(raw, "transaction")
+      if (!RECORD_TYPE_FOR_KIND[fields.kind] && (raw.financeId || (this.identityKey && raw[this.identityKey])) && this.kinds.matches?.(raw, "transaction")
         && this.kinds.matches?.(raw, "investmentTransaction")) {
         throw new Error("Finance transaction classification is ambiguous. Configure distinct kinds or a discriminator in Global Context Menu.");
       }
@@ -117,9 +150,9 @@ export class FinanceProperties {
           }
         }
       }
-      return fields;
+      return this.readIdentity(fields, raw);
     }
-    return this.kinds ? this.kinds.decode(fields) : fields;
+    return this.readIdentity(this.kinds ? this.kinds.decode(fields) : fields, raw);
   }
 
   write(fields: Fields, existing?: Fields): Fields {
@@ -128,6 +161,35 @@ export class FinanceProperties {
     }
     const raw: Fields = {};
     const source = { ...fields };
+    if (this.identityKey) {
+      const persisted = existing && this.identityValue(existing, this.identityKey);
+      const supplied = this.identityValue(source, this.identityKey);
+      if (persisted && supplied && persisted.value !== supplied.value) throw new Error("Finance record identity changed during editing.");
+      const self = this.ownIdentityKey(source);
+      if (self) {
+        const logical = this.identityValue(source, self), primary = this.identityValue(source, this.identityKey);
+        if (logical && primary && logical.value !== primary.value) throw new Error("Finance record IDs disagree. Resolve the conflict before writing this note.");
+        const legacy = existing && this.identityValue(existing, self);
+        if (persisted && legacy && persisted.value !== legacy.value) throw new Error("Finance record IDs disagree. Resolve the conflict before writing this note.");
+        const current = persisted || legacy, proposed = logical || primary;
+        if (existing && proposed && !current) throw new Error("Finance record identity is missing. An existing note cannot acquire an ID through editing.");
+        if (current && proposed && current.value !== proposed.value) throw new Error("Finance record identity changed during editing.");
+        if (logical) delete source[logical.key];
+        if (primary) delete source[primary.key];
+        // Existing-note edits preserve their current identity owner. Only creation
+        // writes a primary ID for a legacy logical DTO; explicit adoption is separate.
+        if (existing) {
+          if (persisted) source[this.identityKey] = persisted.value;
+          else if (legacy) source[legacy.key] = legacy.value;
+        } else if (proposed) source[this.identityKey] = proposed.value;
+      } else if (existing) {
+        if (supplied && !persisted) throw new Error("Finance record identity is missing. An existing note cannot acquire an ID through editing.");
+        if (persisted) {
+          if (supplied) delete source[supplied.key];
+          source[persisted.key] = persisted.value;
+        }
+      }
+    }
     if (this.kinds?.version === 2 && typeof source.kind === "string" && RECORD_TYPE_FOR_KIND[source.kind]
       && own(source, "type") && source.type !== RECORD_TYPE_FOR_KIND[source.kind]) {
       throw new Error(`Finance record type conflicts with ${source.kind} classification.`);
@@ -151,6 +213,15 @@ export class FinanceProperties {
     // Unconfigured properties, including old names left after declining migration,
     // remain untouched. Only fields exposed to the mutator can be changed.
     for (const key of Object.keys(this.write(before, raw))) if (!own(next, key)) delete raw[key];
+    if (this.identityKey) {
+      const self = this.ownIdentityKey(before);
+      if (self) {
+        const legacy = this.identityValue(raw, self);
+        if (legacy && own(next, this.identityKey) && legacy.value === next[this.identityKey]) delete raw[legacy.key];
+        const primary = this.identityValue(raw, this.identityKey);
+        if (primary && primary.key !== this.identityKey && own(next, this.identityKey)) delete raw[primary.key];
+      }
+    }
     if (this.kinds?.version === 2) {
       const typeKey = this.key("type");
       if (own(raw, typeKey) && !own(next, typeKey) && raw[typeKey] === before.type
@@ -168,7 +239,14 @@ export class FinanceProperties {
   }
 
   assertIdentityKey(key: string): void {
-    if (FINANCE_PROPERTY_KEYS.some(canonical => this.key(canonical) === key)) throw new Error(`Finance property “${key}” conflicts with the identity property configured in Global Context Menu.`);
+    const classificationKeys = [this.kinds?.propertyKey?.("kind"), ...["account", "transaction", "investmentTransaction", "holding", "ledger", "financeRule", "financeBudget"].map(kind => {
+      const definition = this.kinds?.definition(kind);
+      return definition && ("kindList" in definition ? definition.kindList.key : "scalar" in definition ? definition.scalar.key : "key" in definition ? definition.key : null);
+    })].filter((value): value is string => typeof value === "string");
+    if (!key || key !== key.trim() || /[\r\n\t\[\]#.:]/.test(key)
+      || ["__proto__", "constructor", "prototype", "position", "file", "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId"].some(field => field.toLowerCase() === key.toLowerCase())
+      || classificationKeys.some(value => value.toLowerCase() === key.toLowerCase())
+      || FINANCE_PROPERTY_KEYS.some(canonical => this.key(canonical).toLowerCase() === key.toLowerCase())) throw new Error(`Finance property “${key}” conflicts with the identity property configured in Global Context Menu.`);
   }
 
   isRecord(raw: Fields): boolean {
@@ -196,6 +274,8 @@ export class FinanceProperties {
       throw new Error("Configure the Scheduled custom-property key in Global Context Menu before creating Finance Bases.");
     }
     const definition = parseYaml(content);
+    const identityFields = new Set(["financeId", "financeRuleId", "financeBudgetId",
+      ...(content.includes('kind == "account"') ? ["financeAccountId"] : [])]);
     const expression = (text: string): string => {
       const classified = text.replace(/(?<![\w.])(?:note\.)?kind\s*(==|!=)\s*(["'])([^"']+)\2/g, (all, operator, quote, kind) => {
       const mapping = this.kinds?.definition(kind);
@@ -210,8 +290,12 @@ export class FinanceProperties {
       const match = expression(mapping);
       return operator === '!=' ? `!${match}` : match;
     });
-      return classified.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_][A-Za-z0-9_]*\b/g, (token, offset) => {
-      if (!FINANCE_PROPERTY_KEYS.includes(token) || classified[offset - 1] === "." || this.key(token) === token) return token;
+      const identified = this.identityKey ? classified.replace(/(?<![\w.])(?:note\.)?(financeId|financeAccountId|financeRuleId|financeBudgetId)\s*!=\s*null\b/g,
+        (predicate, key) => identityFields.has(key)
+          ? `(note[${JSON.stringify(this.identityKey)}] != null || note[${JSON.stringify(key)}] != null)` : predicate) : classified;
+      return identified.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[A-Za-z_][A-Za-z0-9_]*\b/g, (token, offset) => {
+      if (this.identityKey && identityFields.has(token) && identified[offset - 1] !== ".") return `note[${JSON.stringify(this.identityKey)}]`;
+      if (!FINANCE_PROPERTY_KEYS.includes(token) || identified[offset - 1] === "." || this.key(token) === token) return token;
       return `note[${JSON.stringify(this.key(token))}]`;
       });
     };
@@ -280,7 +364,16 @@ export function financeKindCodec(api: KindCodec | undefined): KindCodec | undefi
 
 export function financeProperties(app: App): FinanceProperties {
   if ((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyMigration) throw new Error("Resume the property migration in Finances → Properties before using finance records.");
-  const properties = new FinanceProperties((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyNames, financeKindCodec((app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds));
-  properties.assertIdentityKey((app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
-  return properties;
+  return new FinanceProperties((app as any).plugins?.plugins?.["tps-finances"]?.settings?.propertyNames,
+    financeKindCodec((app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds), financeIdentityKey(app));
+}
+
+/** GCM's normalized storage contract, rather than a possibly retired settings format. */
+export function financeIdentityKey(app: App): string {
+  const gcm = (app as any).plugins?.plugins?.["tps-global-context-menu"];
+  if (!gcm) return "tpsId"; // Existing standalone default; installed GCM owns configuration.
+  if (typeof gcm.api?.nativeRecords?.getStorageProfile !== "function") throw new Error("Update and enable TPS Global Context Menu before using Finance record IDs.");
+  const profile = gcm.api.nativeRecords.getStorageProfile();
+  if (profile?.identityMode !== "property" || typeof profile.identityPropertyKey !== "string") throw new Error("Configure a shared identity property in Global Context Menu before using Finance records.");
+  return profile.identityPropertyKey;
 }

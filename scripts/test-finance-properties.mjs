@@ -21,6 +21,174 @@ const account={financeAccountId:'account1',name:'Checking',institutionName:'Bank
 const holding={financeAccountId:'account1',securityId:'ABC',name:'Fund',ticker:'ABC',type:'equity',quantity:2,price:50,value:100,costBasis:90,currency:'USD'};
 const state={providerIdentityMap:{'transaction:provider1':'tx1'}};
 
+function configurePrimaryIdentity(h, key='recordId', kinds) {
+ h.app.plugins.plugins['tps-global-context-menu']={
+  settings:{nativeRecordIdentityPropertyKey:'misleadingSavedKey'},
+  api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:key})},...(kinds?{frontmatterKinds:kinds}:{})},
+ };
+ return financeProperties(h.app);
+}
+
+test('identity and field names cannot overwrite classification or caseless legacy ID aliases',()=>{
+ for(const key of ['FinanceId','FinanceAccountID','TPSID','SecurityID'])assert.throws(()=>new FinanceProperties({keys:{merchant:key}}),/property name/);
+ assert.throws(()=>new FinanceProperties({keys:{merchant:'LABEL',title:'label'}}),/already used/);
+ for(const definition of [{kindList:{key:'recordId',value:'transaction/money'}},{scalar:{key:'RECORDID',value:'money'}},{parentKind:'transaction',key:'recordId',value:'money'}]){
+  const kinds={version:2,definition:()=>definition,propertyKey:()=>null,decode:f=>f,encode:f=>f};
+  assert.throws(()=>new FinanceProperties(undefined,kinds,'recordId'),/identity property/);
+ }
+});
+
+test('configured primary identity replaces only each Finance record own ID, retaining foreign keys',()=>{
+ const properties=new FinanceProperties(undefined,undefined,'recordId');
+ for(const [kind,ownId] of [['account','financeAccountId'],['transaction','financeId'],['investmentTransaction','financeId'],['financeRule','financeRuleId'],['financeBudget','financeBudgetId']]){
+  const fields={kind,[ownId]:`own-${kind}`,title:'Keep title',custom:false,...(ownId!=='financeAccountId'?{financeAccountId:'account-foreign'}:{})};
+  const raw=properties.write(fields);
+  assert.equal(raw.recordId,fields[ownId],kind);
+  assert.ok(!(ownId in raw),`${kind} must not duplicate its primary ID`);
+  assert.equal(raw.tpsId,undefined);
+  const decoded=properties.read(raw);assert.equal(decoded[ownId],fields[ownId]);
+  if(ownId!=='financeAccountId'){assert.equal(raw.financeAccountId,'account-foreign');assert.equal(decoded.financeAccountId,'account-foreign');}
+  assert.equal(raw.custom,false);
+ }
+ const holding=properties.write({kind:'holding',type:'holding',recordId:'holding-own',financeAccountId:'account-foreign',securityId:'security-foreign'});
+ assert.equal(holding.recordId,'holding-own');assert.equal(holding.financeAccountId,'account-foreign');assert.equal(holding.securityId,'security-foreign');
+});
+
+test('existing legacy IDs stay legacy while equal primary duplicates converge and conflicts fail closed',()=>{
+ const properties=new FinanceProperties(undefined,undefined,'recordId');
+ for(const [kind,ownId] of [['account','financeAccountId'],['transaction','financeId'],['investmentTransaction','financeId'],['financeRule','financeRuleId'],['financeBudget','financeBudgetId']]){
+  const legacy={kind,[ownId]:'legacy-own',custom:'Keep'};
+  assert.equal(properties.read(legacy)[ownId],'legacy-own');assert.deepEqual(legacy,{kind,[ownId]:'legacy-own',custom:'Keep'},'read is not remediation');
+  properties.mutate(legacy,fields=>{fields.title='Edited legacy'});
+  assert.deepEqual(legacy,{kind,[ownId]:'legacy-own',custom:'Keep',title:'Edited legacy'},'an ordinary edit cannot adopt a legacy ID');
+  const equal={...legacy,recordId:'legacy-own'};properties.mutate(equal,fields=>{fields.title='Edited'});
+  assert.equal(equal.recordId,'legacy-own');assert.ok(!(ownId in equal));assert.equal(equal.custom,'Keep');
+  const conflicting={...legacy,recordId:'different'},before=structuredClone(conflicting);
+  assert.throws(()=>properties.read(conflicting),/identity|identifier|conflict/i,kind);
+  assert.throws(()=>properties.mutate(conflicting,fields=>{fields.title='Must not save'}),/identity|identifier|conflict/i,kind);
+  assert.deepEqual(conflicting,before);
+ }
+ for(const reserved of ['financeId','financeAccountId','financeBudgetId','financeRuleId','securityId'])assert.throws(()=>new FinanceProperties(undefined,undefined,reserved),/identity property/);
+});
+
+test('existing identities cannot be retargeted or created through Finance edits',()=>{
+ const properties=new FinanceProperties(undefined,undefined,'recordId');
+ for(const [kind,ownId] of [['account','financeAccountId'],['transaction','financeId'],['investmentTransaction','financeId'],['financeRule','financeRuleId'],['financeBudget','financeBudgetId']]){
+  for(const original of [{kind,[ownId]:'owned'},{kind,recordId:'owned'}]){
+   const before=structuredClone(original);
+   assert.throws(()=>properties.mutate(original,fields=>{fields[ownId]='retargeted'}),/identity changed/);assert.deepEqual(original,before);
+   assert.throws(()=>properties.write({kind,[ownId]:'retargeted'},original),/identity changed/);assert.deepEqual(original,before);
+   properties.mutate(original,fields=>{delete fields[ownId];fields.title='Keep owner'});
+   assert.equal(original[ownId]||original.recordId,'owned','omitting an identity from an edit does not remove it');
+   assert.equal(Object.keys(original).filter(key=>[ownId,'recordId'].includes(key)).length,1);
+  }
+  for(const assignment of [ownId,'recordId']){
+   const identityless={kind,title:'Existing note',custom:'Keep'},before=structuredClone(identityless);
+   assert.throws(()=>properties.mutate(identityless,fields=>{fields[assignment]='newly-claimed'}),/identity is missing/);assert.deepEqual(identityless,before);
+   assert.throws(()=>properties.write({kind,[assignment]:'newly-claimed'},identityless),/identity is missing/);
+  }
+  const physicalKey=ownId.toUpperCase(),raw={kind,[physicalKey]:'legacy-case',custom:'Keep'};
+  properties.mutate(raw,fields=>{fields.title='Edited';fields.recordId='legacy-case'});
+  assert.deepEqual(raw,{kind,[physicalKey]:'legacy-case',custom:'Keep',title:'Edited'},'equal supplied primary ID does not adopt or rename the legacy key');
+ }
+ for(const kind of ['holding','ledger']){
+  const identityless={kind,financeAccountId:'foreign-account',securityId:'foreign-security'},before=structuredClone(identityless);
+  assert.throws(()=>properties.mutate(identityless,fields=>{fields.recordId='newly-claimed'}),/identity is missing/);assert.deepEqual(identityless,before);
+  const primary={...identityless,recordId:'existing-primary'};properties.mutate(primary,fields=>{delete fields.recordId;fields.title='Edit'});
+  assert.equal(primary.recordId,'existing-primary');assert.equal(primary.financeAccountId,'foreign-account');assert.equal(primary.securityId,'foreign-security');
+  const casePrimary={...identityless,RECORDID:'case-primary'};properties.mutate(casePrimary,fields=>{fields.title='Edit'});
+  assert.equal(casePrimary.RECORDID,'case-primary');assert.equal(casePrimary.recordId,undefined,'a generic record retains its authored primary-key spelling');
+ }
+});
+
+test('generated own-ID presence filters retain legacy-only visibility without expanding foreign keys',()=>{
+ const properties=new FinanceProperties(undefined,undefined,'recordId');
+ for(const [kind,self] of [['account','financeAccountId'],['transaction','financeId'],['financeRule','financeRuleId'],['financeBudget','financeBudgetId']]){
+  const source=stringify({filters:{and:[`kind == "${kind}"`,`${self} != null`]},views:[{type:'table',name:'Generated'}]});
+  const result=properties.base(source),predicate=parse(result).filters.and[1];
+  assert.equal(predicate,`(note["recordId"] != null || note["${self}"] != null)`);
+  const matches=new Function('note',`return ${predicate};`);
+  assert.equal(matches({recordId:'primary'}),true);assert.equal(matches({[self]:'legacy'}),true);assert.equal(matches({}),false);
+  assert.equal(properties.base(result),result,'quoted legacy references are not remapped on a second generated pass');
+ }
+ for(const kind of ['transaction','holding']){
+  const source=stringify({filters:{and:[`kind == "${kind}"`,'financeAccountId != null','securityId != null']},views:[{type:'table',name:'Generated'}]});
+  assert.deepEqual(parse(properties.base(source)).filters.and,[`kind == "${kind}"`,'financeAccountId != null','securityId != null']);
+ }
+});
+
+test('the native storage profile owns identity even when saved GCM settings disagree',()=>{
+ const h=harness(),properties=configurePrimaryIdentity(h);
+ const raw=properties.write({kind:'transaction',type:'transaction',financeId:'profile-owned',financeAccountId:'account-foreign'});
+ assert.equal(raw.recordId,'profile-owned');assert.equal(raw.financeId,undefined);assert.equal(raw.misleadingSavedKey,undefined);
+ assert.equal(properties.read(raw).financeId,'profile-owned');
+});
+
+test('property rename migration guards the configured primary identity at the current source boundary',async()=>{
+ const h=harness();configurePrimaryIdentity(h);
+ await h.add('A.md',{kind:'transaction',recordId:'original',amount:-5});
+ const from=new FinanceProperties(),to=new FinanceProperties({keys:{amount:'total'}});
+ const {journal}=await previewPropertyMigration(h.app,from,to,'');assert.equal(journal.identityKey,'recordId');
+ const process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async(file,mutate)=>{
+  await process(file,raw=>{raw.recordId='reidentified'});
+  return process(file,mutate);
+ };
+ await assert.rejects(applyPropertyMigration(h.app,journal),/changed identity/);
+ assert.equal(h.fm('A.md').recordId,'reidentified');assert.equal(h.fm('A.md').amount,-5);assert.equal(h.fm('A.md').total,undefined);
+});
+
+test('property rename migration rejects a changed configured identity key before any writes',async()=>{
+ const h=harness();configurePrimaryIdentity(h);
+ await h.add('A.md',{kind:'transaction',recordId:'original',amount:-5});
+ const {journal}=await previewPropertyMigration(h.app,new FinanceProperties(),new FinanceProperties({keys:{amount:'total'}}),'');
+ configurePrimaryIdentity(h,'newId');const before=h.contents.get('A.md');
+ await assert.rejects(applyPropertyMigration(h.app,journal),/identity configuration changed/);
+ assert.equal(h.contents.get('A.md'),before);
+});
+
+test('primary identity rejects malformed values and case duplicates without editing the note',()=>{
+ const properties=new FinanceProperties(undefined,undefined,'recordId');
+ for(const value of [0,true,['id'],'',' id '])assert.throws(()=>properties.read({kind:'transaction',recordId:value}),/identity property/);
+ const raw={kind:'transaction',RecordID:'case-owned',FINANCEID:'case-owned',financeAccountId:'foreign',bodyMarker:'Keep'};
+ assert.equal(properties.read(raw).financeId,'case-owned');properties.mutate(raw,fields=>{fields.title='Edit'});
+ assert.deepEqual(raw,{kind:'transaction',recordId:'case-owned',financeAccountId:'foreign',bodyMarker:'Keep',title:'Edit'});
+ const duplicate={kind:'transaction',recordId:'same',RecordID:'same'};assert.throws(()=>properties.read(duplicate),/Duplicate Finance identity/);assert.deepEqual(duplicate,{kind:'transaction',recordId:'same',RecordID:'same'});
+});
+
+test('an unavailable or non-property GCM storage profile blocks Finance rather than choosing saved settings',()=>{
+ const h=harness();
+ h.app.plugins.plugins['tps-global-context-menu']={settings:{nativeRecordIdentityPropertyKey:'recordId'}};
+ assert.throws(()=>financeProperties(h.app),/Global Context Menu/);
+ h.app.plugins.plugins['tps-global-context-menu'].api={nativeRecords:{getStorageProfile:()=>({identityMode:'body',identityPropertyKey:'recordId'})}};
+ assert.throws(()=>financeProperties(h.app),/shared identity property/);assert.equal(h.files.size,0);
+});
+
+test('primary-only kind-list records remain visible at root and same-mtime identity changes are current',async()=>{
+ const h=harness(),kinds=configurableListCodec();configurePrimaryIdentity(h,'recordId',kinds);
+ const file=await h.add('Inbox/Readable title.md',{recordId:'first',classifications:['transaction/money'],when:'2026-09-20',account:'[[Checking]]',financeAccountId:'account-foreign',amount:-5,currency:'USD'});
+ for(let index=0;index<1000;index++)await h.add(`Other/${index}.md`,{title:`Ordinary ${index}`});
+ let reads=0,writes=0,scans=0;const read=h.app.vault.cachedRead,process=h.app.fileManager.processFrontMatter,list=h.app.vault.getMarkdownFiles;
+ h.app.vault.cachedRead=async target=>{reads++;return read(target)};
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args)};
+ h.app.vault.getMarkdownFiles=()=>{scans++;return list()};
+ for(let index=0;index<20;index++){
+  const rows=await h.store.readTransactionRecords('metadata');assert.deepEqual(rows.map(row=>parseLineId(row.line)),['first']);
+ }
+ assert.equal(reads,0);assert.equal(writes,0);assert.equal(scans,20,'reuse existing per-request inventory, without another scan');
+ const oldStats={...file.stat};await process(file,raw=>{raw.recordId='other'});Object.assign(file.stat,oldStats);
+ assert.deepEqual((await h.store.readTransactionRecords('metadata')).map(row=>parseLineId(row.line)),['other']);
+ assert.equal(reads,0);assert.equal(writes,0);
+ const content=h.contents.get(file.path);h.files.delete(file.path);h.contents.delete(file.path);file.path='Inbox/Renamed.md';file.basename='Renamed';h.files.set(file.path,file);h.contents.set(file.path,content);
+ const renamed=await h.store.readTransactionRecords('metadata');assert.deepEqual(renamed.map(row=>[parseLineId(row.line),row.path]),[['other','Inbox/Renamed.md']]);assert.equal(renamed[0].sourceFile,file);
+ h.files.delete(file.path);h.contents.delete(file.path);assert.deepEqual(await h.store.readTransactionRecords('metadata'),[]);
+ const replacement=await h.add('Inbox/Renamed.md',{recordId:'replacement',classifications:['transaction/money'],when:'2026-09-20',account:'[[Checking]]',financeAccountId:'account-foreign',amount:-9,currency:'USD'});
+ const current=await h.store.readTransactionRecords('metadata');assert.equal(parseLineId(current[0].line),'replacement');assert.equal(current[0].sourceFile,replacement);assert.notEqual(current[0].sourceFile,file);
+ assert.equal(reads,0);assert.equal(writes,0,'rename/delete/display never canonicalizes source');
+});
+
+function parseLineId(line){return /\[financeId::\s*([^\]]+)\]/.exec(line)?.[1]?.trim();}
+
 test('every property can use exactly one configured key, with IDs and values intact',()=>{
  const p=mapped(),fields=Object.fromEntries(FINANCE_PROPERTY_KEYS.map((key,i)=>[key,[false,0,'',null,['list']][i%5]]));fields.financeId='id';
  const raw=p.write(fields);assert.deepEqual(p.read(raw),fields);
@@ -81,7 +249,7 @@ test('manual cash, transfers, assets and valuations round trip through configure
  const b=await h.manual.createAccount({kind:'asset',name:'Computer',currency:'USD',value:500,valuationDate:'2026-09-20',purchaseTransaction:'',liabilityAccount:'',assetType:'computer'});
  await h.manual.updateValue(b.path,450,'2026-09-20');assert.equal(h.fm(b.path)['custom current'],450);
  const file=await h.manual.createCashEntry({title:'Cash coffee',amount:5,date:'2026-09-20',accountPath:a.path,kind:'expense',category:'Food',tags:['coffee'],counterpart:'',linkedTransaction:''});
- assert.equal(h.fm(file.path)['custom amount'],-5);assert.equal(h.fm(file.path)['custom type'],'transaction');assert.ok(h.fm(file.path).financeId);assert.equal((await h.store.readTransactionRecords()).length,1);
+ assert.equal(h.fm(file.path)['custom amount'],-5);assert.equal(h.fm(file.path)['custom type'],'transaction');assert.ok(h.fm(file.path).tpsId);assert.equal((await h.store.readTransactionRecords()).length,1);
 });
 test('budgets, savings links, rules and legacy snapshots use configured keys',async()=>{
  const p=mapped(),h=harness(p),paths=await h.store.upsertAccounts([account]);
@@ -408,7 +576,7 @@ test('rendered manual cash classification uses the same atomic-only target',asyn
  const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  const cash=await h.manual.createAccount({kind:'cash',name:'Wallet',currency:'USD',value:100,valuationDate:'2026-09-20',purchaseTransaction:'',liabilityAccount:'',assetType:''});
  const file=await h.manual.createCashEntry({title:'Lunch',amount:3,date:'2026-09-20',accountPath:cash.path,kind:'expense',category:'',tags:[],counterpart:'',linkedTransaction:''});
- const row=await displayedTransaction(h,p,h.fm(file.path).financeId);assert.equal(row.manual,true);assert.equal(row.sourceFile,file);
+ const row=await displayedTransaction(h,p,h.fm(file.path).tpsId);assert.equal(row.manual,true);assert.equal(row.sourceFile,file);
  let scans=0,reads=0;const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead;
  h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};h.app.vault.cachedRead=async target=>{reads++;return cachedRead(target)};
  await classificationSave(p.plugin,row);
@@ -555,7 +723,7 @@ test('concurrent destination edits are checked within the atomic frontmatter mut
  await assert.rejects(applyPropertyMigration(h.app,journal),/different value/);assert.equal(h.fm('A.md').type,'transaction');assert.equal(h.fm('A.md').transactionType,'new edit');
 });
 test('resuming rechecks the current GCM identity key before changing notes',async()=>{
- const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction'});const {journal}=await previewPropertyMigration(h.app,from,to,'');p.plugin.settings.propertyMigration=journal;h.app.plugins.plugins['tps-global-context-menu']={settings:{nativeRecordIdentityPropertyKey:'transactionType'}};
+ const h=harness(),p=pluginHarness(h),from=new FinanceProperties(),to=new FinanceProperties({keys:{type:'transactionType'}});await h.add('A.md',{financeId:'a',type:'transaction'});const {journal}=await previewPropertyMigration(h.app,from,to,'');p.plugin.settings.propertyMigration=journal;h.app.plugins.plugins['tps-global-context-menu']={settings:{nativeRecordIdentityPropertyKey:'transactionType'},api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'transactionType'})}}};
  await assert.rejects(p.plugin.resumePropertyMigration(),/identity property/);assert.equal(h.fm('A.md').type,'transaction');assert.ok(!('transactionType' in h.fm('A.md')));
 });
 test('unindexed malformed finance notes are reported instead of silently omitted from migration',async()=>{
@@ -573,7 +741,7 @@ test('collision checks distinguish YAML null and non-finite values and compare n
 test('GCM kind classifications cover account creation, transaction import/update, manual cash and generated account filters',async()=>{
  const defs={account:{parentKind:'entity',key:'entityKind',value:'account'},'finance-transaction':{parentKind:'transaction',key:'transactionKind',value:'financial'},'investment-transaction':{parentKind:'transaction',key:'transactionKind',value:'investment'},holding:{parentKind:'entity',key:'entityKind',value:'holding'}};
  const codec={definition:k=>defs[k]||null,encode:f=>{const d=defs[f.kind];return d?{...f,kind:d.parentKind,[d.key]:d.value}:{...f}},decode:f=>{const entry=Object.entries(defs).find(([,d])=>f.kind===d.parentKind&&f[d.key]===d.value);if(!entry)return {...f};const result={...f,kind:entry[0]};delete result[entry[1].key];return result}};
- const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);assert.equal(h.fm(paths.get('account1')).kind,'entity');assert.equal(h.fm(paths.get('account1')).entityKind,'account');
  await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
  assert.equal(h.fm('tx1.md').kind,'transaction');assert.equal(h.fm('tx1.md').transactionKind,'financial');
@@ -589,7 +757,7 @@ test('GCM kind classifications cover account creation, transaction import/update
 test('tag mappings support finance import, repeat updates and generated Base predicates',async()=>{
  const tags={account:'accounts', 'finance-transaction':'kind/financial/transaction'};
  const codec={definition:k=>tags[k]?{tag:tags[k]}:null,encode:f=>{if(!tags[f.kind])return {...f};const out={...f,tags:[...new Set([...(f.tags||[]),tags[f.kind]])]};delete out.kind;return out;},decode:f=>({...f,...(Object.entries(tags).find(([,tag])=>f.tags?.includes(tag))?{kind:Object.entries(tags).find(([,tag])=>f.tags?.includes(tag))[0]}:{})})};
- const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);assert.equal(h.fm(paths.get('account1')).kind,undefined);assert.ok(h.fm(paths.get('account1')).tags.includes('accounts'));
  await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
  await h.store.applyTransactions([],[{...tx,amount:-9}],[],structuredClone(state),paths);
@@ -692,7 +860,7 @@ test('distinct configured Finance kinds identify transactions and holdings witho
  codec.configure('investment-transaction','transaction/financial/investment');
  codec.configure('holding','entity/holding');
  const h=harness(new FinanceProperties({keys:{type:'recordType'}}));
- h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);
  const investment={...tx,financeId:'investment-1',providerTransactionId:'investment-provider',kind:'investmentTransaction',investmentType:''};
  await h.store.applyTransactions([tx,investment],[],[],structuredClone(state),paths);
@@ -756,7 +924,7 @@ test('a read-only legacy transaction type alias identifies old Wallet notes with
  assert.ok(!('type'in properties.write({kind:'investmentTransaction',type:'investmentTransaction',financeId:'investment-2'})));
 });
 test('GCM v2 Finance sync and generated views follow configured mappings without losing rule order',async()=>{
- const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);
  assert.deepEqual(h.fm(paths.get('account1')).classifications,['entity/bank']);
  await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
@@ -783,7 +951,7 @@ test('GCM v2 Finance sync and generated views follow configured mappings without
  assert.doesNotMatch(accountBase.filters.and[0],/kind.*account|kind\/account\/entity/);
 });
 test('GCM v2 reads old account and transaction markers before migration without duplicating an account',async()=>{
- const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  await h.add('Accounts/Old.md',{kind:'account',financeAccountId:'account1',title:'Old account',accountName:'Checking',accountType:'depository',currency:'USD'},'Keep account body\n');
  await h.add('Transactions/Old.md',{type:'transaction',financeId:'old-tx',financeAccountId:'account1',account:'[[Accounts/Old]]',date:'2026-09-18',amount:-3,currency:'USD',tags:['kind/financial/transaction']},'Keep transaction body\n');
  assert.equal((await h.store.readTransactionRecords('metadata')).length,1);
@@ -794,7 +962,7 @@ test('GCM v2 reads old account and transaction markers before migration without 
  assert.equal(financeProperties(h.app).read(h.fm('Transactions/Old.md')).kind,'transaction');
 });
 test('GCM v2 refuses dated Finance writes when Scheduled is unconfigured, while legacy dates stay readable',async()=>{
- const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);
  codec.setScheduleKey(null);
  const properties=financeProperties(h.app);
@@ -806,7 +974,7 @@ test('GCM v2 refuses dated Finance writes when Scheduled is unconfigured, while 
  assert.ok(!h.files.has('tx1.md'));
 });
 test('GCM v2 disabled classification writers refuse Finance note creation without a fallback path',async()=>{
- const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  const paths=await h.store.upsertAccounts([account]);
  await h.store.ensureStructure();
  codec.setWriterEnabled('finance-transaction',false);
@@ -817,7 +985,7 @@ test('GCM v2 disabled classification writers refuse Finance note creation withou
  assert.ok(!h.files.has('tx1.md'));
 });
 test('repeated GCM v2 transaction display reads do not enter the note write queue',async()=>{
- const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:configurableListCodec()}};
+ const h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:configurableListCodec()}};
  const paths=await h.store.upsertAccounts([account]);await h.store.applyTransactions([tx],[],[],structuredClone(state),paths);
  for(let i=0;i<128;i++)await h.add(`Inbox/Unrelated ${i}.md`,{title:`Unrelated ${i}`,kind:['note/other']});
  let scans=0,cached=0,fresh=0,writes=0;
@@ -831,7 +999,7 @@ test('repeated GCM v2 transaction display reads do not enter the note write queu
 test('classification change previews only exact generated Bases and leaves customized Bases alone',async()=>{
  const h=harness();
  const definitions={account:{tag:'kind/finance/account'}};
- h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:{definition:k=>definitions[k]||null,encode:f=>f,decode:f=>f}}};
+ h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:{definition:k=>definitions[k]||null,encode:f=>f,decode:f=>f}}};
  await h.store.ensureStructure();
  assert.match(h.contents.get('Accounts.base'),/file\.hasTag\("kind\/finance\/account"\)/);
  h.contents.set('Transactions.base','user-authored Base');
@@ -843,7 +1011,7 @@ test('classification change previews only exact generated Bases and leaves custo
  assert.equal(h.contents.get('Transactions.base'),'user-authored Base');
 });
 test('GCM v2 classification previews generated Bases with the proposed primary list path only',async()=>{
- const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+ const codec=configurableListCodec(),h=harness();h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
  await h.store.ensureStructure();
  const from=codec.definition('account');
  const before=h.contents.get('Accounts.base');
@@ -857,7 +1025,7 @@ test('GCM v2 classification previews generated Bases with the proposed primary l
 test('finance classification rejects subkind keys owned by finance fields or record IDs',async()=>{
  const h=harness(new FinanceProperties({keys:{amount:'totalAmount'}}));
  const from={tag:'kind/finance/transaction'};
- h.app.plugins.plugins['tps-global-context-menu']={settings:{nativeRecordIdentityPropertyKey:'recordId'},api:{frontmatterKinds:{definition:k=>k==='finance-transaction'?from:null,encode:f=>f,decode:f=>f}}};
+ h.app.plugins.plugins['tps-global-context-menu']={settings:{nativeRecordIdentityPropertyKey:'recordId'},api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'recordId'})},frontmatterKinds:{definition:k=>k==='finance-transaction'?from:null,encode:f=>f,decode:f=>f}}};
  const change=key=>({recordKind:'finance-transaction',from,to:{parentKind:'transaction',key,value:'financial'}});
  for(const key of ['AMOUNT','totalamount','FINANCEID','financeaccountid','FINANCEBUDGETID','FINANCERULEID','SECURITYID','recordID','TPSID']){
   await assert.rejects(previewGeneratedBaseClassificationChange(h.app,'',change(key)),/conflicts with a Finance field or record ID/,key);
@@ -894,7 +1062,7 @@ test('model snapshot preserves complete source and indexed results with mapped G
  const codec={definition:k=>defs[k]||null,encode:f=>{const d=defs[f.kind];return d?{...f,kind:d.parentKind,[d.key]:d.value}:{...f}},decode:f=>{const entry=Object.entries(defs).find(([,d])=>f.kind===d.parentKind&&f[d.key]===d.value);if(!entry)return {...f};const result={...f,kind:entry[0]};delete result[entry[1].key];return result}};
  for(const folder of ['', 'Finances']){
   const h=harness(mapped()),p=pluginHarness(h);p.plugin.settings.financeFolder=folder;await p.plugin.reviewLegacyTransactionMarkers();
-  h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec}};
+  h.app.plugins.plugins['tps-global-context-menu']={api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:codec}};
   const prefix=folder?`${folder}/`:'';
   const add=(section,name,fields)=>h.add(`${prefix}${section}/${name}.md`,financeProperties(h.app).write(fields));
   await add('Accounts','Checking',{kind:'account',financeAccountId:'checking',accountName:'Checking',accountType:'depository',accountSubtype:'checking',currency:'USD',current:100,available:100});

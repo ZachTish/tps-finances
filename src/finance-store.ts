@@ -142,17 +142,15 @@ export class FinanceStore {
       }
       const path = existing?.path || this.accountPath(account);
       const file = existing || await this.createAccountFile(path, account);
-      await this.processFrontmatter(file, (frontmatter) => {
-        frontmatter.title = accountDisplayName(account);
-        frontmatter.kind = "account";
-        frontmatter.institution = account.institutionName;
-        frontmatter.accountType = account.type;
-        frontmatter.accountSubtype = account.subtype;
-        frontmatter.accountName = account.name;
-        frontmatter.accountMask = account.mask;
-        frontmatter.currency = account.currency;
-        frontmatter.financeAccountId = account.financeAccountId;
-      });
+      if (existing) {
+        await this.processFrontmatter(file, (frontmatter) => {
+          if (this.app.vault.getAbstractFileByPath(file.path) !== file
+            || String(frontmatter.financeAccountId || "") !== account.financeAccountId) {
+            throw new Error("Account identity changed during sync.");
+          }
+          Object.assign(frontmatter, accountFields(account));
+        });
+      }
       vaultMayHaveChanged = true;
       accountFilesById.set(account.financeAccountId, file);
       refreshedAccountIds.add(account.financeAccountId);
@@ -680,7 +678,7 @@ export class FinanceStore {
 
   private async createAccountFile(path: string, account: FinanceAccount): Promise<TFile> {
     const uniquePath = this.uniquePath(path);
-    return this.app.vault.create(uniquePath, financeProperties(this.app).note(`---\ntitle: ${yamlString(accountDisplayName(account))}\nkind: account\n---\n`));
+    return this.app.vault.create(uniquePath, `---\n${stringifyYaml(financeProperties(this.app).write(accountFields(account)))}---\n`);
   }
 
   protected uniquePath(path: string): string {
@@ -748,6 +746,23 @@ function holdingSnapshotLine(holding: FinanceHolding, accountPath: string, snaps
 function accountDisplayName(account: FinanceAccount): string {
   const suffix = account.mask ? ` •${account.mask}` : "";
   return `${account.institutionName} ${account.name}${suffix}`.trim();
+}
+
+function accountFields(account: FinanceAccount): Record<string, unknown> {
+  return {
+    title: accountDisplayName(account),
+    kind: "account",
+    institution: account.institutionName,
+    accountType: account.type,
+    accountSubtype: account.subtype,
+    accountName: account.name,
+    accountMask: account.mask,
+    currency: account.currency,
+    financeAccountId: account.financeAccountId,
+    current: account.current,
+    available: account.available,
+    limit: account.limit,
+  };
 }
 
 export function safeName(value: string): string {

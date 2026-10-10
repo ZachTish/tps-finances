@@ -22,6 +22,79 @@ const holdingAccount={financeAccountId:'account-1',name:'Investing',institutionN
 const namedHolding={financeAccountId:'account-1',securityId:'security-1',name:'Example Company',ticker:'EXM',type:'equity',quantity:2,price:50,value:100,costBasis:90,currency:'USD'};
 const holdingDate=new Date('2026-09-26T12:00:00Z');
 
+function primaryIdentity(h,key='recordId'){
+ h.app.plugins={plugins:{'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'oldSavedKey'},api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:key})}}}}};
+ return new AtomicFinanceStore(h.app,'');
+}
+
+test('configured primary-only imports retain account foreign keys and unchanged revisions do no writes',async()=>{
+ const h=harness(),root=primaryIdentity(h),paths=await root.upsertAccounts([holdingAccount]);
+ const accountPath=paths.get('account-1');assert.equal(h.fm(accountPath).recordId,'account-1');assert.equal(h.fm(accountPath).financeAccountId,undefined);assert.equal(h.fm(accountPath).tpsId,undefined);
+ await root.applyTransactions([tx],[],[],structuredClone(state),paths);
+ const file=h.nodes.get('local-1.md');assert.equal(h.fm(file.path).recordId,'local-1');assert.equal(h.fm(file.path).financeId,undefined);assert.equal(h.fm(file.path).financeAccountId,'account-1');assert.equal(h.fm(file.path).oldSavedKey,undefined);
+ await h.app.fileManager.processFrontMatter(file,raw=>{raw.categoryOverride='Personal';raw.tags=['keep'];raw.custom='Keep'});h.text.set(file.path,h.text.get(file.path)+'Receipt body\n');
+ let attempts=0,creates=0,fresh=0;const process=h.app.fileManager.processFrontMatter,create=h.app.vault.create,read=h.app.vault.read;
+ h.app.fileManager.processFrontMatter=async(...args)=>{attempts++;return process(...args)};
+ h.app.vault.create=async(...args)=>{creates++;return create(...args)};h.app.vault.read=async target=>{if(target===file)fresh++;return read(target)};
+ await root.applyTransactions([tx],[],[],structuredClone(state),paths);assert.equal(attempts,0);assert.equal(creates,0);assert.equal(fresh,0);
+ await root.applyTransactions([],[{...tx,amount:-19,pending:false}],[],structuredClone(state),paths);
+ assert.equal(attempts,1);assert.equal(creates,0);assert.equal(h.fm(file.path).recordId,'local-1');assert.equal(h.fm(file.path).financeId,undefined);
+ assert.equal(h.fm(file.path).categoryOverride,'Personal');assert.deepEqual(h.fm(file.path).tags,['keep']);assert.match(h.text.get(file.path),/Receipt body/);
+ assert.equal((await root.readTransactionRecords('metadata')).length,1);
+ await root.writeSnapshot([holdingAccount],[namedHolding],paths,holdingDate);
+ const holdingFile=h.app.vault.getMarkdownFiles().find(target=>h.fm(target.path).securityId==='security-1');assert.ok(holdingFile);
+ assert.equal(h.fm(holdingFile.path).recordId,'holding-account-1%3Asecurity-1');assert.equal(h.fm(holdingFile.path).tpsId,undefined);assert.equal(h.fm(holdingFile.path).financeAccountId,'account-1');assert.equal(h.fm(holdingFile.path).securityId,'security-1');
+ const budget=await root.createBudget({id:'budget-own',name:'Budget identity QA',category:'Food',monthlyLimit:500});
+ const rule=await root.createRule({id:'rule-own',name:'Rule identity QA',enabled:true,priority:100,accountContains:'',nameContains:'Market',merchantContains:'',minAmount:null,maxAmount:null,category:'Food',tags:[]});
+ assert.equal(h.fm(budget.path).recordId,'budget-own');assert.equal(h.fm(budget.path).financeBudgetId,undefined);assert.equal(h.fm(rule.path).recordId,'rule-own');assert.equal(h.fm(rule.path).financeRuleId,undefined);
+ assert.equal(root.readBudgets()[0].id,'budget-own');assert.equal(root.readRules()[0].id,'rule-own');
+});
+
+test('mixed legacy and primary duplicate IDs or conflicting own IDs block imports before mutations',async()=>{
+ for(const conflict of ['duplicate','same-note']){
+  const h=harness(),root=primaryIdentity(h);
+  await h.app.vault.create('Current.md','---\n'+JSON.stringify({...transactionFields(tx,'Checking.md'),financeId:undefined,recordId:tx.financeId})+'\n---\nCurrent body\n');
+  if(conflict==='duplicate')await h.app.vault.create('Legacy.md','---\n'+JSON.stringify(transactionFields(tx,'Checking.md'))+'\n---\nLegacy body\n');
+  else await h.app.fileManager.processFrontMatter(h.nodes.get('Current.md'),raw=>{raw.financeId='different'});
+  const before=new Map(h.text);let attempts=0,creates=0,trashes=0;
+  const process=h.app.fileManager.processFrontMatter,create=h.app.vault.create,trash=h.app.fileManager.trashFile;
+  h.app.fileManager.processFrontMatter=async(...args)=>{attempts++;return process(...args)};
+  h.app.vault.create=async(...args)=>{if(args[0].endsWith('.md'))creates++;return create(...args)};
+  h.app.fileManager.trashFile=async(...args)=>{trashes++;return trash(...args)};
+  await assert.rejects(root.applyTransactions([],[{...tx,amount:-99}],[],structuredClone(state),new Map([['account-1','Checking.md']])),/duplicate|identity|identifier|conflict/i,conflict);
+  assert.equal(attempts+creates+trashes,0);for(const [path,content] of before)assert.equal(h.text.get(path),content);
+ }
+});
+
+test('primary source authority rejects a stale indexed ID and atomic retarget without overwriting newer content',async()=>{
+ const h=harness(),root=primaryIdentity(h);
+ await root.applyTransactions([tx],[],[],structuredClone(state),new Map([['account-1','Checking.md']]));
+ const file=h.nodes.get('local-1.md'),originalCache=h.app.metadataCache.getFileCache,oldMetadata=structuredClone(h.fm(file.path));
+ await h.app.fileManager.processFrontMatter(file,raw=>{raw.recordId='retargeted';raw.custom='Newer source'});
+ h.app.metadataCache.getFileCache=target=>target===file?{frontmatter:oldMetadata}:originalCache(target);
+ const before=h.text.get(file.path);let writes=0;const process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args)};
+ await assert.rejects(root.applyTransactions([],[{...tx,amount:-99}],[],structuredClone(state),new Map([['account-1','Checking.md']])),/identity|occupied|identifier/i);
+ assert.equal(writes,0);assert.equal(h.text.get(file.path),before);
+ h.app.metadataCache.getFileCache=originalCache;
+ await process(file,raw=>{raw.recordId=tx.financeId});
+ h.app.fileManager.processFrontMatter=async(target,update)=>process(target,raw=>{raw.recordId='boundary-edit';update(raw)});
+ await assert.rejects(root.applyTransactions([],[{...tx,amount:-99}],[],structuredClone(state),new Map([['account-1','Checking.md']])),/identity|identifier/i);
+ assert.equal(h.fm(file.path).amount,tx.amount);assert.equal(h.fm(file.path).recordId,tx.financeId);
+});
+
+test('pending and posted revisions share one configured primary identity without duplicate writes on retry',async()=>{
+ const h=harness(),root=primaryIdentity(h),paths=new Map([['account-1','Checking.md']]);
+ const pending={...tx,providerTransactionId:'pending-provider',pending:true};
+ const posted={...tx,providerTransactionId:'posted-provider',pending:false,amount:-14};
+ const sharedState={providerIdentityMap:{'transaction:pending-provider':tx.financeId,'transaction:posted-provider':tx.financeId}};
+ await root.applyTransactions([pending],[],[],sharedState,paths);
+ await root.applyTransactions([posted],[],[],sharedState,paths);
+ assert.equal(h.fm('local-1.md').recordId,tx.financeId);assert.equal(h.fm('local-1.md').financeId,undefined);assert.equal(h.fm('local-1.md').pending,false);assert.equal(h.fm('local-1.md').amount,-14);
+ let writes=0;const process=h.app.fileManager.processFrontMatter;h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args)};
+ await root.applyTransactions([posted],[],[],sharedState,paths);assert.equal(writes,0);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+});
+
 test('holding import creates a readable ticker/account filename and title at the vault root',async()=>{
  const h=harness(),store=new AtomicFinanceStore(h.app,'');
  const accountPaths=new Map([['account-1','Example Bank Investing •1234.md']]);
@@ -66,6 +139,17 @@ test('sync preserves existing holding paths and edited titles while updating val
  await h.store.writeSnapshot([holdingAccount],[{...namedHolding,value:120}],accounts,holdingDate);
  assert.equal(h.fm(file).title,'Keep my title');assert.equal(h.fm(file).value,120);assert.equal(h.fm(file).custom,'keep');assert.deepEqual(h.fm(file).tags,['watch']);assert.match(h.text.get(file),/My analysis/);assert.equal(h.app.vault.getMarkdownFiles().length,1);
 });
+test('holding updates preserve absent or independently assigned native identity without adoption',async()=>{
+ for(const identity of [{},{tpsId:'independent-position-id'},{TPSID:'case-preserved-position-id'}]){
+  const h=harness(),file='Finances/Holdings/My position.md';
+  await h.app.vault.create(file,'---\n'+JSON.stringify({...namedHolding,kind:'holding',type:'holding',title:'Keep my title',...identity})+'\n---\nMy analysis\n');
+  await h.store.writeSnapshot([holdingAccount],[{...namedHolding,value:120}],accounts,holdingDate);
+  const updated=h.fm(file);
+  assert.equal(updated.tpsId,identity.tpsId);assert.equal(updated.TPSID,identity.TPSID);
+  assert.equal(updated.value,120);assert.equal(updated.financeAccountId,namedHolding.financeAccountId);assert.equal(updated.securityId,namedHolding.securityId);
+  assert.equal(updated.title,'Keep my title');assert.match(h.text.get(file),/My analysis/);assert.equal(h.app.vault.getMarkdownFiles().length,1);
+ }
+});
 test('holding creation requires an account path and a supplied investment label',async()=>{
  const h=harness();await assert.rejects(h.store.writeSnapshot([holdingAccount],[namedHolding],new Map(),holdingDate),/account note is missing/);
  await assert.rejects(h.store.writeSnapshot([holdingAccount],[{...namedHolding,name:'',ticker:''}],accounts,holdingDate),/investment name or ticker/);
@@ -104,7 +188,7 @@ test('unchanged provider revisions do not rewrite transaction notes',async()=>{
 
 test('atomic dashboard excludes records owned by a different finance collection',async()=>{
  const h=harness();await h.store.applyTransactions([tx],[],[],state,accounts);
- const other=JSON.parse(h.text.get(path).match(/^---\n([\s\S]*?)\n---/)[1]);other.financeId='elsewhere';other.account='[[Other/Accounts/Checking]]';
+ const other=JSON.parse(h.text.get(path).match(/^---\n([\s\S]*?)\n---/)[1]);other.tpsId='elsewhere';other.account='[[Other/Accounts/Checking]]';
  await h.app.vault.create('Other/Transactions/elsewhere.md','---\n'+JSON.stringify(other)+'\n---\n');
  assert.equal((await h.store.readTransactionRecords()).length,1);
 });
@@ -123,7 +207,7 @@ test('root atomic storage creates no folders and keeps additions, corrections, h
  assert.equal(h.fm('Fund — QA Checking •1234.md').active,true);
  assert.ok([...h.nodes.values()].every(n=>n instanceof File));
  assert.ok([...h.nodes.keys()].every(p=>!p.includes('/')));
- const view=JSON.parse(h.text.get('Transactions.base'));assert.ok(view.filters.and.includes('financeId != null'));assert.ok(!JSON.stringify(view).includes('inFolder'));
+ const view=JSON.parse(h.text.get('Transactions.base'));assert.ok(view.filters.and.includes('(note["tpsId"] != null || note["financeId"] != null)'));assert.ok(!JSON.stringify(view).includes('inFolder'));
  await root.applyTransactions([],[],['provider-1'],state,paths);assert.equal((await root.readTransactionRecords()).length,0);
 });
 
@@ -299,7 +383,7 @@ test('sync adopts verifiable old descriptions but keeps ambiguous legacy titles'
  await oldTitle(h,'Custom old title');await h.store.applyTransactions([tx],[],[],state,accounts);assert.equal(h.fm(path).title,'Custom old title');
 });
 test('review detects changed titles, merchants, identities, and paths without overwriting them',async()=>{
- for(const [key,value] of [['title','Changed'],['merchant','Another'],['financeId','other'],['financeSource','manual'],['account','[[Elsewhere]]']]) {
+ for(const [key,value] of [['title','Changed'],['merchant','Another'],['tpsId','other'],['financeSource','manual'],['account','[[Elsewhere]]']]) {
   const h=harness();await oldTitle(h);const [change]=await h.store.reviewTransactionTitles();
   await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>f[key]=value);const before=new Map(h.text);
   await assert.rejects(h.store.applyTransactionTitle(change),/Transaction changed/);assert.deepEqual(h.text,before);
@@ -416,7 +500,7 @@ test('Wallet history uses current property keys at vault root and preserves user
 
 test('candidate discovery validates configuration once without decoding unrelated notes',async()=>{
  const h=harness();let decoded=0,configurationReads=0,reads=0,scans=0;
- h.app.plugins={plugins:{'tps-finances':{settings:{get propertyNames(){configurationReads++;return {keys:{amount:'money'}};}}},'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'tpsId'},api:{frontmatterKinds:{definition:()=>null,encode:f=>f,decode:f=>{decoded++;return f;}}}}}};
+ h.app.plugins={plugins:{'tps-finances':{settings:{get propertyNames(){configurationReads++;return {keys:{amount:'money'}};}}},'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'tpsId'},api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:{definition:()=>null,encode:f=>f,decode:f=>{decoded++;return f;}}}}}};
  for(let i=0;i<512;i++)await h.app.vault.create(`Inbox/Ordinary ${i}.md`,'---\n'+JSON.stringify({title:`Ordinary ${i}`,tags:['ordinary']})+'\n---\nBody\n');
  const getFiles=h.app.vault.getMarkdownFiles;h.app.vault.getMarkdownFiles=()=>{scans++;return getFiles();};
  const read=h.app.vault.cachedRead;h.app.vault.cachedRead=async f=>{reads++;return read(f);};
@@ -676,7 +760,7 @@ test('root sync checks stale non-null metadata once per missing-ID batch before 
  assert.equal(reads.filter(path=>path.startsWith('Archive/')).length,128,'each otherwise excluded ordinary source is checked once');
  assert.equal(reads.filter(path=>path===edited).length,3,'discovery, update preflight and verification read current source');
  assert.equal(noteCreates,1,'only the genuinely new transaction gets a note');
- assert.equal(writes,1);assert.equal(h.fm('local-2.md').financeId,'local-2');
+ assert.equal(writes,1);assert.equal(h.fm('local-2.md').tpsId,'local-2');
  published=true;reads.length=0;noteCreates=0;writes=0;scans=0;
  await root.applyTransactions([{...tx,amount:-20},second],[],[],state,accounts);
  assert.equal(scans,1);assert.equal(reads.filter(path=>path.startsWith('Archive/')).length,0,'known IDs avoid the fallback source pass');

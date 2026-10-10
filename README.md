@@ -1,5 +1,89 @@
 # TPS Finances
 
+## 4.0.0 — One primary record ID
+
+Finance uses the shared identity property reported by GCM's public
+`nativeRecords.getStorageProfile()` contract. GCM owns that storage profile;
+Finance does not duplicate its controls or trust a retired saved identity format.
+With GCM absent, the existing standalone default is `tpsId`. An installed but
+unready/unsupported GCM blocks record work until its public API is available;
+its existing readiness event refreshes a mounted Finance view once, with no
+work for an absent consumer or repeated announcement. Property identities are
+supported; an unsupported active format or collisions with Finance fields,
+classification keys, account/security references or legacy identity names are
+reported before writing.
+
+New transactions store their existing local ID only in that shared property.
+Account, rule and budget notes use it for their own IDs too. Internal DTO names,
+provider-to-local identity maps and ID values are unchanged. Transactions and
+holdings retain `financeAccountId` as their account foreign key; `securityId`,
+links, filenames, account folders and nutrition fields are unchanged. Holding
+updates preserve independently assigned primary IDs. Imported accounts now
+prepare their full fields, balances and primary identity in the initial create,
+instead of creating a partial note and running two subsequent edits.
+
+Legacy whole-note self IDs remain readable. Existing legacy-only notes keep that
+single physical ID during edits; identity-less existing notes cannot acquire an
+ID through an ordinary edit. A matching duplicate beside the primary is omitted
+by the existing owning edit operation; ordinary display never cleans up notes.
+Diverging IDs, duplicated case variants and invalid ID values fail closed.
+Metadata candidate selection accepts primary-only records without reading bodies
+or decoding ordinary notes with no possible transaction identity. Existing
+current-source edit/delete/import guards remain authoritative; unchanged imports
+perform zero transaction writes. Generated note Bases accept the configured primary
+property or the existing legacy own ID, so unchanged legacy records stay visible. Customized Bases stay user-owned.
+
+**Finances → Properties → Record IDs → Review existing IDs** is an explicit,
+finite migration. Its native confirmation previews the target property, note
+count and conflicts. Confirmation fresh-reads the finite namespace again and
+rejects changed identities/configuration, duplicate ownership and malformed
+frontmatter before any mutation. Equal aliases are removed without changing the
+primary value. Legacy-only notes already have one own ID and are left unchanged;
+Finance does not adopt them into the primary namespace outside GCM's mutation
+authority. Each atomic callback checks the current target source bytes.
+Scalar edits preserve the body, comments, unrelated properties and line endings.
+There is no startup migration, persistent journal, repair loop, poller or watcher.
+An interrupted action can be reviewed explicitly again. Exact plugin-generated
+Bases are upgraded after consolidation, including a review with only Base changes;
+customized definitions remain untouched. This is not a cross-file transaction:
+completed changes remain if a later target changes. Duplicate removal changes no
+identity ownership. Each target's own complete source is checked at its atomic
+write boundary; later unrelated edits remain owned by their existing writers.
+Update Finance on every device before creating or consolidating records: older
+3.x versions cannot read primary-only transaction/account/rule/budget notes.
+This storage compatibility change requires major version 4.0.0. Minimum Obsidian
+remains 1.12.0; GCM must expose the public storage-profile API (tested with 8.2.0).
+
+The settings destination map, default route, single disclosure depth and
+persisted settings keys/defaults are unchanged. The new action belongs to the
+existing Properties destination, before property-name editors. Its transient
+review modal has native buttons, Enter confirmation, Cancel, an alert for errors
+and focus restoration. It uses the existing mobile layout; no new settings CSS
+or persisted UI state is introduced.
+
+Regression coverage includes configurable IDs, own/foreign relationships,
+kind-list metadata, same-mtime edits, stale sources, pending-to-posted updates,
+manual transfers, holding/rule/budget owners, namespace conflicts, source-byte
+preservation and explicit migration counts. Installed QA and final validation
+boundaries are recorded in [4.0.0 release notes](release-notes/4.0.0.md).
+The versioned full suite passes 467/467 checks (2 connection and 465 Finance),
+with no failures or skips. Foreground installed 4.0.0 QA uses native account and
+cash-transaction creation and the native migration preview/cancel/confirm flow.
+New account and transaction notes have one primary ID; the transaction's account
+reference remains. An isolated four-note inventory performs 12 fresh reads across
+two previews and the apply preflight, one write, and preserves the migrated note's
+body and separate calories/protein/carbs/fat properties byte for byte. A legacy-only
+transaction remains byte-identical and readable; the final model has one account,
+three transactions and the expected balance of 64. All eight
+plugin settings hashes remain unchanged; four fixtures are moved directly to `_archive`.
+The migration UI inventory is narrowed to synthetic notes. Namespace and legacy-only preservation
+guards are covered by source-level tests; production imports, cold-start timings
+and physical iPhone interaction were not measured. The final separate
+TypeScript-checked build deploys only to Test, and targeted reload verifies 4.0.0
+with GCM 8.2.0. There is no new background scan or discovery writer.
+This release is tested in the test vault for the user's BRAT pull. Production
+installation and existing-note consolidation are separate actions.
+
 ## 3.0.3 — Build Budget details when opened
 
 Budget keeps its plan, totals, actions and complete transaction drill-downs.

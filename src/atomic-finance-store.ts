@@ -37,23 +37,6 @@ export class AtomicFinanceStore extends FinanceStore {
     }
   }
 
-  private identityKey(): string {
-    return (this.vaultApp as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId";
-  }
-
-  async upsertAccounts(accounts: FinanceAccount[]): Promise<Map<string,string>> {
-    const paths=await super.upsertAccounts(accounts);
-    for(const account of accounts){
-      const file=this.vaultApp.vault.getAbstractFileByPath(paths.get(account.financeAccountId)!);
-      if(!(file instanceof TFile))throw new Error("Account note is missing.");
-      await financeProperties(this.vaultApp).process(this.vaultApp, file,fm=>{
-        if(!fm[this.identityKey()])fm[this.identityKey()]=account.financeAccountId;
-        fm.current=account.current;fm.available=account.available;fm.limit=account.limit;
-      });
-    }
-    return paths;
-  }
-
   private async fields(file: TFile, fresh = false): Promise<Fields> {
     // Obsidian invalidates its content cache on writes and filesystem changes.
     // Inspect content through that cache; destructive guards still force a disk read.
@@ -64,8 +47,8 @@ export class AtomicFinanceStore extends FinanceStore {
   }
 
   private async index(fieldsByFile?: Map<TFile, Fields>, source: TransactionReadSource = "source", requiredIds?: Set<string>, snapshot?: DashboardFileSnapshot): Promise<Map<string, TFile>> {
-    // Keep the configuration gate; financeId itself is fixed and never mapped.
-    financeProperties(this.vaultApp);
+    // Decode the configured primary identity before choosing note candidates.
+    const properties = financeProperties(this.vaultApp);
     const result = new Map<string, TFile>();
     const files: TFile[] = [];
     const excluded: TFile[] = [];
@@ -79,9 +62,19 @@ export class AtomicFinanceStore extends FinanceStore {
       // Even in a dashboard snapshot, root candidates need a fresh metadata
       // preflight; a previous consumer's memo cannot decide transaction identity.
       let cache: ReturnType<App["metadataCache"]["getFileCache"]> = null;
-      try { cache = inTransactionFolder ? null : this.vaultApp.metadataCache.getFileCache(file); }
+      let hasTransactionIdentity = false;
+      try {
+        cache = inTransactionFolder ? null : this.vaultApp.metadataCache.getFileCache(file);
+        const raw = cache?.frontmatter;
+        const primaryKey = properties.identityKey?.toLowerCase();
+        // Ordinary notes cannot be Finance transactions without an own ID. Keep
+        // this cheap metadata gate ahead of the shared classification decoder.
+        const hasIdentity = raw && Object.keys(raw).some(key => key.toLowerCase() === "financeid"
+          || (primaryKey && key.toLowerCase() === primaryKey));
+        hasTransactionIdentity = Boolean(hasIdentity && properties.read(raw!).financeId);
+      }
       catch (error) { snapshot?.includeSource(file); throw error; }
-      if (inTransactionFolder || cache?.frontmatter?.financeId) {
+      if (inTransactionFolder || hasTransactionIdentity) {
         files.push(file);
         snapshot?.includeSource(file);
         order.set(file, position);
@@ -161,7 +154,7 @@ export class AtomicFinanceStore extends FinanceStore {
       const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
       const path = financePath(this.folder, "Transactions", `${safeId}.md`);
       if (this.vaultApp.vault.getAbstractFileByPath(path)) throw new Error(`Transaction destination is occupied: ${path}`);
-      file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml(financeProperties(this.vaultApp).write({ ...fm, [this.identityKey()]: fm[this.identityKey()] || id }))}---\n`);
+      file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml(financeProperties(this.vaultApp).write(fm))}---\n`);
       index.set(id, file);
     }
     const verified = await this.fields(file);
@@ -342,14 +335,22 @@ export class AtomicFinanceStore extends FinanceStore {
     for (const [index, holding] of holdings.entries()) {
       const key = `${holding.financeAccountId}:${holding.securityId}`;
       const id=encodeURIComponent(key).replace(/\./g,'%2E');
-      const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[this.identityKey()]:`holding-${id}`,account:`[[${accountPaths.get(holding.financeAccountId)!.replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10),active:true};
+      const properties = financeProperties(this.vaultApp);
+      const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[properties.identityKey!]:`holding-${id}`,account:`[[${accountPaths.get(holding.financeAccountId)!.replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10),active:true};
       const existing = holdingFiles.get(key);
       if (existing) {
         if (this.vaultApp.vault.getAbstractFileByPath(existing.path) !== existing) throw new Error("Holding moved during sync.");
-        await financeProperties(this.vaultApp).process(this.vaultApp, existing,current=>{if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");Object.assign(current,fm);});
+        await properties.process(this.vaultApp, existing,current=>{
+          if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");
+          // Account/security own the imported position. Its shared record ID can
+          // be independently assigned or absent; updates must preserve either state.
+          const next: Fields = {...fm};
+          delete next[properties.identityKey!];
+          Object.assign(current,next);
+        });
       } else {
         const target = this.uniquePath(financePath(this.folder, "Holdings", `${safeName(titles[index])}.md`));
-        const file = await this.vaultApp.vault.create(target,`---\n${stringifyYaml(financeProperties(this.vaultApp).write({...fm,title:titles[index]}))}---\n`);
+        const file = await this.vaultApp.vault.create(target,`---\n${stringifyYaml(properties.write({...fm,title:titles[index]}))}---\n`);
         holdingFiles.set(key, file);
       }
     }

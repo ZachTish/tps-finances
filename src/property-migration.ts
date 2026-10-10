@@ -1,6 +1,6 @@
 import { boundedWork } from "./bounded-work";
 import { App, TFile, parseYaml } from "obsidian";
-import { FinanceProperties, FINANCE_PROPERTY_KEYS, FinancePropertyNames, normalizePropertyNames, financeKindCodec, financeProperties } from "./finance-properties";
+import { FinanceProperties, FINANCE_PROPERTY_KEYS, FinancePropertyNames, normalizePropertyNames, financeKindCodec, financeProperties, financeIdentityKey } from "./finance-properties";
 import { accountsBaseBody, transactionsBaseBody, holdingsBaseBody, rulesBaseBody, budgetsBaseBody } from "./finance-store";
 import { atomicBase } from "./atomic-finance-store";
 import { financePath } from "./finance-paths";
@@ -9,6 +9,7 @@ export interface PropertyMigration {
   from: FinancePropertyNames;
   to: FinancePropertyNames;
   root: string;
+  identityKey?: string;
   notes: { path: string; identity: string }[];
 }
 const own = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
@@ -22,8 +23,8 @@ function sameValue(a: any, b: any, seen = new WeakMap<object, object>()): boolea
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every(key => own(b, key) && sameValue(a[key], b[key], seen));
 }
-const identity = (raw: Record<string, unknown>) => JSON.stringify(
-  ["financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId"]
+const identity = (raw: Record<string, unknown>, key?: string) => JSON.stringify(
+  [...new Set(["financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId", ...(key ? Object.keys(raw).filter(candidate => candidate.toLowerCase() === key.toLowerCase()).sort() : [])])]
     .filter(key => own(raw, key)).map(key => [key, raw[key]]));
 const fields = (body: string): Record<string, any> => {
   const match = body.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
@@ -56,27 +57,31 @@ export function migrateProperties(raw: Record<string, any>, from: FinancePropert
 export async function previewPropertyMigration(app: App, from: FinanceProperties, to: FinanceProperties, root: string) {
   const notes: PropertyMigration["notes"] = [], conflicts: string[] = [];
   const changes = propertyChanges(from, to);
+  const identityKey = financeIdentityKey(app);
+  const kinds = financeKindCodec((app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds);
+  const records = new FinanceProperties(from.names, kinds, identityKey);
   await boundedWork(app.vault.getMarkdownFiles(), async file => {
     const cached = app.metadataCache.getFileCache(file)?.frontmatter;
     const content = await app.vault.cachedRead(file);
     let raw: Record<string, any>;
     try { raw = fields(content); }
     catch (error) {
-      if ((cached && from.isRecord(cached)) || /^(financeId|financeAccountId|financeRuleId|financeBudgetId):/m.test(content)) conflicts.push(`${file.path}: Invalid frontmatter.`);
+      if ((cached && records.isRecord(cached)) || /^(financeId|financeAccountId|financeRuleId|financeBudgetId):/m.test(content)) conflicts.push(`${file.path}: Invalid frontmatter.`);
       return;
     }
-    if (!from.isRecord(raw) || !changes.some(change => own(raw, change.from))) return;
-    notes.push({path: file.path, identity: identity(raw)});
+    if (!records.isRecord(raw) || !changes.some(change => own(raw, change.from))) return;
+    notes.push({path: file.path, identity: identity(raw, identityKey)});
     try { migrateProperties({...raw}, from, to); }
     catch (error) { conflicts.push(`${file.path}: ${error instanceof Error ? error.message : error}`); }
   });
   notes.sort((a, b) => a.path.localeCompare(b.path));
-  return { journal: {from: from.names, to: to.names, root, notes}, conflicts: conflicts.sort() };
+  return { journal: {from: from.names, to: to.names, root, identityKey, notes}, conflicts: conflicts.sort() };
 }
 
 export function normalizePropertyMigration(value: PropertyMigration | null | undefined): PropertyMigration | null {
   if (!value) return null;
-  if (typeof value.root !== "string" || value.root.split("/").includes("..") || !Array.isArray(value.notes)
+  if ((value.identityKey !== undefined && (typeof value.identityKey !== "string" || !value.identityKey.trim()))
+    || typeof value.root !== "string" || value.root.split("/").includes("..") || !Array.isArray(value.notes)
     || value.notes.some(note => !note || typeof note.path !== "string" || !note.path.endsWith(".md")
       || note.path.startsWith("/") || note.path.split("/").some(part => part === ".." || part.startsWith("."))
       || typeof note.identity !== "string")) throw new Error("Invalid finance property migration. Restore the settings before continuing.");
@@ -84,9 +89,13 @@ export function normalizePropertyMigration(value: PropertyMigration | null | und
 }
 
 export async function applyPropertyMigration(app: App, journal: PropertyMigration): Promise<void> {
+  if (journal.identityKey && financeIdentityKey(app) !== journal.identityKey) throw new Error("The shared identity configuration changed. Review the property migration again.");
   const from = new FinanceProperties(journal.from), to = new FinanceProperties(journal.to);
+  const kinds = financeKindCodec((app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds);
+  const fromRecords = new FinanceProperties(journal.from, kinds, financeIdentityKey(app));
+  const toRecords = new FinanceProperties(journal.to, kinds, financeIdentityKey(app));
   const check = (raw: Record<string, any>, note: PropertyMigration["notes"][number]) => {
-    if (identity(raw) !== note.identity || (!from.isRecord(raw) && !to.isRecord(raw))) throw new Error(`${note.path}: The finance record changed identity. Restore it before resuming.`);
+    if (identity(raw, journal.identityKey) !== note.identity || (!fromRecords.isRecord(raw) && !toRecords.isRecord(raw))) throw new Error(`${note.path}: The finance record changed identity. Restore it before resuming.`);
     return migrateProperties(raw, from, to);
   };
   // Preflight every destination before the first write, then check again inside each atomic edit.
@@ -124,7 +133,7 @@ export async function previewGeneratedBaseClassificationChange(app: App, root: s
     const occupied = [
       ...FINANCE_PROPERTY_KEYS.filter(key => !kindListKey || key !== "kind"),
       ...FINANCE_PROPERTY_KEYS.filter(key => !kindListKey || key !== "kind").map(key => from.key(key)),
-      "tpsId", gcm?.settings?.nativeRecordIdentityPropertyKey || "tpsId",
+      "tpsId", from.identityKey || financeIdentityKey(app),
       "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId",
     ];
     if (occupied.some(key => key.toLowerCase() === targetKey.toLowerCase())) {
@@ -139,7 +148,7 @@ export async function previewGeneratedBaseClassificationChange(app: App, root: s
       readDefinitions: (kind: string) => kind === change.recordKind
         ? [change.to, ...(api.readDefinitions?.(kind) || []).filter((definition: unknown) => JSON.stringify(definition) !== JSON.stringify(change.to))]
         : api.readDefinitions?.(kind) || [],
-    }));
+    }), from.identityKey);
   const changes: Array<{path: string; before: string; after: string}> = [];
   for (const [name, bodies] of Object.entries(generatedBaseDefinitions(root))) {
     const file = app.vault.getAbstractFileByPath(financePath(root, "", `${name}.base`));
@@ -154,12 +163,44 @@ export async function previewGeneratedBaseClassificationChange(app: App, root: s
 }
 
 export async function remapGeneratedBases(app: App, root: string, from: FinanceProperties, to: FinanceProperties): Promise<void> {
+  const kinds = financeKindCodec((app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds);
+  const key = financeIdentityKey(app);
+  const runtimeFrom = new FinanceProperties(from.names, kinds, key), runtimeTo = new FinanceProperties(to.names, kinds, key);
   for (const [name, bodies] of Object.entries(generatedBaseDefinitions(root))) {
     const file = app.vault.getAbstractFileByPath(financePath(root, "", `${name}.base`));
     if (!(file instanceof TFile)) continue;
-    const content = await app.vault.read(file), body = bodies.find(body => from.base(body) === content);
+    const content = await app.vault.read(file), body = bodies.find(body => from.base(body) === content || runtimeFrom.base(body) === content);
     if (!body) continue; // User-authored Bases belong to the user.
-    const replacement = to.base(body);
+    const replacement = runtimeFrom.base(body) === content ? runtimeTo.base(body) : to.base(body);
     if (replacement !== content) await app.vault.process(file, current => current === content ? replacement : current);
   }
+}
+
+/** Explicit ID consolidation upgrades only exact plugin-generated definitions. */
+export async function remapGeneratedBaseIdentities(app: App, root: string,
+  reviewed?: Array<{path: string; before: string; after: string}>): Promise<void> {
+  for (const change of reviewed || await previewGeneratedBaseIdentityChanges(app, root)) {
+    const file = app.vault.getAbstractFileByPath(change.path);
+    if (!(file instanceof TFile)) throw new Error(`${change.path}: The generated Base moved. Review again.`);
+    await app.vault.process(file, current => {
+      if (current !== change.before) throw new Error(`${change.path}: The generated Base changed. Review again.`);
+      return change.after;
+    });
+  }
+}
+
+export async function previewGeneratedBaseIdentityChanges(app: App, root: string): Promise<Array<{path: string; before: string; after: string}>> {
+  const to = financeProperties(app);
+  const gcm = (app as any).plugins?.plugins?.["tps-global-context-menu"];
+  const from = new FinanceProperties(to.names, financeKindCodec(gcm?.api?.frontmatterKinds));
+  const changes: Array<{path: string; before: string; after: string}> = [];
+  for (const [name, bodies] of Object.entries(generatedBaseDefinitions(root))) {
+    const file = app.vault.getAbstractFileByPath(financePath(root, "", `${name}.base`));
+    if (!(file instanceof TFile)) continue;
+    const before = await app.vault.read(file), body = bodies.find(body => from.base(body) === before);
+    if (!body) continue;
+    const after = to.base(body);
+    if (before !== after) changes.push({path: file.path, before, after});
+  }
+  return changes;
 }

@@ -98,7 +98,7 @@ test('missing and ambiguous root metadata still reads only those candidate bodie
 test('indexed display decodes mapped properties and GCM budget kinds',async()=>{
  const h=harness();h.app.plugins={plugins:{
   'tps-finances':{settings:{propertyNames:{keys:{title:'label',monthlyLimit:'cap',bucket:'section',accounts:'sources'}}}},
-  'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'tpsId'},api:{frontmatterKinds:{
+  'tps-global-context-menu':{settings:{nativeRecordIdentityPropertyKey:'tpsId'},api:{nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'tpsId'})},frontmatterKinds:{
    definition:kind=>kind==='finance-budget'?{tag:'#finance/budget'}:null,encode:fields=>fields,
    decode:fields=>fields.kind==='task'&&fields.tags?.includes('finance/budget')?{...fields,kind:'finance-budget'}:fields,
   }}},

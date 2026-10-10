@@ -45,9 +45,6 @@ export class ManualFinanceStore {
       if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
     }
   }
-  private identityKey(): string {
-    return (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId";
-  }
   private async fields(file: TFile): Promise<Record<string, any>> {
     const match = (await this.app.vault.read(file)).match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
     return financeProperties(this.app).read(match ? parseYaml(match[1]) || {} : {});
@@ -76,7 +73,7 @@ export class ManualFinanceStore {
     const id = createLocalId(input.kind === "cash" ? "cash-account" : "owned-asset");
     const folder = financeDirectory(this.folder, "Accounts"); await this.ensureFolder(folder);
     const name = input.name.trim().replace(/[\\/:*?"<>|#\[\]]/g, "-");
-    const fields: Record<string, unknown> = {kind:"account",financeSource:"manual",financeAccountId:id,[this.identityKey()]:id,title:input.name.trim(),accountName:input.name.trim(),accountType:input.kind === "cash" ? "depository" : "other",accountSubtype:input.kind === "cash" ? "cash" : input.assetType.trim() || "personal-property",currency,current:input.value};
+    const fields: Record<string, unknown> = {kind:"account",financeSource:"manual",financeAccountId:id,title:input.name.trim(),accountName:input.name.trim(),accountType:input.kind === "cash" ? "depository" : "other",accountSubtype:input.kind === "cash" ? "cash" : input.assetType.trim() || "personal-property",currency,current:input.value};
     if (input.kind === "cash") { fields.openingBalance = input.value; delete fields.current; }
     else Object.assign(fields,{valuationDate:input.valuationDate,purchaseTransaction,liabilityAccount});
     return this.app.vault.create(financePath(this.folder, "Accounts", `${name} ${id.slice(-8)}.md`), `---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
@@ -102,7 +99,7 @@ export class ManualFinanceStore {
     const id = createLocalId("cash-transaction");
     const folder = financeDirectory(this.folder, "Transactions"); await this.ensureFolder(folder);
     const amount = ["expense","transfer-out"].includes(input.kind) ? -input.amount : input.amount;
-    const fields = {kind:"transaction",type:"transaction",financeSource:"manual",financeId:id,[this.identityKey()]:id,financeAccountId:fm.financeAccountId,account:this.link(account.path),title:input.title.trim(),date:input.date,amount,currency:fm.currency,pending:false,subtype:input.kind === "expense" ? "purchase" : input.kind,categoryOverride:input.category.trim(),tags:input.tags.map(t=>t.trim().replace(/^#+/,"")).filter(Boolean),transferAccount:counterpart,linkedTransaction};
+    const fields = {kind:"transaction",type:"transaction",financeSource:"manual",financeId:id,financeAccountId:fm.financeAccountId,account:this.link(account.path),title:input.title.trim(),date:input.date,amount,currency:fm.currency,pending:false,subtype:input.kind === "expense" ? "purchase" : input.kind,categoryOverride:input.category.trim(),tags:input.tags.map(t=>t.trim().replace(/^#+/,"")).filter(Boolean),transferAccount:counterpart,linkedTransaction};
     return this.app.vault.create(financePath(this.folder, "Transactions", `${id}.md`),`---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
   }
 }

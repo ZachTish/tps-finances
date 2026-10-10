@@ -249,7 +249,7 @@ test('actual invalid transaction declassification recovers the failed view', asy
 
 test('actual root metadata decode failure must retain the offending file', async () => {
   const h = readerHarness(''), paths = new Set();
-  h.app.plugins.plugins['tps-global-context-menu'] = { api: { frontmatterKinds: {
+  h.app.plugins.plugins['tps-global-context-menu'] = { api: { nativeRecords: {getStorageProfile: () => ({identityMode: 'property', identityPropertyKey: 'tpsId'})}, frontmatterKinds: {
     version: 2, definition: () => null, decode: () => ({}), encode: fields => fields,
     propertyKey: () => null, matches: () => true,
   } } };

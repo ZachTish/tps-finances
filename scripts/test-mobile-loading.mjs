@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
 import { builtinModules } from 'node:module';
 import { build } from 'esbuild';
+import { parse, stringify } from 'yaml';
 
 const bundle = async entry => (await build({
   entryPoints: [fileURLToPath(new URL(`../src/${entry}.ts`, import.meta.url))],
@@ -25,7 +26,7 @@ function mobileHarness(code = mainBundle, desktop = false, desktopModules = {}, 
       this.stat = { mtime: 1, ctime: 1, size: 0 };
     }
   }
-  const frontmatter = file => JSON.parse(contents.get(file.path)?.match(/^---\n([\s\S]*?)\n---/)?.[1] || '{}');
+  const frontmatter = file => parse(contents.get(file.path)?.match(/^---\n([\s\S]*?)\n---/)?.[1] || '{}');
   const app = {
     plugins: { plugins: {}, getPlugin: () => null },
     secretStorage: { getSecret: () => null, setSecret: () => assert.fail('No credential writes expected') },
@@ -60,7 +61,7 @@ function mobileHarness(code = mainBundle, desktop = false, desktopModules = {}, 
     Plugin, Modal, TFile: File, Platform: { isDesktopApp: desktop, isMobile: mobile },
     PluginSettingTab: class {}, ItemView: class {}, ButtonComponent: class {}, Setting: class {},
     Notice: class { constructor(message) { notices.push(message); } },
-    normalizePath: p => p, stringifyYaml: value => JSON.stringify(value) + '\n', parseYaml: JSON.parse,
+    normalizePath: p => p, stringifyYaml: stringify, parseYaml: parse,
     setIcon: () => {},
   };
   const context = vm.createContext({

@@ -1,7 +1,8 @@
 import { FinanceConnectionSettings } from "./connection-settings";
 import { parseWalletParts, walletTransactionID } from "./finance-wallet";
-import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration, previewGeneratedBaseClassificationChange, propertyChanges } from "./property-migration";
-import { financeProperties, FinanceProperties, normalizePropertyNames } from "./finance-properties";
+import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration, previewGeneratedBaseClassificationChange, propertyChanges, remapGeneratedBaseIdentities } from "./property-migration";
+import { financeProperties, FinanceProperties, normalizePropertyNames, financeIdentityKey } from "./finance-properties";
+import { applyFinanceIdentityMigration, previewFinanceIdentityMigration, FinanceIdentityMigrationPreview } from "./identity-migration";
 import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
 import type { FinanceBudget } from "./types";
 import { FinanceRequestModal, getFinanceRelay, LinkSession, LinkResult, RelayItem } from "./finance-relay";
@@ -91,7 +92,10 @@ export default class TPSFinancesPlugin extends Plugin {
       if (event?.sourcePluginId !== "tps-global-context-menu"
         || (event.available !== true && event.available !== false)
         || (event.available && !event.api)) return;
+      const identityReady = event.available && event.api !== this.registeredGcmApi
+        && typeof event.api.nativeRecords?.getStorageProfile === "function";
       this.registerGcmIntegration(event.available ? event.api : null);
+      if (identityReady && this.app.workspace.getLeavesOfType(TPS_FINANCES_VIEW_TYPE).length) void this.refreshDashboard();
     }));
     this.registerGcmIntegration();
     this.registerEvent(this.app.metadataCache.on("changed", (file, data) => {
@@ -165,6 +169,25 @@ export default class TPSFinancesPlugin extends Plugin {
     return this.settings.recordMode === "atomic-line" || this.settings.legacyTransactionDiscovery === "discover";
   }
 
+  async previewFinanceIdentityConsolidation(): Promise<FinanceIdentityMigrationPreview> {
+    this.assertPropertyMigrationComplete();
+    if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
+    return previewFinanceIdentityMigration(this.app);
+  }
+
+  async consolidateFinanceIdentities(preview: FinanceIdentityMigrationPreview): Promise<number> {
+    this.assertPropertyMigrationComplete();
+    if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
+    this.syncing = true;
+    try {
+      const updated = await applyFinanceIdentityMigration(this.app, preview);
+      await remapGeneratedBaseIdentities(this.app, this.settings.financeFolder, preview.bases);
+      logger.flow("Properties", "identities-consolidated", { updated, inspected: preview.inspected });
+      await this.refreshDashboard();
+      return updated;
+    } finally { this.syncing = false; }
+  }
+
   private assertLegacyReviewComplete(): void {
     if (this.legacyReviewRequired()) throw new Error("Review older inline transactions in Finances → Data & storage before adding or syncing transactions.");
   }
@@ -173,7 +196,7 @@ export default class TPSFinancesPlugin extends Plugin {
     this.assertPropertyMigrationComplete();
     if (this.syncing) throw new Error("Wait for the current finance sync to finish.");
     if (JSON.stringify(normalizePropertyNames(this.settings.propertyNames)) !== JSON.stringify(from.names)) throw new Error("Property settings changed. Reopen Properties and try again.");
-    to.assertIdentityKey((this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
+    to.assertIdentityKey(financeIdentityKey(this.app));
     this.syncing = true;
     try {
       if (!propertyChanges(from, to).length) {
@@ -209,7 +232,7 @@ export default class TPSFinancesPlugin extends Plugin {
   private async finishPropertyMigration(): Promise<void> {
     const journal = this.settings.propertyMigration;
     if (!journal) return;
-    new FinanceProperties(journal.to).assertIdentityKey((this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.settings?.nativeRecordIdentityPropertyKey || "tpsId");
+    new FinanceProperties(journal.to).assertIdentityKey(financeIdentityKey(this.app));
     await applyPropertyMigration(this.app, journal);
     this.settings.propertyNames = journal.to;
     this.settings.propertyMigration = null;
@@ -630,6 +653,7 @@ export default class TPSFinancesPlugin extends Plugin {
 
   addManualAccount(kind: "cash" | "asset"): void {
     new ManualAccountModal(this.app, kind, async input => {
+      if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
       const file = await new ManualFinanceStore(this.app, this.settings.financeFolder).createAccount(input);
       logger.flow("Manual", "account-created", {kind});
       await this.app.workspace.getLeaf("tab").openFile(file);
@@ -647,6 +671,7 @@ export default class TPSFinancesPlugin extends Plugin {
       return;
     }
     new CashTransactionModal(this.app, accounts, async input => {
+      if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
       this.assertLegacyReviewComplete();
       await new ManualFinanceStore(this.app, this.settings.financeFolder).createCashEntry(input);
       logger.flow("Manual", "cash-entry-created", {kind: input.kind});
@@ -657,6 +682,7 @@ export default class TPSFinancesPlugin extends Plugin {
 
   updateAssetValue(account: FinanceAccount): void {
     new AssetValueModal(this.app, account, async (value, date) => {
+      if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
       await new ManualFinanceStore(this.app, this.settings.financeFolder).updateValue(account.path || "", value, date);
       logger.flow("Manual", "asset-value-updated");
       await this.refreshDashboard();
@@ -665,6 +691,7 @@ export default class TPSFinancesPlugin extends Plugin {
 
   addCategorizationRule(): void {
     new FinanceRuleModal(this.app, async (input) => {
+      if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
       const store = this.createStore();
       await store.ensureStructure();
       await store.createRule({ ...input, id: createLocalId("finance-rule") });
@@ -691,6 +718,7 @@ export default class TPSFinancesPlugin extends Plugin {
       const categories=Array.from(new Set(model.transactions.map(transaction=>transaction.category).filter(Boolean))).sort();
       new FinanceBudgetModal(this.app,current,model.accounts,categories,async input=>{
         const save=this.budgetSave.catch(()=>{}).then(async()=>{
+          if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
           const store=this.createStore();
           await store.ensureStructure();
           await store.saveBudgetEntry(input,current.sourcePath?current:undefined);
@@ -713,6 +741,7 @@ export default class TPSFinancesPlugin extends Plugin {
           type: transaction.type, categoryOverride: transaction.categoryOverride || "", tags: [...(transaction.manualTags || [])] }
       : null;
     new TransactionClassificationModal(this.app, transaction, async (category, tags) => {
+      if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
       const store = this.createStore();
       const updated = renderedTarget
         ? await store.updateTransactionMetadata(financeId, category, tags, renderedTarget)
