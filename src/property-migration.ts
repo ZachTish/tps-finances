@@ -133,7 +133,7 @@ export async function previewGeneratedBaseClassificationChange(app: App, root: s
     const occupied = [
       ...FINANCE_PROPERTY_KEYS.filter(key => !kindListKey || key !== "kind"),
       ...FINANCE_PROPERTY_KEYS.filter(key => !kindListKey || key !== "kind").map(key => from.key(key)),
-      "tpsId", from.identityKey || financeIdentityKey(app),
+      "id", "tpsId", from.identityKey || financeIdentityKey(app),
       "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId",
     ];
     if (occupied.some(key => key.toLowerCase() === targetKey.toLowerCase())) {

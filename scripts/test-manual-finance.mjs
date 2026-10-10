@@ -22,7 +22,7 @@ test('manual accounts and one-note transfers use configured primary IDs and pres
  const wallet=await h.store.createAccount(input),safe=await h.store.createAccount({...input,name:'Safe',value:200});
  const walletId=h.fm(wallet.path).recordId,safeId=h.fm(safe.path).recordId;
  assert.ok(walletId);assert.ok(safeId);assert.notEqual(walletId,safeId);
- for(const account of [wallet,safe]){assert.equal(h.fm(account.path).financeAccountId,undefined);assert.equal(h.fm(account.path).tpsId,undefined);assert.equal(h.fm(account.path).wrongSavedKey,undefined);}
+ for(const account of [wallet,safe]){assert.equal(h.fm(account.path).financeAccountId,undefined);assert.equal(h.fm(account.path).id,undefined);assert.equal(h.fm(account.path).wrongSavedKey,undefined);}
  const transfer=await h.store.createCashEntry({...entry,accountPath:wallet.path,kind:'transfer-out',counterpart:safe.path});
  const fields=h.fm(transfer.path);assert.ok(fields.recordId);assert.equal(fields.financeId,undefined);assert.equal(fields.financeAccountId,walletId);assert.equal(fields.account,`[[${wallet.path.replace(/\.md$/,'')}]]`);assert.equal(fields.transferAccount,`[[${safe.path.replace(/\.md$/,'')}]]`);
  assert.equal((await h.atomic.readTransactionRecords('metadata')).length,1);assert.equal(h.app.vault.getMarkdownFiles().length,3);

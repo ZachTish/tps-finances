@@ -16,7 +16,7 @@ export const PROPERTY_GROUPS: Record<string, readonly string[]> = {
 };
 export const FINANCE_PROPERTY_KEYS = Object.values(PROPERTY_GROUPS).flat();
 const own = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
-const reserved = new Set(["__proto__", "constructor", "prototype", "position", "file", "tpsId", "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId"]);
+const reserved = new Set(["__proto__", "constructor", "prototype", "position", "file", "id", "tpsId", "financeId", "financeAccountId", "financeBudgetId", "financeRuleId", "securityId"]);
 
 export function normalizePropertyNames(value?: Partial<FinancePropertyNames>): FinancePropertyNames {
   const result: FinancePropertyNames = { keys: {} };
@@ -371,7 +371,7 @@ export function financeProperties(app: App): FinanceProperties {
 /** GCM's normalized storage contract, rather than a possibly retired settings format. */
 export function financeIdentityKey(app: App): string {
   const gcm = (app as any).plugins?.plugins?.["tps-global-context-menu"];
-  if (!gcm) return "tpsId"; // Existing standalone default; installed GCM owns configuration.
+  if (!gcm) return "id"; // Standalone default; installed GCM owns configuration.
   if (typeof gcm.api?.nativeRecords?.getStorageProfile !== "function") throw new Error("Update and enable TPS Global Context Menu before using Finance record IDs.");
   const profile = gcm.api.nativeRecords.getStorageProfile();
   if (profile?.identityMode !== "property" || typeof profile.identityPropertyKey !== "string") throw new Error("Configure a shared identity property in Global Context Menu before using Finance records.");

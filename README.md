@@ -1,5 +1,30 @@
 # TPS Finances
 
+## 5.0.0 — Use the shared `id` property
+
+Standalone Finance records now use `id`. With GCM installed, its public
+`nativeRecords.getStorageProfile()` still owns the physical property, including
+custom keys and an explicitly retained old `tpsId` key. No saved mapping is
+guessed from retired Finance settings. The primary value is unchanged;
+`financeAccountId`, `securityId` and logical provider DTO names remain separate.
+Both canonical and legacy identity names are protected against business-field
+and classification collisions.
+
+This is a major storage compatibility release: standalone notes that only have
+the old primary property need an explicit key migration, or a GCM profile
+configured for that physical key, before using the new standalone default.
+The existing explicit Finance ID consolidation remains separate from GCM's
+property-key migration. No load/open repair, new poller or fallback writer is
+added. Minimum Obsidian remains 1.12.0. Validation and rollout boundaries are
+recorded in [5.0.0 release notes](release-notes/5.0.0.md).
+
+
+Installed Test-vault creation/update checks passed with stable primary and
+foreign IDs, exact bodies and restored temporary settings. The final ordinary
+stable build deployed only to this vault and was reloaded by manifest ID.
+See the linked release notes for operation counts, synthetic boundaries and
+SHA-256 hashes; no production installation or physical-iPhone claim is made.
+
 ### Account import startup regression — 2026-10-10
 
 Tagged 3.0.3 can create a suffixed duplicate of an existing account when GCM is
@@ -26,7 +51,7 @@ artifact. No provider import or production plugin deployment was performed.
 Finance uses the shared identity property reported by GCM's public
 `nativeRecords.getStorageProfile()` contract. GCM owns that storage profile;
 Finance does not duplicate its controls or trust a retired saved identity format.
-With GCM absent, the existing standalone default is `tpsId`. An installed but
+With GCM absent, the standalone default is `id`. An installed but
 unready/unsupported GCM blocks record work until its public API is available;
 its existing readiness event refreshes a mounted Finance view once, with no
 work for an absent consumer or repeated announcement. Property identities are
