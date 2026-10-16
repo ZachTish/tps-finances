@@ -1,14 +1,12 @@
 import { financeProperties } from "./finance-properties";
 import { financeDirectory, financePath, financePrefix } from "./finance-paths";
 import { App, TFile, parseYaml, stringifyYaml } from "obsidian";
-import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody, safeName, type TransactionReadSource } from "./finance-store";
+import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody, type TransactionReadSource } from "./finance-store";
 import { normalizeTags } from "./classification";
-import { providerIdentityKey } from "./identity";
-import type { DeviceState, FinanceHolding, FinanceAccount, FinanceTransaction } from "./types";
+import type { FinanceTransaction } from "./types";
 import { boundedWork } from "./bounded-work";
-import * as logger from "./logger";
-import { providerTransactionFields, proposedTransactionTitle, titleSignature, transactionTitle, type TransactionTitleChange } from "./transaction-titles";
-import { absentProviderProperties, compactTransactionProperties, emptyTransactionProperties } from "./transaction-properties";
+import { providerTransactionFields, proposedTransactionTitle, titleSignature, type TransactionTitleChange } from "./transaction-titles";
+import { absentProviderProperties, emptyTransactionProperties } from "./transaction-properties";
 import type { DashboardFileSnapshot } from "./dashboard-file-snapshot";
 
 type Fields = Record<string, any>;
@@ -162,48 +160,6 @@ export class AtomicFinanceStore extends FinanceStore {
     return file;
   }
 
-  async applyTransactions(added: FinanceTransaction[], modified: FinanceTransaction[], removedProviderIds: string[], state: DeviceState, accountPaths: Map<string, string>): Promise<{added:number;modified:number;removed:number}> {
-    if (!added.length && !modified.length && !removedProviderIds.length) return {added:0,modified:0,removed:0};
-    const started = Date.now();
-    // Validate before mutating, and serialize revisions of the same identity. Independent
-    // notes can be written together without racing a duplicate or pending/posted revision.
-    const groups = new Map<string, Fields[]>();
-    for (const transaction of [...modified, ...added]) {
-      const path = accountPaths.get(transaction.financeAccountId);
-      if (!path) throw new Error("Transaction account note is missing.");
-      const fields = transactionFields(transaction, path);
-      const revisions = groups.get(transaction.financeId) || [];
-      revisions.push(fields);
-      groups.set(transaction.financeId, revisions);
-    }
-    await this.ensureStructure();
-    const affectedIds = new Set([...groups.keys(), ...removedProviderIds.map(providerId => state.providerIdentityMap[providerIdentityKey("transaction", providerId)]).filter(Boolean)]);
-    const index = await this.index(undefined, "source", affectedIds);
-    const indexedAt = Date.now();
-    let removed = 0;
-    for (const providerId of removedProviderIds) {
-      const id = state.providerIdentityMap[providerIdentityKey("transaction", providerId)];
-      const file = index.get(id);
-      if (file) {
-        if (String((await this.fields(file, true)).financeId) !== id) throw new Error("Transaction identity changed before deletion.");
-        await this.vaultApp.fileManager.trashFile(file);
-        index.delete(id); removed++;
-      }
-    }
-    await boundedWork([...groups.values()], async revisions => {
-      for (const fields of revisions) await this.put(fields, index);
-    });
-    logger.flow("Storage", "atomic-transactions", {
-      added: added.length, modified: modified.length, removed,
-      indexMs: indexedAt - started, writeMs: Date.now() - indexedAt, durationMs: Date.now() - started,
-    });
-    return {added:added.length,modified:modified.length,removed};
-  }
-
-  async replaceInvestmentTransactions(transactions: FinanceTransaction[], accountPaths: Map<string,string>): Promise<void> {
-    await this.applyTransactions(transactions, [], [], {plaidUserId:"",items:[],providerIdentityMap:{}}, accountPaths);
-  }
-
   async readTransactionRecords(source: TransactionReadSource = "source", snapshot?: DashboardFileSnapshot): Promise<{line:string;path:string;lineNumber:number;sourceFile?:TFile}[]> {
     const records: {line:string;path:string;lineNumber:number;sourceFile?:TFile}[] = [];
     const fieldsByFile = new Map<TFile, Fields>();
@@ -240,8 +196,6 @@ export class AtomicFinanceStore extends FinanceStore {
     await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
     return true;
   }
-
-  async rerouteTransactions(): Promise<{moved:number;skipped:number}> { return {moved:0,skipped:0}; }
 
   async reviewTransactionTitles(includeEmptyProperties = false): Promise<TransactionTitleChange[]> {
     const fields = new Map<TFile, Fields>();
@@ -315,67 +269,6 @@ export class AtomicFinanceStore extends FinanceStore {
     return {moved,skipped};
   }
 
-  async writeSnapshot(accounts:FinanceAccount[], holdings:FinanceHolding[], accountPaths:Map<string,string>, at:Date):Promise<string> {
-    // Current balances and positions live on their notes; atomic mode creates no line snapshots.
-    const titles = holdings.map(holding => holdingTitle(holding, accountPaths.get(holding.financeAccountId)));
-    await this.ensureStructure();
-    const holdingFiles = new Map<string, TFile>();
-    for (const file of this.vaultApp.vault.getMarkdownFiles()) {
-      if (!file.path.startsWith(financePrefix(this.folder, "Holdings"))) continue;
-      // A just-created or renamed note may not have metadata yet. Its actual
-      // contents still establish identity before choosing a readable filename.
-      if (!this.folder && this.vaultApp.metadataCache.getFileCache(file)
-        && financeProperties(this.vaultApp).cache(this.vaultApp, file)?.type !== "holding") continue;
-      const fm = await this.fields(file);
-      if (fm.type !== "holding" || !fm.financeAccountId || !fm.securityId) continue;
-      const key = `${fm.financeAccountId}:${fm.securityId}`;
-      if (holdingFiles.has(key)) throw new Error("Duplicate holding identity; resolve the duplicate notes before syncing.");
-      holdingFiles.set(key, file);
-    }
-    for (const [index, holding] of holdings.entries()) {
-      const key = `${holding.financeAccountId}:${holding.securityId}`;
-      const id=encodeURIComponent(key).replace(/\./g,'%2E');
-      const properties = financeProperties(this.vaultApp);
-      const fm={...holding,holdingType:holding.type,kind:'holding',type:'holding',[properties.identityKey!]:`holding-${id}`,account:`[[${accountPaths.get(holding.financeAccountId)!.replace(/\.md$/i,'')}]]`,asOf:holding.asOf||at.toISOString().slice(0,10),active:true};
-      const existing = holdingFiles.get(key);
-      if (existing) {
-        if (this.vaultApp.vault.getAbstractFileByPath(existing.path) !== existing) throw new Error("Holding moved during sync.");
-        await properties.process(this.vaultApp, existing,current=>{
-          if(current.type!=="holding"||current.financeAccountId!==holding.financeAccountId||current.securityId!==holding.securityId)throw new Error("Holding destination identity mismatch.");
-          // Account/security own the imported position. Its shared record ID can
-          // be independently assigned or absent; updates must preserve either state.
-          const next: Fields = {...fm};
-          delete next[properties.identityKey!];
-          Object.assign(current,next);
-        });
-      } else {
-        const target = this.uniquePath(financePath(this.folder, "Holdings", `${safeName(titles[index])}.md`));
-        const file = await this.vaultApp.vault.create(target,`---\n${stringifyYaml(properties.write({...fm,title:titles[index]}))}---\n`);
-        holdingFiles.set(key, file);
-      }
-    }
-    // Mark disappeared holdings inactive rather than deleting user-authored content.
-    const active=new Set(holdings.map(h=>`${h.financeAccountId}:${h.securityId}`));
-    const accountIds=new Set(accounts.map(a=>a.financeAccountId));
-    for(const file of holdingFiles.values()){
-      const fm=await this.fields(file);
-      if(fm.type==='holding'&&accountIds.has(fm.financeAccountId))await financeProperties(this.vaultApp).process(this.vaultApp, file,current=>{current.active=active.has(`${fm.financeAccountId}:${fm.securityId}`);});
-    }
-    return financePath(this.folder, "", "Holdings.base");
-  }
-}
-
-export function holdingTitle(holding: FinanceHolding, accountPath: string | undefined): string {
-  const account = accountPath?.split('/').pop()?.replace(/\.md$/i, '').trim();
-  if (!account) throw new Error("Holding account note is missing.");
-  const label = holding.ticker?.replace(/\s+/g, ' ').trim() || holding.name?.replace(/\s+/g, ' ').trim();
-  if (!label) throw new Error("Holding requires an investment name or ticker.");
-  return `${label} — ${account}`;
-}
-
-export function transactionFields(t:FinanceTransaction,accountPath:string):Fields {
-  if(!t.financeId||!/^\d{4}-\d{2}-\d{2}$/.test(t.date)||!Number.isFinite(t.amount))throw new Error('Invalid atomic transaction');
-  return compactTransactionProperties({kind:t.kind,type:t.kind,financeId:t.financeId,financeAccountId:t.financeAccountId,date:t.date,authorizedDate:t.authorizedDate,title:transactionTitle(t.name,t.merchantName,t.kind),providerName:t.name,providerTitle:transactionTitle(t.name,t.merchantName,t.kind),merchant:t.merchantName,account:`[[${accountPath.replace(/\.md$/i,'')}]]`,amount:t.amount,currency:t.currency,pending:t.pending,providerCategory:t.category,providerCategoryDetail:t.categoryDetail,subtype:t.subtype,securityId:t.securityId||'',quantity:t.quantity??null,price:t.price??null,fees:t.fees??null,investmentType:t.investmentType||''});
 }
 function fieldsLine(f:Fields):string {
   if(!Number.isFinite(Number(f.amount))||f.amount===null||f.amount===''||!/^\d{4}-\d{2}-\d{2}$/.test(String(f.date)))throw new Error('Invalid atomic transaction properties; repair the note before syncing.');

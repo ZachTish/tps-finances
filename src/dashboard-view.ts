@@ -1,9 +1,9 @@
 import type { TransactionReadSource } from "./finance-store";
-import { ItemView, Menu, Notice, Platform, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, Menu, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { renderBudgetView, type BudgetViewState } from "./budget-view";
 import type { BudgetBucket } from "./flex-budget";
 import { accountSummaries } from "./finance-summary";
-import type { FinanceAccount, FinanceBudget, FinanceHolding, PlaidSetupState } from "./types";
+import type { FinanceAccount, FinanceBudget, FinanceHolding } from "./types";
 
 export const TPS_FINANCES_VIEW_TYPE = "tps-finances";
 
@@ -49,10 +49,6 @@ export interface DashboardModel {
   accounts: FinanceAccount[];
   holdings: FinanceHolding[];
   transactions: DashboardTransaction[];
-  lastSyncAt: string;
-  connectedItems: number;
-  plaidSetupState: PlaidSetupState;
-  relayMessage?: string;
   legacyReviewRequired?: boolean;
   budgets: BudgetProgress[];
   budgetEntries?: FinanceBudget[];
@@ -60,10 +56,7 @@ export interface DashboardModel {
 
 interface FinancesViewPlugin {
   getDashboardModel(sourcePaths?: Set<string>, source?: TransactionReadSource): Promise<DashboardModel>;
-  canConnectPlaid?(): boolean;
-  connectPlaid(): Promise<void>;
   openConnectionSettings(): void;
-  syncAll(reason: string): Promise<void>;
   openTransactionSource(transaction: DashboardTransaction): Promise<void>;
   editTransactionClassification(transaction: DashboardTransaction): void;
   addManualAccount(kind: "cash" | "asset"): void;
@@ -181,20 +174,13 @@ export class TPSFinancesView extends ItemView {
       text: "Older inline transactions may still exist. Finances now uses transaction notes only. Review or convert old entries in Finances → Data & storage before adding or syncing transactions.",
       attr: { role: "alert" },
     });
-    if (model.relayMessage) root.createDiv({cls:"tps-finances-status",text:model.relayMessage});
     if (this.route === "budget") {
       renderBudgetView(root,model,this.budgetState,{
         render:()=>this.renderModel(model),add:(bucket,currency)=>this.plugin.addMonthlyBudget(bucket,currency),
         edit:budget=>this.plugin.editMonthlyBudget(budget),open:transaction=>void this.runAction(()=>this.plugin.openTransactionSource(transaction)),
       });
-    } else if (!model.connectedItems && !model.accounts.length) this.renderWelcome(root, model.plaidSetupState);
+    } else if (!model.accounts.length) this.renderWelcome(root);
     else {
-      if (model.connectedItems && !model.accounts.length) {
-        root.createDiv({
-          cls: "tps-finances-status is-warning",
-          text: "Plaid is connected, but no account snapshot has synced yet. Run Sync; any provider or credential error will be shown here in Obsidian.",
-        });
-      }
       const staleHoldings = model.holdings.filter((holding) => holding.stale);
       if (staleHoldings.length) {
         const oldest = staleHoldings.map((holding) => holding.asOf || "").filter(Boolean).sort()[0] || "an earlier sync";
@@ -228,7 +214,6 @@ export class TPSFinancesView extends ItemView {
         this.renderModel(model);
       });
     }
-    title.createEl("small", { text: model.lastSyncAt ? `Updated ${friendlyTime(model.lastSyncAt)}` : "Not synced yet" });
     const actions = header.createDiv({ cls: "tps-finances-actions" });
     const add = actionButton("plus", "Add", () => {
       const menu = new Menu();
@@ -240,28 +225,11 @@ export class TPSFinancesView extends ItemView {
     });
     actions.appendChild(add);
     actions.appendChild(actionButton("wand-sparkles", "Rule", () => this.plugin.addCategorizationRule()));
-    const connect = actionButton("link", "Connections", () => this.plugin.openConnectionSettings());
-    actions.appendChild(connect);
-    actions.appendChild(actionButton("refresh-cw", "Sync", () => void this.runAction(() => this.plugin.syncAll("dashboard"))));
   }
-
-  private renderWelcome(root: HTMLElement, setupState: PlaidSetupState): void {
-    const welcome = root.createDiv({ cls: "tps-finances-welcome" });
-    const icon = welcome.createDiv({ cls: "tps-finances-welcome-icon" });
-    setIcon(icon, "landmark");
-    welcome.createEl("h2", { text: "Add cash or assets, or connect an institution" });
-    const detail = this.plugin.canConnectPlaid?.() && (!Platform.isDesktopApp || Platform.isMobile)
-      ? "Connect through your paired Controller. Bank sign-in opens in your browser."
-      : (!Platform.isDesktopApp || Platform.isMobile)
-      ? "Add cash accounts and transactions here, or open Controller connections to connect a bank or Apple Wallet."
-      : setupState === "conflicting-credentials"
-      ? "Plaid client ID and Plaid secret currently use the same Obsidian secret. Select two different secrets in TPS Controller settings before connecting."
-      : setupState === "ready"
-        ? "Plaid credentials are ready. Connect an institution to begin syncing accounts and transactions."
-        : "Add separate Plaid client ID and environment secrets in TPS Controller settings, then connect an institution.";
-    welcome.createEl("p", { text: detail });
-    const connect = actionButton("link", "Open connections", () => this.plugin.openConnectionSettings(), true);
-    welcome.appendChild(connect);
+  private renderWelcome(root: HTMLElement): void {
+    const welcome = root.createDiv({ cls: 'tps-finances-welcome' });
+    welcome.createEl('h2', { text: 'Add cash or assets' });
+    welcome.createEl('p', { text: 'Use the manual account actions above, or import accounts with TishOS. This dashboard reads your existing finance notes.' });
   }
 
   private renderSummary(root: HTMLElement, model: DashboardModel): void {
@@ -429,10 +397,6 @@ function trimNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(value);
 }
 
-function friendlyTime(value: string): string {
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
-}
 
 function humanCategory(value: string): string {
   return value ? value.toLowerCase().replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase()) : "";

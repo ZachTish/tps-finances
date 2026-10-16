@@ -1,5 +1,21 @@
 # TPS Finances
 
+## 6.0.0 — manual finance workflows, no plugin imports
+
+Bank/Wallet importing, Plaid clients and linking, Controller import integration, device-secret startup loading, and import commands are removed. Existing accounts, holdings, transactions, credentials, provider mappings, connections, and historical state remain untouched. This plugin does not configure or verify a replacement TishOS importer.
+
+Manual cash accounts, cash expenses/income/transfers, resale assets and valuation edits, budgets, classification, title review, and existing-note dashboards remain. Shared identity/property configuration remains authoritative. An existing Controller connection-settings consumer receives an explicit retirement message without reading credentials or calling providers.
+
+The layout-ready folder/Base generator and generated-snapshot writer are deleted. Opening the dashboard does not create Bases or folders. Existing Bases remain available; explicit creation and whole-note conversion retain their source-preservation and identity/conflict checks. Unsupported inline write/rerouting paths and unused account/holding/transaction import helpers are removed. Legacy ledger collection remains only for explicit conversion.
+
+This intentionally breaking release removes 2,055 net runtime source lines (23 added, 2,078 removed), including eight provider/transport modules and the unused transaction-content writer. One layout-ready generated-storage owner and two import commands are removed; no replacement timers, scheduler, cache, or repair loop is introduced. Read-only dashboard invalidation remains.
+
+Validation: full inherited tests and separate final build, test-vault deployment/reload, settings inspection, and installed manual UI flows. Existing tests cover zero generated-file writes on activation plus 20 model reads, with missing Bases and user-authored Bases. Direct connection panel calls perform no provider, timer, state, or vault work. Tests use mocked Obsidian boundaries where noted; installed UI evidence follows below.
+
+Combined cleaned TPS foreground samples (five each): startup median 6084.7 ms versus 6066.2 ms; 20-note navigation median 838.9 ms versus 897.2 ms. These are suite measurements, not Finance-only attribution or production timings. Idle, typing, Sync-burst, and settings checks observed no TPS maintenance writes. Finance dashboard checks observed no generated-file writes. Physical iPhone acceptance remains unverified.
+
+Install the public numeric release through BRAT (`ZachTish/tps-finances`). Requires Obsidian 1.12.0+. Production is not changed by test deployment. Downgrading can restore old import execution against preserved settings/connections; review the prior version before enabling it. No notes are rolled back or rewritten by installation.
+
 ## 5.0.0 — Use the shared `id` property
 
 Standalone Finance records now use `id`. With GCM installed, its public
@@ -686,3 +702,7 @@ Finances supports complete GCM classification tags through its existing property
 Validation: focused tag round trips and creation/update tests, full declared tests, a separate final build, test-vault deployment and targeted reload are required. Final results and artifact hashes are recorded in release notes.
 
 Validation on 2026-09-26: all 258 tests passed, including tag-based account creation, transaction import/update/readback and generated Base predicates. TypeScript and final build/deployment passed; targeted test-vault reload loaded 1.11.0. No finance connections, provider requests, production notes or settings were changed.
+
+Installed manual-flow validation (2026-10-15): native UI command palette and forms created a synthetic $100 cash account, recorded a $12.50 expense, and created a $200 resale asset. The dashboard displayed cash $87.50 and net worth $287.50; its Update value action changed the asset to $180 and net worth to $267.50. The transaction form retained its inputs after a deliberately incomplete classification mapping was rejected; the corrected temporary mapping saved successfully. The three authored Markdown records use `id` and configured `kind` lists; no generated Base or other file appeared in the isolated finance root. All in-memory mappings/folder settings were restored without saving, created tabs were closed, the original note restored, and fixtures archived. Evidence: `/tmp/tps-finance-manual-ui-result.txt`. This establishes Mac UI/manual persistence, not physical iPhone acceptance or a release.
+
+Final 6.0.0 validation: 336 tests passed with no skips/failures; TypeScript and separate production build passed. Reloaded manifest and plugin report 6.0.0. Repeated native UI cash-account creation and expense logging produced exactly two Markdown files, configured `id` values, and a correct $87.50 balance; no generated Base appeared. Temporary settings restored and fixtures archived. Artifact hashes and rollback limits are recorded in `release-notes/6.0.0.md`.

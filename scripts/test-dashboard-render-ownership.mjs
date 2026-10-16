@@ -215,7 +215,7 @@ test('narrow dashboard layout wraps transaction context and gives its controls t
     assert.ok(action?.className.includes('tps-finances-button'),`${label} uses the root-scoped 44px button rule`);
   };
   const welcome=harness(true),empty=model();empty.accounts=[];empty.transactions=[];welcome.setModel(empty);
-  await welcome.view.onOpen();assertRootAction(welcome,'Open connections');
+  await welcome.view.onOpen();assertRootAction(welcome,'Add');
   const manual=harness(true),accountModel=model();accountModel.accounts[0]={...accountModel.accounts[0],manual:true,type:'other',current:100};manual.setModel(accountModel);
   await manual.view.onOpen();assertRootAction(manual,'Open note');assertRootAction(manual,'Update value');
   assertRootAction(manual,'Browse all transactions');

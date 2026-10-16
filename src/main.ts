@@ -1,16 +1,13 @@
 import { FinanceConnectionSettings } from "./connection-settings";
-import { parseWalletParts, walletTransactionID } from "./finance-wallet";
 import { applyPropertyMigration, previewPropertyMigration, normalizePropertyMigration, previewGeneratedBaseClassificationChange, propertyChanges, remapGeneratedBaseIdentities } from "./property-migration";
 import { financeProperties, FinanceProperties, normalizePropertyNames, financeIdentityKey } from "./finance-properties";
 import { applyFinanceIdentityMigration, previewFinanceIdentityMigration, FinanceIdentityMigrationPreview } from "./identity-migration";
 import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
 import type { FinanceBudget } from "./types";
-import { FinanceRequestModal, getFinanceRelay, LinkSession, LinkResult, RelayItem } from "./finance-relay";
 import { financePath, financePrefix, normalizeFinanceFolder } from "./finance-paths";
 import { Notice, Platform, Plugin, TAbstractFile, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
 import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
-import { normalizeDeviceItems } from "./device-state";
 import { AtomicFinanceStore } from "./atomic-finance-store";
 import { TransactionTitleModal } from "./transaction-title-modal";
 import { auditLegacyTransactionMarkers, type TransactionReadSource } from "./finance-store";
@@ -18,10 +15,7 @@ import { FinanceBudgetModal, FinanceRuleModal, TransactionClassificationModal } 
 import { ManualFinanceStore, applyManualCashBalances } from "./manual-finance";
 import { ManualAccountModal, CashTransactionModal, AssetValueModal } from "./finance-modals";
 import { createLocalId } from "./identity";
-import { applyInvestmentTransactionResult, holdingsForSnapshot, investmentDateRange } from "./investment-sync";
 import * as logger from "./logger";
-import { PlaidClient } from "./plaid-client";
-import { assertLocalPlaidLinkAvailable, openLocalPlaidLink } from "./plaid-link";
 import { TPSFinancesSettingTab } from "./settings";
 import { CoalescedSnapshotWriter, reconcilePersistedSnapshot } from "./settings-persistence";
 import { DashboardFileSnapshot } from "./dashboard-file-snapshot";
@@ -34,15 +28,6 @@ import {
   PlaidSetupStatus,
   TPSFinancesSettings,
 } from "./types";
-
-const DEVICE_STATE_SECRET = "tps-finances-device-state";
-type OptionalInvestmentWarning = {
-  institution: string;
-  operation: "history" | "holdings";
-  status: "pending" | "unavailable";
-  code: string;
-  preserved: number;
-};
 type StoredFinanceSnapshot = Readonly<{
   date: string;
   lines: readonly string[];
@@ -54,7 +39,6 @@ type AccountLabel = {
 
 export default class TPSFinancesPlugin extends Plugin {
   settings: TPSFinancesSettings = { ...DEFAULT_SETTINGS };
-  private deviceState: DeviceState = emptyDeviceState();
   private syncing = false;
   private unregisterGcmAction: (() => void) | null = null;
   private registeredGcmApi: any = null;
@@ -72,14 +56,11 @@ export default class TPSFinancesPlugin extends Plugin {
       },
     });
     logger.setLoggingEnabled(this.settings.enableLogging);
-    this.deviceState = this.loadDeviceState();
     this.registerView(TPS_FINANCES_VIEW_TYPE, (leaf) => new TPSFinancesView(leaf, this));
     const financeSettingsTab = new TPSFinancesSettingTab(this.app, this);
     this.addSettingTab(financeSettingsTab);
     this.addRibbonIcon("landmark", "Open TPS Finances", () => void this.openDashboard());
     this.addCommand({ id: "open-finances", name: "Open finances", callback: () => void this.openDashboard() });
-    this.addCommand({ id: "connect-plaid", name: "Connect an institution with Plaid", callback: () => this.runConnectPlaid("command") });
-    this.addCommand({ id: "sync-finances", name: "Sync accounts and transactions", callback: () => this.runSync("command") });
     this.addCommand({ id: "add-categorization-rule", name: "Add categorization rule", callback: () => this.addCategorizationRule() });
     this.addCommand({ id: "open-budget", name: "Open budget", callback: () => void this.openDashboard("budget") });
     this.addCommand({ id: "add-monthly-budget", name: "Add monthly budget", callback: () => this.addMonthlyBudget() });
@@ -113,10 +94,8 @@ export default class TPSFinancesPlugin extends Plugin {
         panel.render();
         return () => panel.dispose();
       } },
-      controllerFinanceBackend: this.createControllerBackend(),
       openConnectionSettings: () => this.openConnectionSettings(),
       openDashboard: () => this.openDashboard(),
-      sync: (reason = "api") => this.syncAll(reason),
       getDashboardModel: () => this.getDashboardModel(),
       renderHomeSummary: (container: HTMLElement) => this.renderHomeSummary(container),
       getTransactionsBasePath: () => this.getTransactionsBasePath(),
@@ -127,10 +106,7 @@ export default class TPSFinancesPlugin extends Plugin {
         previewGeneratedBaseClassificationChange(this.app, this.settings.financeFolder, change),
         settingsSignature: () => JSON.stringify([this.settings.financeFolder, this.settings.propertyNames]) },
     };
-    this.app.workspace.onLayoutReady(() => void this.prepareFinanceStorage());
     logger.flow("Lifecycle", "load", {
-      environment: this.getPlaidConfiguration().plaidEnvironment,
-      connectedItems: this.deviceState.items.length,
       financeFolder: this.settings.financeFolder,
     });
   }
@@ -254,124 +230,8 @@ export default class TPSFinancesPlugin extends Plugin {
     logger.flow("Storage", "destination-saved", { root: this.settings.financeFolder === "" });
   }
 
-  getConnectedItems(): RelayItem[] {
-    const relay = this.getRelayStatus();
-    if (relay?.mode === 'client' || relay && !relay.enabled) return relay.items;
-    return this.deviceState.items.map(({localItemId,institutionName,environment,lastSyncAt}) => ({localItemId,institutionName,environment,lastSyncAt}));
-  }
-
-  getRelayStatus() {
-    try { return getFinanceRelay(this.app)?.getStatus() || null; }
-    catch { return {configured:true,mode:'client' as const,enabled:false,online:false,updatedAt:0,lastSyncAt:0,items:[] as RelayItem[],message:'Enable TPS Controller 1.4.0+ and check its finance pairing. Bank requests are paused; saved notes remain available.'}; }
-  }
-  getRelayOperations() { try { return getFinanceRelay(this.app)?.getOperations() || []; } catch { return []; } }
-  canConnectPlaid(): boolean {
-    const relay = this.getRelayStatus();
-    return relay ? relay.enabled : Platform.isDesktopApp && !Platform.isMobile;
-  }
-  showFinanceRequest(id: string): void {
-    const relay = getFinanceRelay(this.app);
-    if (relay) new FinanceRequestModal(this.app, relay, id, () => void this.refreshDashboard()).open();
-  }
-  private async requestFinance(action: 'connect'|'reconnect'|'sync'|'disconnect', itemId?: string): Promise<boolean> {
-    const relay = getFinanceRelay(this.app);
-    if (!relay) return false;
-    const id = await relay.request(action,itemId);
-    this.showFinanceRequest(id);
-    return true;
-  }
-  private createControllerBackend() {
-    const assertHost = () => {
-      const relay=getFinanceRelay(this.app)?.getConfiguration();
-      if (Platform.isMobile || relay?.mode !== 'host' || !relay.enabled || !(this.app as any).plugins?.plugins?.['tps-controller']?.api?.isController()) throw new Error('Only the paired desktop Controller can import bank records.');
-      this.loadControllerState();
-    };
-    return {
-      version: 1 as const,
-      prepareHost: () => this.loadControllerState(true),
-      snapshot: () => { this.loadControllerState(); return ({ready:this.controllerPlaid(false)?.inspect().state==='ready',items:this.deviceState.items.map(({localItemId,institutionName,environment,lastSyncAt})=>({localItemId,institutionName,environment,lastSyncAt}))}); },
-      createLink: async (itemId?: string): Promise<LinkSession> => {
-        assertHost();
-        if (this.settingsWriter) await this.saveSettings();
-        const item = itemId ? this.deviceState.items.find(item=>item.localItemId===itemId) : undefined;
-        if (itemId && !item) throw new Error('Connection no longer exists.');
-        const config = this.getPlaidConfiguration();
-        const environment = item?.environment || config.plaidEnvironment;
-        const clientRef = item?.plaidClientIdSecretName || config.plaidClientIdSecret;
-        const secretRef = item?.plaidSecretName || config.plaidSecretSecret;
-        const link = await this.createPlaidClient(environment,secretRef,clientRef).createHostedLink(this.deviceState.plaidUserId,this.settings.transactionHistoryDays,item?.accessToken);
-        return {...link,environment,clientRef,secretRef,itemId};
-      },
-      pollLink: async (session: LinkSession): Promise<LinkResult> => {
-        assertHost();
-        return this.createPlaidClient(session.environment as any,session.secretRef,session.clientRef).getHostedLinkResult(session.linkToken,!!session.itemId);
-      },
-      completeLink: async (session: LinkSession, result: LinkResult, requestId: string): Promise<void> => {
-        assertHost();
-        if (this.deviceState.items.some(item=>item.linkRequestId===requestId)) return;
-        if (session.itemId) {
-          const item=this.deviceState.items.find(item=>item.localItemId===session.itemId);
-          if (!item) throw new Error('Connection no longer exists.');
-          item.linkRequestId=requestId;
-        } else {
-          if (!result.publicToken) throw new Error('Plaid did not return a public token.');
-          const exchange=await this.createPlaidClient(session.environment as any,session.secretRef,session.clientRef).exchangePublicToken(result.publicToken);
-          this.deviceState.items.push({localItemId:createLocalId('finance-item'),providerItemId:exchange.itemId,accessToken:exchange.accessToken,
-            institutionName:result.institutionName||'Institution',cursor:'',lastSyncAt:'',lastInvestmentTransactionSyncAt:'',environment:session.environment as any,
-            plaidClientIdSecretName:session.clientRef,plaidSecretName:session.secretRef,linkRequestId:requestId});
-        }
-        this.saveDeviceState(); // Persist the token and receipt before acknowledging the request or importing notes.
-      },
-      hasCompleted: (requestId: string) => { assertHost(); return this.deviceState.items.some(item=>item.linkRequestId===requestId); },
-      importWallet: async (parts: unknown[]) => {
-        assertHost();
-        if (this.settingsWriter) await this.saveSettings();
-        this.assertPropertyMigrationComplete();
-        if (this.syncing) throw new Error('TPS Finances is already syncing.');
-        this.assertLegacyReviewComplete();
-        const batch = parseWalletParts(parts);
-        // Wallet account/transaction identities are stable on the one paired iPhone.
-        // Never infer removal from a missing account or a limited consent window.
-        this.syncing = true;
-        try {
-          const store = this.createStore();
-          await store.ensureStructure();
-          const paths = await store.upsertAccounts(batch.accounts);
-          const identityMap: Record<string, string> = {};
-          for (const transaction of batch.transactions) identityMap[`transaction:${transaction.providerTransactionId}`] = transaction.financeId;
-          for (const provider of batch.removed) identityMap[`transaction:${provider}`] = walletTransactionID(provider.slice('financekit:'.length));
-          await store.applyTransactions(batch.transactions, [], batch.removed, {plaidUserId: '', items: [], providerIdentityMap: identityMap}, paths);
-          logger.flow('Wallet', 'import-complete', {accounts: batch.accounts.length, transactions: batch.transactions.length, removed: batch.removed.length});
-        } finally { this.syncing = false; }
-        await this.refreshDashboard();
-      },
-      sync: async () => { assertHost(); if (this.settingsWriter) await this.saveSettings(); await this.syncLocal('controller'); },
-      disconnect: async (itemId: string) => { assertHost(); await this.disconnectLocal(itemId); },
-    };
-  }
-
-  getPlaidSetupStatus(): PlaidSetupStatus {
-    const relay=this.getRelayStatus();
-    if (relay) return {state:relay.enabled?'ready':'missing-credentials',clientIdConfigured:relay.enabled,secretConfigured:relay.enabled,connectedItems:this.getConnectedItems().length};
-    const provider = this.controllerPlaid(false);
-    if (!provider) return { state: "missing-credentials", clientIdConfigured: false, secretConfigured: false, connectedItems: this.deviceState.items.length };
-    provider.getConfiguration(this.settings);
-    return { ...provider.inspect(), connectedItems: this.deviceState.items.length };
-
-  }
-
   openConnectionSettings(): void {
-    const controller = (this.app as any).plugins?.plugins?.["tps-controller"]?.api;
-    if (typeof controller?.openConnectionSettings === "function") controller.openConnectionSettings("finance");
-    else new Notice("Enable or update TPS Controller to 2.6.0+ to manage connections.");
-  }
-
-  runConnectPlaid(source: "command" | "settings"): Promise<void> {
-    return this.runUserAction("Connect", source, () => this.connectPlaid());
-  }
-
-  runSync(reason: string): Promise<void> {
-    return this.runUserAction("Sync", reason, () => this.syncAll(reason));
+    new Notice('Bank and Wallet importing are retired in this plugin. Configure imports in TishOS; existing notes remain available.');
   }
 
   async openDashboard(page?: "budget"): Promise<void> {
@@ -382,231 +242,6 @@ export default class TPSFinancesPlugin extends Plugin {
     }
     this.app.workspace.revealLeaf(leaf);
     if (page === "budget" && leaf.view instanceof TPSFinancesView) await leaf.view.showBudget();
-  }
-
-  async connectPlaid(): Promise<void> {
-    if (await this.requestFinance('connect')) return;
-    assertLocalPlaidLinkAvailable();
-    try {
-      const config = this.getPlaidConfiguration();
-      const client = this.createPlaidClient(config.plaidEnvironment, config.plaidSecretSecret, config.plaidClientIdSecret);
-      logger.flow("Connect", "start", { environment: config.plaidEnvironment, credentialStatus: "ready" });
-      const linkToken = await client.createLinkToken(this.deviceState.plaidUserId, this.settings.transactionHistoryDays, config.oauthRedirectUri);
-      const result = await openLocalPlaidLink(linkToken);
-      const exchange = await client.exchangePublicToken(result.publicToken);
-      const item: DeviceItemState = {
-        localItemId: createLocalId("finance-item"),
-        providerItemId: exchange.itemId,
-        accessToken: exchange.accessToken,
-        institutionName: result.institutionName,
-        cursor: "",
-        lastSyncAt: "",
-        lastInvestmentTransactionSyncAt: "",
-        environment: config.plaidEnvironment,
-        plaidClientIdSecretName: config.plaidClientIdSecret,
-        plaidSecretName: config.plaidSecretSecret,
-      };
-      this.deviceState.items.push(item);
-      this.saveDeviceState();
-      logger.flow("Connect", "done", { institution: item.institutionName, connectedItems: this.deviceState.items.length });
-      new Notice(`${item.institutionName} connected. Syncing finances…`);
-      const syncWasAlreadyRunning = this.syncing;
-      await this.syncAll("connect");
-      if (syncWasAlreadyRunning) await this.refreshDashboard();
-    } catch (error) {
-      logger.failure("Connect", "failed", error, { environment: this.getPlaidConfiguration().plaidEnvironment });
-      throw error;
-    }
-  }
-
-  async reconnectItem(localItemId: string): Promise<void> {
-    if (await this.requestFinance('reconnect',localItemId)) return;
-    assertLocalPlaidLinkAvailable();
-    if(this.syncing) throw new Error("Wait for the current sync to finish.");
-    const item=this.deviceState.items.find(i=>i.localItemId===localItemId);
-    if(!item) throw new Error("Connection no longer exists.");
-    const client=this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
-    const token=await client.createUpdateLinkToken(this.deviceState.plaidUserId,item.accessToken,this.getPlaidConfiguration().oauthRedirectUri);
-    await openLocalPlaidLink(token,true);
-    // Update mode retains the existing Item, access token, identities and cursor.
-    await this.syncAll("reconnect");
-  }
-
-  runReconnectItem(localItemId: string): Promise<void> {
-    return this.runUserAction("Reconnect", "settings", () => this.reconnectItem(localItemId));
-  }
-
-  async disconnectItem(localItemId: string): Promise<void> {
-    if (await this.requestFinance('disconnect',localItemId)) return;
-    return this.disconnectLocal(localItemId);
-  }
-
-  private async disconnectLocal(localItemId: string): Promise<void> {
-    const item = this.deviceState.items.find((candidate) => candidate.localItemId === localItemId);
-    if (!item) return;
-    const client = this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
-    logger.flow("Disconnect", "start", { institution: item.institutionName });
-    try {
-      try { await client.removeItem(item.accessToken); }
-      catch (error) { if ((error as {code?:string}).code !== 'ITEM_NOT_FOUND') throw error; }
-      this.deviceState.items = this.deviceState.items.filter((candidate) => candidate.localItemId !== localItemId);
-      this.saveDeviceState();
-      logger.flow("Disconnect", "done", { institution: item.institutionName, connectedItems: this.deviceState.items.length });
-      new Notice(`${item.institutionName} disconnected from Plaid.`);
-      await this.refreshDashboard();
-    } catch (error) {
-      logger.failure("Disconnect", "failed", error, { institution: item.institutionName });
-      throw error;
-    }
-  }
-
-  async syncAll(reason: string): Promise<void> {
-    this.assertPropertyMigrationComplete();
-    this.assertLegacyReviewComplete();
-    if (await this.requestFinance('sync')) return;
-    return this.syncLocal(reason);
-  }
-
-  private async syncLocal(reason: string): Promise<void> {
-    this.assertPropertyMigrationComplete();
-    this.assertLegacyReviewComplete();
-    if (this.syncing) {
-      if (reason === "controller") throw new Error("TPS Finances is already syncing. Try again shortly.");
-      new Notice("TPS Finances is already syncing.");
-      return;
-    }
-    if (!this.deviceState.items.length) {
-      if (reason === "controller") return;
-      throw new Error("Connect an institution before syncing TPS Finances.");
-    }
-    this.syncing = true;
-    const started = Date.now();
-    const store = this.createStore();
-    const timed = async <T>(phase: string, work: () => Promise<T>): Promise<T> => {
-      const begin = Date.now();
-      let completed = false;
-      try {
-        const value = await work();
-        completed = true;
-        return value;
-      } finally {
-        logger.flow("Sync", "phase", { phase, completed, durationMs: Date.now() - begin });
-      }
-    };
-    const allAccounts: FinanceAccount[] = [];
-    const allHoldings: FinanceHolding[] = [];
-    const failures: Array<{ institution: string; error: unknown }> = [];
-    const optionalWarnings: OptionalInvestmentWarning[] = [];
-    let transactionChanges = 0;
-    logger.flow("Sync", "start", { reason, itemCount: this.deviceState.items.length });
-    try {
-      await timed("storage-setup", () => store.ensureStructure());
-      const previousSnapshot = await this.readLatestSnapshotDocument();
-      const previousAccounts = this.readAccountsFromVault(previousSnapshot);
-      const previousHoldings = this.parseSnapshotHoldings(previousSnapshot, previousAccounts);
-      for (const item of this.deviceState.items) {
-        try {
-          const client = this.createPlaidClient(item.environment, item.plaidSecretName, item.plaidClientIdSecretName);
-          const accounts = await timed("accounts-fetch", () => client.getAccounts(item, this.deviceState));
-          const accountPaths = await timed("account-notes", () => store.upsertAccounts(accounts));
-          const patch = await timed("transactions-fetch", () => client.syncTransactions(item, this.deviceState));
-          this.saveDeviceState();
-          const applied = await timed("transaction-notes", () => store.applyTransactions(patch.added, patch.modified, patch.removedProviderIds, this.deviceState, accountPaths));
-          item.cursor = patch.nextCursor;
-          item.lastSyncAt = new Date().toISOString();
-          this.saveDeviceState();
-          allAccounts.push(...accounts);
-          transactionChanges += applied.added + applied.modified + applied.removed;
-
-          const range = investmentDateRange(item.lastInvestmentTransactionSyncAt, this.settings.transactionHistoryDays);
-          const investmentResult = await timed("investment-history-fetch", () => client.getInvestmentTransactions(item, this.deviceState, range.start, range.end));
-          if (investmentResult.status === "ok") this.saveDeviceState();
-          const investmentApplied = await applyInvestmentTransactionResult(
-            investmentResult,
-            item.lastInvestmentTransactionSyncAt,
-            new Date().toISOString(),
-            (transactions) => timed("investment-notes", () => store.replaceInvestmentTransactions(transactions, accountPaths)),
-          );
-          if (investmentResult.status === "ok") {
-            item.lastInvestmentTransactionSyncAt = investmentApplied.watermark;
-            this.saveDeviceState();
-          } else {
-            optionalWarnings.push({
-              institution: item.institutionName,
-              operation: "history",
-              status: investmentResult.status,
-              code: investmentResult.code,
-              preserved: 0,
-            });
-          }
-          transactionChanges += investmentApplied.count;
-
-          const holdingsResult = await timed("holdings-fetch", () => client.getHoldings(item, this.deviceState));
-          if (holdingsResult.status === "ok") this.saveDeviceState();
-          const holdings = holdingsForSnapshot(
-            holdingsResult,
-            new Set(accounts.map((account) => account.financeAccountId)),
-            previousHoldings,
-          );
-          allHoldings.push(...holdings.holdings);
-          if (holdingsResult.status !== "ok") {
-            optionalWarnings.push({
-              institution: item.institutionName,
-              operation: "holdings",
-              status: holdingsResult.status,
-              code: holdingsResult.code,
-              preserved: holdings.preserved,
-            });
-          }
-          logger.flow("Sync", "item:done", {
-            institution: item.institutionName,
-            accounts: accounts.length,
-            holdings: holdings.holdings.length,
-            holdingsState: holdingsResult.status,
-            preservedHoldings: holdings.preserved,
-            added: applied.added,
-            modified: applied.modified,
-            removed: applied.removed,
-            investmentTransactions: investmentApplied.count,
-            investmentTransactionsState: investmentResult.status,
-          });
-        } catch (error) {
-          failures.push({ institution: item.institutionName, error });
-          logger.failure("Sync", "item:failed", error, { institution: item.institutionName });
-        }
-      }
-      if (!failures.length && (allAccounts.length || allHoldings.length)) {
-        const accountPaths = new Map(await this.accountPathEntries());
-        await timed("holding-notes", () => store.writeSnapshot(allAccounts, allHoldings, accountPaths, new Date()));
-      }
-      await timed("dashboard", () => this.refreshDashboard());
-      logger.flow("Sync", "done", {
-        reason,
-        durationMs: Date.now() - started,
-        successfulItems: this.deviceState.items.length - failures.length,
-        failedItems: failures.length,
-        accounts: allAccounts.length,
-        holdings: allHoldings.length,
-        transactionChanges,
-        optionalInvestmentWarnings: optionalWarnings.length,
-      });
-      if (failures.length) {
-        const first = failures[0];
-        const more = failures.length > 1 ? ` (${failures.length - 1} more institution${failures.length === 2 ? "" : "s"} failed)` : "";
-        const optional = optionalWarnings.length ? ` ${optionalInvestmentWarningSummary(optionalWarnings)}` : "";
-        if (reason === "controller") throw first.error;
-        new Notice(`TPS Finances could not sync ${first.institution}: ${userFacingError(first.error)}${more}.${optional}`, 12000);
-      }
-      else {
-        const summary = `TPS Finances synced ${allAccounts.length} accounts and ${transactionChanges} transaction changes.`;
-        if (reason !== "controller") new Notice(optionalWarnings.length ? `${summary} ${optionalInvestmentWarningSummary(optionalWarnings)}` : summary, optionalWarnings.length ? 12000 : 5000);
-      }
-    } catch (error) {
-      logger.failure("Sync", "failed", error, { reason });
-      throw error;
-    } finally {
-      this.syncing = false;
-    }
   }
 
   async getDashboardModel(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<DashboardModel> {
@@ -636,18 +271,13 @@ export default class TPSFinancesPlugin extends Plugin {
     const month = localDate(new Date()).slice(0, 7);
     const budgetEntries = await store.readBudgetEntries(sourcePaths, source, files);
     const budgets = calculateMonthlyBudgetProgress(budgetEntries.filter(budget=>budgetBucket(budget)==="category" && budgetCurrency(budget)==="USD"), transactions, month);
-    const lastSyncAt = this.getConnectedItems().map((item) => item.lastSyncAt).filter(Boolean).sort().at(-1) || "";
     return {
       accounts,
       holdings,
       transactions,
       budgets,
       budgetEntries,
-      lastSyncAt,
-      connectedItems: this.getConnectedItems().length,
-      relayMessage: this.getRelayStatus()?.message,
       legacyReviewRequired: this.legacyReviewRequired(),
-      plaidSetupState: this.getPlaidSetupStatus().state,
     };
   }
 
@@ -773,15 +403,8 @@ export default class TPSFinancesPlugin extends Plugin {
     const model = await this.getDashboardModel(undefined, "metadata");
     container.empty();
     container.addClass("tps-finances-home-summary");
-    if (!model.connectedItems && !model.accounts.length) {
-      const text = model.plaidSetupState === "conflicting-credentials"
-        ? "Plaid setup needs attention: choose separate client ID and environment secrets in TPS Controller settings."
-        : model.plaidSetupState === "ready"
-          ? "Plaid credentials are ready. Connect an institution to see your financial snapshot."
-          : "Add Plaid credentials in TPS Controller settings, then connect an institution.";
-      container.createDiv({ cls: "tps-finances-home-empty", text });
-    } else if (model.connectedItems && !model.accounts.length) {
-      container.createDiv({ cls: "tps-finances-home-empty", text: "Plaid is connected, but no account snapshot has synced yet. Open Finances and run Sync to see the provider error." });
+    if (!model.accounts.length) {
+      container.createDiv({ cls: "tps-finances-home-empty", text: "No accounts found. Add a manual account or import accounts with TishOS." });
     } else {
       const investmentAccountIds = new Set(model.holdings.map((holding) => holding.financeAccountId));
       const cash = model.accounts.filter((account) => !investmentAccountIds.has(account.financeAccountId)).reduce((sum, account) => sum + (account.current || 0), 0);
@@ -814,23 +437,6 @@ export default class TPSFinancesPlugin extends Plugin {
       ? await gcmApi.openFileInLeaf(file, false, () => this.app.workspace.getLeaf(false), { revealLeaf: true, active: true, reuseLeafIfNoExisting: true })
       : this.app.workspace.getLeaf(false);
     if (!gcmApi?.openFileInLeaf) await leaf.openFile(file);
-  }
-
-  private controllerPlaid(required = true): any {
-    const service = (this.app as any).plugins?.plugins?.["tps-controller"]?.api?.plaid;
-    if (service?.version === 1 && typeof service.request === "function") return service;
-    if (required) throw new Error("Enable or update TPS Controller to use Plaid. Manual finance records remain available.");
-    return null;
-  }
-
-  getPlaidConfiguration() {
-    return this.controllerPlaid(false)?.getConfiguration(this.settings) || this.settings;
-  }
-
-  private createPlaidClient(environment: TPSFinancesSettings["plaidEnvironment"], secretRef?: string, clientRef?: string): PlaidClient {
-    const provider = this.controllerPlaid();
-    provider.getConfiguration(this.settings);
-    return new PlaidClient((path, body) => provider.request(environment, path, body, clientRef, secretRef));
   }
 
   private async runUserAction(scope: string, trigger: string, action: () => Promise<void>): Promise<void> {
@@ -884,10 +490,6 @@ export default class TPSFinancesPlugin extends Plugin {
     } finally { this.syncing = false; }
   }
 
-  private async prepareFinanceStorage(): Promise<void> {
-    await this.ensureFinanceStructure();
-  }
-
   private getDailyNotePathForIsoDate(isoDate: string): string {
     const gcmApi = this.getGcmApi();
     if (typeof gcmApi?.dailyNotes?.pathForIsoDate === "function") return normalizePath(gcmApi.dailyNotes.pathForIsoDate(isoDate));
@@ -897,15 +499,6 @@ export default class TPSFinancesPlugin extends Plugin {
     const parsed = (window as any).moment(isoDate, "YYYY-MM-DD", true);
     const basename = parsed.isValid() ? parsed.format(format) : isoDate;
     return normalizePath(folder ? `${folder}/${basename}.md` : `${basename}.md`);
-  }
-
-  private async ensureFinanceStructure(): Promise<void> {
-    try {
-      await this.createStore().ensureStructure();
-      logger.flow("Storage", "structure-ready", { folder: this.settings.financeFolder });
-    } catch (error) {
-      logger.failure("Storage", "structure-failed", error, { folder: this.settings.financeFolder });
-    }
   }
 
   private getGcmApi(): any {
@@ -933,55 +526,6 @@ export default class TPSFinancesPlugin extends Plugin {
       onClick: () => this.openDashboard(),
     });
     this.registeredGcmApi = gcmApi;
-  }
-
-  private loadControllerState(allowCreate = false): void {
-    const stored=this.app.secretStorage.getSecret(DEVICE_STATE_SECRET);
-    if (!stored) {
-      if (!allowCreate || this.app.loadLocalStorage?.('tps-finances-controller-state')) throw new Error('Controller bank state is missing. Restore its SecretStorage before continuing.');
-      this.saveDeviceState();
-    } else {
-      const raw=JSON.parse(stored);
-      if (!raw.plaidUserId || !Array.isArray(raw.items) || !raw.providerIdentityMap || typeof raw.providerIdentityMap !== 'object'
-        || raw.items.some((item: any)=>!item.localItemId || !item.providerItemId || !item.accessToken)) throw new Error('Controller bank state is invalid. Restore its SecretStorage before continuing.');
-      this.deviceState=this.loadDeviceState();
-    }
-    this.app.saveLocalStorage?.('tps-finances-controller-state',true);
-  }
-
-  private loadDeviceState(): DeviceState {
-    const stored = this.app.secretStorage.getSecret(DEVICE_STATE_SECRET);
-    if (!stored) return emptyDeviceState();
-    try {
-      const parsed = JSON.parse(stored) as Partial<DeviceState>;
-      const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
-      const normalized = normalizeDeviceItems(rawItems, this.getPlaidConfiguration().plaidClientIdSecret, this.getPlaidConfiguration().plaidSecretSecret);
-      if (normalized.skipped) logger.warn("DeviceState", "invalid-items-skipped", { skippedItems: normalized.skipped });
-      const state = {
-        plaidUserId: String(parsed.plaidUserId || createLocalId("finance-user")),
-        items: normalized.items,
-        providerIdentityMap: parsed.providerIdentityMap && typeof parsed.providerIdentityMap === "object" ? { ...parsed.providerIdentityMap } : {},
-      };
-      if (normalized.migratedClientIdItems) {
-        try {
-          this.app.secretStorage.setSecret(DEVICE_STATE_SECRET, JSON.stringify(state));
-          logger.flow("DeviceState", "legacy-client-id-references-migrated", { migratedItems: normalized.migratedClientIdItems });
-        } catch (error) {
-          logger.failure("DeviceState", "legacy-client-id-migration-persist-failed", new Error("Could not persist the migrated device state in SecretStorage."), {
-            migratedItems: normalized.migratedClientIdItems,
-            errorType: error instanceof Error ? error.name : "UnknownError",
-          });
-        }
-      }
-      return state;
-    } catch (error) {
-      logger.failure("DeviceState", "parse-failed", error);
-      return emptyDeviceState();
-    }
-  }
-
-  private saveDeviceState(): void {
-    this.app.secretStorage.setSecret(DEVICE_STATE_SECRET, JSON.stringify(this.deviceState));
   }
 
   private async refreshDashboard(change?: { file: TAbstractFile; oldPath?: string; data?: string; deleted?: boolean }): Promise<void> {
@@ -1181,10 +725,6 @@ function normalizeSettings(value: unknown): TPSFinancesSettings {
   };
 }
 
-function emptyDeviceState(): DeviceState {
-  return { plaidUserId: createLocalId("finance-user"), items: [], providerIdentityMap: {} };
-}
-
 function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -1279,17 +819,6 @@ function isSpendingTransaction(transaction: DashboardTransaction): boolean {
 function userFacingError(error: unknown): string {
   const message = logger.summarizeError(error).replace(/^[A-Za-z]+Error:\s*/, "").trim() || "Unknown error";
   return message.length > 320 ? `${message.slice(0, 317)}…` : message;
-}
-
-function optionalInvestmentWarningSummary(warnings: OptionalInvestmentWarning[]): string {
-  const first = warnings[0];
-  const more = warnings.length > 1 ? ` ${warnings.length - 1} more optional Investments request${warnings.length === 2 ? "" : "s"} will also retry.` : "";
-  const preserved = warnings.reduce((sum, warning) => sum + warning.preserved, 0);
-  const retained = preserved ? ` Retained ${preserved} last-known holding${preserved === 1 ? "" : "s"} with its original as-of date.` : "";
-  const retry = first.operation === "history"
-    ? "it will retry without advancing its history watermark"
-    : "it will retry without treating the missing response as an authoritative empty result";
-  return `Investments ${first.operation} for ${first.institution} is ${first.status} (${first.code}); ${retry}.${retained}${more}`;
 }
 
 function atomicNumber(value: unknown): number | null {

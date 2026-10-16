@@ -34,7 +34,6 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  openConnections(): void { this.plugin.openConnectionSettings(); }
 
   display(): void {
     this.renderSettings();
@@ -46,8 +45,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Finances" });
     new Setting(containerEl).setName("Bank connections")
-      .setDesc("Managed in TPS Controller.")
-      .addButton(button => button.setButtonText("Open connections").onClick(() => this.openConnections()));
+      .setDesc("Bank and Wallet importing are retired here. Configure imports in TishOS; existing notes remain available.");
 
     const hub = containerEl.createDiv({ cls: "tps-finances-settings-hub" });
     hub.createEl("h3", { text: "Choose what to configure" });
