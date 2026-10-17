@@ -5,8 +5,8 @@ import { FinanceStore, transactionLine, transactionsBaseBody, holdingsBaseBody, 
 import { normalizeTags } from "./classification";
 import type { FinanceTransaction } from "./types";
 import { boundedWork } from "./bounded-work";
-import { providerTransactionFields, proposedTransactionTitle, titleSignature, type TransactionTitleChange } from "./transaction-titles";
-import { absentProviderProperties, emptyTransactionProperties } from "./transaction-properties";
+import { proposedTransactionTitle, titleSignature, type TransactionTitleChange } from "./transaction-titles";
+import { emptyTransactionProperties } from "./transaction-properties";
 import type { DashboardFileSnapshot } from "./dashboard-file-snapshot";
 
 type Fields = Record<string, any>;
@@ -117,46 +117,15 @@ export class AtomicFinanceStore extends FinanceStore {
     return new Map([...result].sort((a, b) => order.get(a[1])! - order.get(b[1])!));
   }
 
-  private async put(fm: Fields, index: Map<string, TFile>): Promise<TFile> {
+  private async createMigrationNote(fm: Fields, index: Map<string, TFile>): Promise<TFile> {
     const id = String(fm.financeId);
-    let file = index.get(id);
-    if (!file) {
-      const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
-      const path = financePath(this.folder, "Transactions", `${safeId}.md`);
-      const existing = this.vaultApp.vault.getAbstractFileByPath(path);
-      if (existing) {
-        // A fast retry can precede Obsidian's metadata cache update, especially at
-        // the vault root. Reuse only a directly verified transaction at its ID path.
-        const fields = existing instanceof TFile ? await this.fields(existing, true) : {};
-        if (!(existing instanceof TFile) || String(fields.financeId) !== id || fields.type !== fm.type) {
-          throw new Error(`Transaction destination is occupied: ${path}`);
-        }
-        file = existing;
-        index.set(id, file);
-      }
-    }
-    if (file && this.vaultApp.vault.getAbstractFileByPath(file.path) !== file) throw new Error("Transaction moved during sync; retry.");
-    if (file) {
-      const before = await this.fields(file);
-      const providerFields = providerTransactionFields(fm, before);
-      if (!absentProviderProperties(providerFields, before).length
-        && Object.keys(providerFields).every(key => JSON.stringify(before[key]) === JSON.stringify(providerFields[key]))) return file;
-      await financeProperties(this.vaultApp).process(this.vaultApp, file, current => {
-        if (String(current.financeId) !== id) throw new Error("Transaction identity changed during sync.");
-        const providerFields = providerTransactionFields(fm, current);
-        for (const key of absentProviderProperties(providerFields, current)) delete current[key];
-        Object.assign(current, providerFields);
-        // User classifications, tags, unrelated properties and body survive provider updates.
-      });
-    } else {
-      const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
-      const path = financePath(this.folder, "Transactions", `${safeId}.md`);
-      if (this.vaultApp.vault.getAbstractFileByPath(path)) throw new Error(`Transaction destination is occupied: ${path}`);
-      file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml(financeProperties(this.vaultApp).write(fm))}---\n`);
-      index.set(id, file);
-    }
+    const safeId = encodeURIComponent(id).replace(/\./g, "%2E");
+    const path = financePath(this.folder, "Transactions", `${safeId}.md`);
+    if (this.vaultApp.vault.getAbstractFileByPath(path)) throw new Error(`Transaction destination is occupied: ${path}`);
+    const file = await this.vaultApp.vault.create(path, `---\n${stringifyYaml(financeProperties(this.vaultApp).write(fm))}---\n`);
     const verified = await this.fields(file);
     if (String(verified.financeId) !== id) throw new Error("Could not verify saved transaction identity.");
+    index.set(id, file);
     return file;
   }
 
@@ -176,6 +145,11 @@ export class AtomicFinanceStore extends FinanceStore {
   async updateTransactionMetadata(id:string, categoryOverride:string, tags:string[], target?: {
     path:string; file:TFile|null; type:"transaction"|"investmentTransaction"; categoryOverride:string; tags:string[];
   }): Promise<boolean> {
+    const applyClassification = (fm: Fields) => {
+      if (categoryOverride) fm.category = categoryOverride; else delete fm.category;
+      delete fm.categoryOverride;
+      fm.tags = normalizeTags(tags).map(tag=>tag.replace(/^#/, ""));
+    };
     if (target) {
       const file = target.file;
       const changed = () => new Error("The transaction changed or moved. Reopen the dashboard and try again.");
@@ -185,15 +159,15 @@ export class AtomicFinanceStore extends FinanceStore {
         if (file.path !== target.path || this.vaultApp.vault.getAbstractFileByPath(target.path) !== file
           || String(fm.financeId||"") !== id || fm.type !== target.type
           || (!file.path.startsWith(financePrefix(this.folder,"Transactions")) && !accountPath.startsWith(financePrefix(this.folder,"Accounts")))
-          || String(fm.categoryOverride||"") !== target.categoryOverride
+          || String(fm.category ?? fm.categoryOverride ?? "") !== target.categoryOverride
           || JSON.stringify(atomicTags(fm.tags)) !== JSON.stringify(normalizeTags(target.tags))) throw changed();
-        fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));
+        applyClassification(fm);
       });
       return true;
     }
     const file = (await this.index()).get(id);
     if (!file) return false;
-    await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {fm.categoryOverride=categoryOverride;fm.tags=normalizeTags(tags).map(tag=>tag.replace(/^#/,""));});
+    await financeProperties(this.vaultApp).process(this.vaultApp, file, fm => {applyClassification(fm);});
     return true;
   }
 
@@ -223,13 +197,7 @@ export class AtomicFinanceStore extends FinanceStore {
         || removeFields.some(key => !emptyTransactionProperties(current).includes(key))) {
         throw new Error("Transaction changed. Reopen the review.");
       }
-      // Older notes only retained their title. Preserve it until a provider revision
-      // supplies the actual bank description; never discard the reviewed text.
-      if (change.after !== String(current.title ?? "")) {
-        if (typeof current.providerName !== "string") current.providerName = String(current.title ?? "");
-        current.title = change.after;
-        current.providerTitle = change.after;
-      }
+      if (change.after !== String(current.title ?? "")) current.title = change.after;
       for (const key of removeFields) delete current[key];
     });
   }
@@ -256,7 +224,7 @@ export class AtomicFinanceStore extends FinanceStore {
         const existing=await this.fields(target, true);
         // An existing different revision needs reconciliation, never silently overwrite it.
         if (existing.migrationSource !== record.line || Object.keys(fm).some(key=>JSON.stringify(existing[key])!==JSON.stringify(fm[key]))) {skipped++;continue;}
-      } else target=await this.put({...fm,migrationSource:record.line},index);
+      } else target=await this.createMigrationNote({...fm,migrationSource:record.line},index);
       const verified=await this.fields(target, true);
       if(verified.migrationSource!==record.line || Object.keys(fm).some(key=>JSON.stringify(verified[key])!==JSON.stringify(fm[key])))throw new Error("Migrated transaction verification failed.");
       const link=`- [[${target.path.replace(/\.md$/i,"")}]]`;
@@ -273,7 +241,7 @@ export class AtomicFinanceStore extends FinanceStore {
 function fieldsLine(f:Fields):string {
   if(!Number.isFinite(Number(f.amount))||f.amount===null||f.amount===''||!/^\d{4}-\d{2}-\d{2}$/.test(String(f.date)))throw new Error('Invalid atomic transaction properties; repair the note before syncing.');
   const t:FinanceTransaction={financeId:String(f.financeId),providerTransactionId:'',financeAccountId:String(f.financeAccountId||''),date:String(f.date),authorizedDate:String(f.authorizedDate||''),name:String(f.title||''),providerName:typeof f.providerName==='string'?f.providerName:undefined,merchantName:String(f.merchant||''),amount:Number(f.amount),currency:String(f.currency||'USD'),pending:f.pending===true,category:String(f.providerCategory||''),categoryDetail:String(f.providerCategoryDetail||''),subtype:String(f.subtype||''),kind:f.type==='investmentTransaction'?'investmentTransaction':'transaction',investmentType:String(f.investmentType||'')};
-  return transactionLine(t,String(f.account||'').replace(/^\[\[|\]\]$/g,''),{categoryOverride:String(f.categoryOverride||''),tags:atomicTags(f.tags)}) + (f.financeSource === 'manual' ? ` [financeSource:: manual] [transferAccount:: ${String(f.transferAccount || '')}]` : '');
+  return transactionLine(t,String(f.account||'').replace(/^\[\[|\]\]$/g,''),{categoryOverride:String(f.category ?? f.categoryOverride ?? ''),tags:atomicTags(f.tags)}) + (f.financeSource === 'manual' ? ` [financeSource:: manual] [transferAccount:: ${String(f.transferAccount || '')}]` : '');
 }
 function atomicTags(value:unknown):string[] {
   return normalizeTags(Array.isArray(value) ? value.map(String) : typeof value === 'string' ? value.split(',') : []);

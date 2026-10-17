@@ -73,9 +73,9 @@ export class ManualFinanceStore {
     const id = createLocalId(input.kind === "cash" ? "cash-account" : "owned-asset");
     const folder = financeDirectory(this.folder, "Accounts"); await this.ensureFolder(folder);
     const name = input.name.trim().replace(/[\\/:*?"<>|#\[\]]/g, "-");
-    const fields: Record<string, unknown> = {kind:"account",financeSource:"manual",financeAccountId:id,title:input.name.trim(),accountName:input.name.trim(),accountType:input.kind === "cash" ? "depository" : "other",accountSubtype:input.kind === "cash" ? "cash" : input.assetType.trim() || "personal-property",currency,current:input.value};
+    const fields: Record<string, unknown> = {kind:"account",financeSource:"manual",financeAccountId:id,title:input.name.trim(),accountType:input.kind === "cash" ? "depository" : "other",accountSubtype:input.kind === "cash" ? "cash" : input.assetType.trim() || "personal-property",currency,current:input.value};
     if (input.kind === "cash") { fields.openingBalance = input.value; delete fields.current; }
-    else Object.assign(fields,{valuationDate:input.valuationDate,purchaseTransaction,liabilityAccount});
+    else Object.assign(fields,{valuationDate:input.valuationDate,...(purchaseTransaction?{purchaseTransaction}:{}),...(liabilityAccount?{liabilityAccount}:{})});
     return this.app.vault.create(financePath(this.folder, "Accounts", `${name} ${id.slice(-8)}.md`), `---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
   }
   async createCashEntry(input: CashEntryInput): Promise<TFile> {
@@ -99,8 +99,12 @@ export class ManualFinanceStore {
     const id = createLocalId("cash-transaction");
     const folder = financeDirectory(this.folder, "Transactions"); await this.ensureFolder(folder);
     const amount = ["expense","transfer-out"].includes(input.kind) ? -input.amount : input.amount;
-    const fields = {kind:"transaction",type:"transaction",financeSource:"manual",financeId:id,financeAccountId:fm.financeAccountId,account:this.link(account.path),title:input.title.trim(),date:input.date,amount,currency:fm.currency,pending:false,subtype:input.kind === "expense" ? "purchase" : input.kind,categoryOverride:input.category.trim(),tags:input.tags.map(t=>t.trim().replace(/^#+/,"")).filter(Boolean),transferAccount:counterpart,linkedTransaction};
-    return this.app.vault.create(financePath(this.folder, "Transactions", `${id}.md`),`---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
+    const fields = {kind:"transaction",type:"transaction",financeSource:"manual",financeId:id,account:this.link(account.path),title:input.title.trim(),date:input.date,amount,currency:fm.currency,subtype:input.kind === "expense" ? "purchase" : input.kind};
+    const category = input.category.trim(), tags = input.tags.map(t=>t.trim().replace(/^#+/, "")).filter(Boolean);
+    return this.app.vault.create(financePath(this.folder, "Transactions", `${id}.md`),`---\n${stringifyYaml(financeProperties(this.app).write({
+      ...fields, ...(category ? {category} : {}), ...(tags.length ? {tags} : {}),
+      ...(counterpart ? {transferAccount:counterpart} : {}), ...(linkedTransaction ? {linkedTransaction} : {}),
+    }))}---\n`);
   }
 }
 

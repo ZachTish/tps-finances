@@ -8,11 +8,11 @@ const RECORD_TYPE_FOR_KIND: Record<string, string> = {
 };
 export interface FinancePropertyNames { keys: Record<string, string>; }
 export const PROPERTY_GROUPS: Record<string, readonly string[]> = {
-  "Common": ["kind", "type", "title", "date", "currency", "tags", "financeSource"],
+  "Common": ["kind", "type", "title", "date", "currency", "tags", "financeSource", "category"],
   "Transactions": ["authorizedDate", "account", "amount", "pending", "merchant", "providerName", "providerTitle", "providerCategory", "providerCategoryDetail", "categoryOverride", "subtype", "investmentType", "transferAccount", "linkedTransaction", "migrationSource"],
   "Accounts & assets": ["institution", "accountName", "accountType", "accountSubtype", "accountMask", "current", "available", "limit", "openingBalance", "valuationDate", "purchaseTransaction", "liabilityAccount", "transactionLogTarget"],
   "Holdings": ["name", "ticker", "holdingType", "quantity", "price", "fees", "value", "costBasis", "asOf", "stale", "active"],
-  "Rules & budgets": ["enabled", "priority", "accountContains", "nameContains", "merchantContains", "minAmount", "maxAmount", "category", "monthlyLimit", "bucket", "accounts"],
+  "Rules & budgets": ["enabled", "priority", "accountContains", "nameContains", "merchantContains", "minAmount", "maxAmount", "monthlyLimit", "bucket", "accounts"],
 };
 export const FINANCE_PROPERTY_KEYS = Object.values(PROPERTY_GROUPS).flat();
 const own = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);

@@ -1428,3 +1428,30 @@ test('readable merchant titles keep existing bank-description classification rul
  assert.equal(classification.ruleMatches({...rule,nameContains:'Gas'},transaction),false);
  assert.equal(classification.classifyTransaction(transaction,[rule]).category,'Groceries');
 });
+
+
+test('account display uses the shared title without requiring a duplicate accountName and retains legacy search text',()=>{
+ const file={path:'Account.md',basename:'Account',fm:{kind:'account',id:'a',title:'Chosen account',accountName:'Provider account',accountType:'depository',currency:'USD',current:10}};
+ const plugin=new mainActionModule.default({vault:{getMarkdownFiles:()=>[file]},metadataCache:{getFileCache:f=>({frontmatter:f.fm})}});
+ plugin.settings={financeFolder:''};const labels=new Map();
+ assert.equal(plugin.readAccountsFromVault(null,labels)[0].name,'Chosen account');
+ assert.match(labels.get('Account').display,/Chosen account/);assert.match(labels.get('Account').search,/Provider account/);
+ delete file.fm.accountName;assert.equal(plugin.readAccountsFromVault(null)[0].name,'Chosen account');
+ file.fm.title='Chosen account •1234';file.fm.accountMask='1234';const accounts=plugin.readAccountsFromVault(null,labels);
+ assert.equal(labels.get('Account').display,'Chosen account •1234');
+ const h=createDashboardRenderHarness(),root=new DashboardNode();h.view.renderAccounts(root,accounts);
+ assert.doesNotMatch(dashboardNodeText(root),/•1234 •1234/,'title masks are not appended twice');
+});
+
+test('cleaned holdings resolve the account wikilink without a foreign account property or extra reads',()=>{
+ const holding={path:'Holding.md',fm:{kind:'holding',type:'holding',id:'holding-1',account:'[[Broker.md|Brokerage]]',name:'Fund',active:true,quantity:2,price:3,value:6,currency:'USD'}};
+ let scans=0,reads=0,writes=0;
+ const app={vault:{getMarkdownFiles(){scans++;return[holding]},cachedRead(){reads++;throw Error('unexpected read')},read(){reads++;throw Error('unexpected read')},create(){writes++;throw Error('unexpected write')}},metadataCache:{getFileCache:f=>({frontmatter:f.fm})}};
+ const plugin=new mainActionModule.default(app);plugin.settings={financeFolder:''};
+ const accounts=[{path:'Broker.md',financeAccountId:'canonical-account',currency:'USD'}];
+ const [row]=plugin.parseSnapshotHoldings(null,accounts);
+ assert.equal(row.financeAccountId,'canonical-account');assert.equal(row.value,6);
+ assert.deepEqual({scans,reads,writes},{scans:1,reads:0,writes:0});
+ holding.fm.financeAccountId='stale-old-reference';assert.equal(plugin.parseSnapshotHoldings(null,accounts)[0].financeAccountId,'canonical-account','the visible link is authoritative when present');
+ delete holding.fm.account;assert.equal(plugin.parseSnapshotHoldings(null,accounts)[0].financeAccountId,'stale-old-reference','retain read compatibility for old holdings without links');
+});

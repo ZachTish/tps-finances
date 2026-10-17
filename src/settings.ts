@@ -181,6 +181,8 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       }
       let explicitToggle: ToggleComponent | null = null;
       const field = new Setting(parent).setName(propertyLabel(key));
+      if (key === "category") field.setDesc("Shared saved category for transactions, rules and budgets.");
+      if (key === "categoryOverride") field.setDesc("Reads older transaction categories. New manual categories use category in Common.");
       if (key === "type" && gcmKinds?.version === 2) field.setDesc("Reads older records and distinguishes transaction kinds that share one list value. Finances omits it when the configured kind values differ.");
       field.addText(text => {
         text.setValue(this.propertyDraft![key] ?? key).onChange(value => {

@@ -254,7 +254,7 @@ export class TPSFinancesView extends ItemView {
     for (const account of accounts) {
       const card = grid.createDiv({ cls: "tps-finances-account-card" });
       card.createEl("small", { text: account.institutionName });
-      card.createEl("strong", { text: `${account.name}${account.mask ? ` •${account.mask}` : ""}` });
+      card.createEl("strong", { text: `${account.name}${account.mask && !account.name.endsWith(`•${account.mask}`) ? ` •${account.mask}` : ""}` });
       this.renderAmount(card.createDiv({ cls: "tps-finances-account-balance" }), money(account.current || 0, account.currency), `balance for ${account.name}`);
       card.createEl("span", { text: [account.type, account.subtype].filter(Boolean).join(" · ") });
       if (account.manual) {

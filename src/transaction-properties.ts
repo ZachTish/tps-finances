@@ -12,15 +12,3 @@ export function emptyTransactionProperties(fields: Fields): string[] {
     Object.prototype.hasOwnProperty.call(fields, key) &&
     (fields[key] == null || (typeof fields[key] === "string" && !fields[key].trim())));
 }
-
-export function compactTransactionProperties(fields: Fields): Fields {
-  const compact = { ...fields };
-  for (const key of emptyTransactionProperties(compact)) delete compact[key];
-  return compact;
-}
-
-export function absentProviderProperties(fields: Fields, current: Fields): string[] {
-  return OPTIONAL_TRANSACTION_PROPERTIES.filter(key =>
-    Object.prototype.hasOwnProperty.call(current, key) &&
-    !Object.prototype.hasOwnProperty.call(fields, key));
-}

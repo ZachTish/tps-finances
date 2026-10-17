@@ -60,7 +60,7 @@ test('unknown legacy titles need explicit review and preview performs no writes'
  const [change]=await h.store.reviewTransactionTitles();assert.equal(change.before,'BANK MARKET 1234');assert.equal(change.after,'Market');assert.deepEqual(h.text,before);
  h.text.set(path,h.text.get(path)+'Receipt details');
  await h.store.applyTransactionTitle(change);
- assert.equal(h.fm(path).title,'Market');assert.equal(h.fm(path).providerName,'BANK MARKET 1234');assert.equal(h.fm(path).providerTitle,'Market');assert.match(h.text.get(path),/Receipt details/);
+ assert.equal(h.fm(path).title,'Market');assert.equal(h.fm(path).providerName,undefined);assert.equal(h.fm(path).providerTitle,undefined);assert.match(h.text.get(path),/Receipt details/);
  assert.deepEqual(await h.store.reviewTransactionTitles(),[]);
 });
 test('review detects changed titles, merchants, identities, and paths without overwriting them',async()=>{
@@ -129,7 +129,7 @@ test('title review also normalizes untracked transfer and investment description
   const h=harness();await seedExistingTransactions(h, [{...tx,kind,merchantName:''}]);
   await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{f.title='  BUY   2 ABC / TRANSFER  ';delete f.providerTitle;delete f.providerName;});
   const [change]=await h.store.reviewTransactionTitles();assert.equal(change.after,'BUY 2 ABC / TRANSFER');
-  await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).providerName,'  BUY   2 ABC / TRANSFER  ');
+  await h.store.applyTransactionTitle(change);assert.equal(h.fm(path).providerName,undefined);
   assert.equal(h.fm(path).title,'BUY 2 ABC / TRANSFER');
  }
 });
@@ -415,3 +415,31 @@ async function seedExistingTransactions(h,records) {
   await h.app.vault.create(`Finances/Transactions/${record.financeId}.md`,'---\n'+JSON.stringify(fields)+'\n---\n');
  }
 }
+
+
+test('explicit classification uses one category property and preserves read compatibility with legacy overrides',async()=>{
+ const h=harness();await seedExistingTransactions(h,[tx]);
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),f=>{f.categoryOverride='Legacy';f.category='Current';});
+ assert.match((await h.store.readTransactionRecords('metadata'))[0].line,/\[categoryOverride:: Current\]/);
+ await h.store.updateTransactionMetadata(tx.financeId,'New category',['food']);
+ assert.equal(h.fm(path).category,'New category');assert.equal(h.fm(path).categoryOverride,undefined);
+ await h.store.updateTransactionMetadata(tx.financeId,'',[]);
+ assert.equal(h.fm(path).category,undefined);assert.equal(h.fm(path).categoryOverride,undefined);
+});
+
+
+test('reading and editing cleaned transactions never recreate retired provider or duplicate identity fields',async()=>{
+ const h=harness();await seedExistingTransactions(h,[tx]);
+ const removed=['financeId','financeAccountId','providerName','providerTitle','categoryOverride','pending'];
+ await h.app.fileManager.processFrontMatter(h.nodes.get(path),raw=>{for(const key of removed)delete raw[key];raw.title='BANK MARKET 1234';});
+ h.text.set(path,h.text.get(path)+'\nUser receipt body\n');
+ const before=h.text.get(path);let writes=0;const process=h.app.fileManager.processFrontMatter;
+ h.app.fileManager.processFrontMatter=async(...args)=>{writes++;return process(...args)};
+ for(let i=0;i<20;i++){const records=await h.store.readTransactionRecords('metadata');assert.equal(records.length,1);assert.match(records[0].line,/\[financeId:: local-1\]/);}
+ assert.equal(writes,0);assert.equal(h.text.get(path),before);
+ await h.store.updateTransactionMetadata(tx.financeId,'Food',['food']);
+ const [change]=await h.store.reviewTransactionTitles();assert.ok(change);await h.store.applyTransactionTitle(change);
+ const current=h.fm(path);for(const key of removed)assert.equal(current[key],undefined,key);
+ assert.equal(current.id,tx.financeId);assert.equal(current.account,'[[Finances/Accounts/Checking]]');assert.equal(current.category,'Food');assert.equal(current.title,'Market');
+ assert.match(h.text.get(path),/User receipt body/);assert.equal(writes,2,'only the two explicit edits write');
+});

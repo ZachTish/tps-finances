@@ -572,11 +572,11 @@ export default class TPSFinancesPlugin extends Plugin {
       sourcePaths?.add(file.path);
       if (accountLabels) {
         const institution = String(frontmatter.institution || "");
-        const name = String(frontmatter.accountName || frontmatter.title || file.basename);
+        const name = String(frontmatter.title || frontmatter.accountName || file.basename);
         const mask = String(frontmatter.accountMask || "");
         accountLabels.set(file.path.replace(/\.md$/i, ""), {
-          display: `${name}${mask ? ` •${mask}` : ""}`,
-          search: [institution, name, mask, file.basename].filter(Boolean).join(" "),
+          display: `${name}${mask && !name.endsWith(`•${mask}`) ? ` •${mask}` : ""}`,
+          search: [institution, name, frontmatter.accountName, mask, file.basename].filter(Boolean).join(" "),
         });
       }
       const id = String(frontmatter.financeAccountId || "");
@@ -587,7 +587,7 @@ export default class TPSFinancesPlugin extends Plugin {
         providerAccountId: "",
         localItemId: "",
         institutionName: String(frontmatter.institution || ""),
-        name: String(frontmatter.accountName || frontmatter.title || file.basename),
+        name: String(frontmatter.title || frontmatter.accountName || file.basename),
         officialName: "",
         mask: String(frontmatter.accountMask || ""),
         type: String(frontmatter.accountType || ""),
@@ -608,6 +608,10 @@ export default class TPSFinancesPlugin extends Plugin {
   }
 
   private parseSnapshotHoldings(snapshot: StoredFinanceSnapshot | null, accounts: FinanceAccount[], sourcePaths?: Set<string>, files?: DashboardFileSnapshot): FinanceHolding[] {
+    const pathToId = new Map<string, string>();
+    for (const account of accounts) {
+      if (account.path) pathToId.set(account.path.replace(/\.md$/i, ""), account.financeAccountId);
+    }
     const notes=(files?.files ?? this.app.vault.getMarkdownFiles()).filter(file=>file.path.startsWith(financePrefix(this.settings.financeFolder, "Holdings")))
       .map(file => {
         const fm = files?.fields(file) ?? financeProperties(this.app).cache(this.app, file) ?? {};
@@ -615,14 +619,10 @@ export default class TPSFinancesPlugin extends Plugin {
         return fm;
       }).filter(fm=>fm.type==="holding");
     if(notes.length) return notes.filter(fm=>fm.active===true).map(fm=>({
-      financeAccountId:String(fm.financeAccountId),securityId:String(fm.securityId),name:String(fm.name||""),ticker:String(fm.ticker||""),type:String(fm.holdingType||""),quantity:Number(fm.quantity)||0,price:Number(fm.price)||0,value:Number(fm.value)||0,costBasis:atomicNumber(fm.costBasis),currency:String(fm.currency||"USD"),asOf:String(fm.asOf||""),stale:fm.stale===true
+      financeAccountId:fm.account ? pathToId.get(wikilinkTarget(String(fm.account)).replace(/\.md$/i, "")) || "" : String(fm.financeAccountId || ""),securityId:String(fm.securityId),name:String(fm.name||""),ticker:String(fm.ticker||""),type:String(fm.holdingType||""),quantity:Number(fm.quantity)||0,price:Number(fm.price)||0,value:Number(fm.value)||0,costBasis:atomicNumber(fm.costBasis),currency:String(fm.currency||"USD"),asOf:String(fm.asOf||""),stale:fm.stale===true
     }));
 
     if (!snapshot) return [];
-    const pathToId = new Map<string, string>();
-    for (const account of accounts) {
-      if (account.path) pathToId.set(account.path.replace(/\.md$/i, ""), account.financeAccountId);
-    }
     const accountCurrency = new Map(accounts.map((account) => [account.financeAccountId, account.currency]));
     return snapshot.lines.filter((line) => line.includes("[type:: holdingSnapshot]")).map((line) => {
       const accountPath = wikilinkTarget(field(line, "account"));

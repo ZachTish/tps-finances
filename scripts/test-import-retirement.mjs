@@ -47,3 +47,14 @@ test('provider transaction batches and their source formatter are absent',()=>{
  assert.match(source,/async migrateLegacyTransactionLedgers/);
  assert.match(source,/async updateTransactionMetadata/);
 });
+
+
+test('retired provider transaction updates cannot be reached by an explicit legacy conversion',()=>{
+ const atomic=readFileSync('src/atomic-finance-store.ts','utf8');
+ const titles=readFileSync('src/transaction-titles.ts','utf8');
+ const properties=readFileSync('src/transaction-properties.ts','utf8');
+ assert.doesNotMatch(atomic,/providerTransactionFields|absentProviderProperties|private async put\(/);
+ assert.doesNotMatch(titles,/providerTransactionFields/);
+ assert.doesNotMatch(properties,/compactTransactionProperties|absentProviderProperties/);
+ assert.match(atomic,/private async createMigrationNote/);
+});

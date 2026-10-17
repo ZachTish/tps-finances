@@ -234,7 +234,7 @@ test('existing accounts, transactions and holdings use configured properties in 
  await seedExistingTransactions(h, [tx], paths);
  await h.store.updateTransactionMetadata('tx1','Dining',['food']);
  await h.app.fileManager.processFrontMatter(h.files.get('tx1.md'),raw=>{raw.receipt='keep';});h.contents.set('tx1.md',h.contents.get('tx1.md')+'Receipt body\n');
- assert.equal(h.fm('tx1.md')['custom amount'],-5);assert.equal(h.fm('tx1.md')['custom categoryOverride'],'Dining');assert.deepEqual(h.fm('tx1.md')['custom tags'],['food']);assert.equal(h.fm('tx1.md').receipt,'keep');assert.match(h.contents.get('tx1.md'),/Receipt body/);
+ assert.equal(h.fm('tx1.md')['custom amount'],-5);assert.equal(h.fm('tx1.md')['custom category'],'Dining');assert.equal(h.fm('tx1.md')['custom categoryOverride'],undefined);assert.deepEqual(h.fm('tx1.md')['custom tags'],['food']);assert.equal(h.fm('tx1.md').receipt,'keep');assert.match(h.contents.get('tx1.md'),/Receipt body/);
  assert.equal((await h.store.readTransactionRecords()).length,1);
  await seedExistingHolding(h, paths);
  assert.equal(h.fm('ABC — Bank Checking •1234.md')['custom type'],'holding');assert.equal(h.fm('ABC — Bank Checking •1234.md')['custom title'],'ABC — Bank Checking •1234');assert.equal(h.fm(paths.get('account1'))['custom accountType'],'depository');
@@ -436,7 +436,7 @@ test('classification never writes a missing atomic transaction into an inline no
  await assert.rejects(save(),/The transaction could not be found\./);
  assert.deepEqual({reads,writes},{reads:0,writes:0});assert.equal(h.contents.get('Day.md'),original);
  await h.add('Cash.md',{financeId:'atomic-manual',type:'transaction',financeSource:'manual',account:'[[Checking]]',date:'2026-09-20',amount:-3,currency:'USD'});
- await save('atomic-manual');assert.equal(h.fm('Cash.md').categoryOverride,'Food');assert.deepEqual(h.fm('Cash.md').tags,['cash']);
+ await save('atomic-manual');assert.equal(h.fm('Cash.md').category,'Food');assert.deepEqual(h.fm('Cash.md').tags,['cash']);
  assert.equal(h.contents.get('Day.md'),original);
 });
 const classificationFields=(financeId,extra={})=>({financeId,type:'transaction',date:'2026-09-20',account:'[[Checking]]',amount:-3,currency:'USD',...extra});
@@ -467,7 +467,7 @@ test('atomic-only classification targets one rendered file without reading 10,00
  h.app.vault.process=async(...args)=>{legacyWrites++;return process(...args)};
  const saveStarted=performance.now();await classificationSave(p.plugin,row);const saveMs=performance.now()-saveStarted;
  assert.deepEqual({scans,metadata,cached,fresh,frontmatterWrites,legacyWrites},{scans:0,metadata:0,cached:0,fresh:0,frontmatterWrites:1,legacyWrites:0});
- assert.equal(h.fm(row.sourcePath).categoryOverride,'Food');assert.deepEqual(h.fm(row.sourcePath).tags,['cash']);
+ assert.equal(h.fm(row.sourcePath).category,'Food');assert.deepEqual(h.fm(row.sourcePath).tags,['cash']);
  assert.equal(h.fm('Transactions/tx-5001.md').categoryOverride,undefined);
  scans=metadata=cached=fresh=frontmatterWrites=legacyWrites=0;
  const refreshStarted=performance.now();const refreshed=await p.plugin.getDashboardModel(new Set(),'metadata');const refreshMs=performance.now()-refreshStarted;
@@ -572,7 +572,7 @@ test('rendered manual cash classification uses the same atomic-only target',asyn
  let scans=0,reads=0;const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead;
  h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};h.app.vault.cachedRead=async target=>{reads++;return cachedRead(target)};
  await classificationSave(p.plugin,row);
- assert.deepEqual({scans,reads},{scans:0,reads:0});assert.equal(h.fm(file.path).categoryOverride,'Food');
+ assert.deepEqual({scans,reads},{scans:0,reads:0});assert.equal(h.fm(file.path).category,'Food');
 });
 test('atomic-only classification keeps the ID lookup for a plain dashboard row',async()=>{
  const h=harness(),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
@@ -581,7 +581,7 @@ test('atomic-only classification keeps the ID lookup for a plain dashboard row',
  let scans=0,reads=0;const getMarkdownFiles=h.app.vault.getMarkdownFiles,cachedRead=h.app.vault.cachedRead;
  h.app.vault.getMarkdownFiles=()=>{scans++;return getMarkdownFiles()};h.app.vault.cachedRead=async file=>{reads++;return cachedRead(file)};
  await classificationSave(p.plugin,plain);
- assert.deepEqual({scans,reads},{scans:1,reads:1});assert.equal(h.fm('Selected.md').categoryOverride,'Food');
+ assert.deepEqual({scans,reads},{scans:1,reads:1});assert.equal(h.fm('Selected.md').category,'Food');
 });
 test('atomic-only classification rejects a same-path replacement after render or modal open',async()=>{
  for(const replaceAfterModal of [false,true]){
@@ -634,14 +634,14 @@ test('nonstring YAML array tags do not break displayed classification or its wri
  await h.add('Selected.md',classificationFields('mixed-tags',{tags:[42,null]}));
  const row=await displayedTransaction(h,p,'mixed-tags');assert.deepEqual(row.manualTags,['#42','#null']);
  await classificationSave(p.plugin,row,'Food',['receipt']);
- assert.equal(h.fm('Selected.md').categoryOverride,'Food');assert.deepEqual(h.fm('Selected.md').tags,['receipt']);
+ assert.equal(h.fm('Selected.md').category,'Food');assert.deepEqual(h.fm('Selected.md').tags,['receipt']);
 });
 test('path-bound classification honors mapped category and scalar tag property names',async()=>{
  const properties=mapped(),h=harness(properties),p=pluginHarness(h);await p.plugin.reviewLegacyTransactionMarkers();
  await h.add('Selected.md',properties.write(classificationFields('mapped',{tags:'cash, receipt'})));
  const row=await displayedTransaction(h,p,'mapped');assert.deepEqual(row.manualTags,['#cash','#receipt']);
  await classificationSave(p.plugin,row,'Food',['receipt']);
- assert.equal(h.fm('Selected.md')[properties.key('categoryOverride')],'Food');
+ assert.equal(h.fm('Selected.md')[properties.key('category')],'Food');assert.equal(h.fm('Selected.md')[properties.key('categoryOverride')],undefined);
  assert.deepEqual(h.fm('Selected.md')[properties.key('tags')],['receipt']);
 });
 test('path-bound classification updates only the selected duplicate; full ID reads still reject duplicates',async()=>{
@@ -649,7 +649,7 @@ test('path-bound classification updates only the selected duplicate; full ID rea
  await h.add('Selected.md',classificationFields('same'));const row=await displayedTransaction(h,p,'same');
  await h.add('Duplicate.md',classificationFields('same'));
  await classificationSave(p.plugin,row);
- assert.equal(h.fm('Selected.md').categoryOverride,'Food');assert.equal(h.fm('Duplicate.md').categoryOverride,undefined);
+ assert.equal(h.fm('Selected.md').category,'Food');assert.equal(h.fm('Duplicate.md').categoryOverride,undefined);
  await assert.rejects(p.plugin.createStore().readTransactionRecords(),/Duplicate atomic transaction identity/);
 });
 test('inline entries do not appear as dashboard classification targets',async()=>{

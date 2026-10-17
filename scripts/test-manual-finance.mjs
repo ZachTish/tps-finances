@@ -24,7 +24,7 @@ test('manual accounts and one-note transfers use configured primary IDs and pres
  assert.ok(walletId);assert.ok(safeId);assert.notEqual(walletId,safeId);
  for(const account of [wallet,safe]){assert.equal(h.fm(account.path).financeAccountId,undefined);assert.equal(h.fm(account.path).id,undefined);assert.equal(h.fm(account.path).wrongSavedKey,undefined);}
  const transfer=await h.store.createCashEntry({...entry,accountPath:wallet.path,kind:'transfer-out',counterpart:safe.path});
- const fields=h.fm(transfer.path);assert.ok(fields.recordId);assert.equal(fields.financeId,undefined);assert.equal(fields.financeAccountId,walletId);assert.equal(fields.account,`[[${wallet.path.replace(/\.md$/,'')}]]`);assert.equal(fields.transferAccount,`[[${safe.path.replace(/\.md$/,'')}]]`);
+ const fields=h.fm(transfer.path);assert.ok(fields.recordId);assert.equal(fields.financeId,undefined);assert.equal(fields.financeAccountId,undefined);assert.equal(fields.account,`[[${wallet.path.replace(/\.md$/,'')}]]`);assert.equal(fields.transferAccount,`[[${safe.path.replace(/\.md$/,'')}]]`);
  assert.equal((await h.atomic.readTransactionRecords('metadata')).length,1);assert.equal(h.app.vault.getMarkdownFiles().length,3);
  const asset=await h.store.createAccount({...input,kind:'asset',name:'Car',purchaseTransaction:transfer.path});
  const before=h.fm(asset.path);await h.store.updateValue(asset.path,90,'2026-09-14');
@@ -127,7 +127,7 @@ test('single cash transfer conserves net worth in both directions',()=>{for(cons
 test('provider balances and transactions never become manual adjustments',()=>{const a=[wallet(),{path:'Bank.md',type:'depository',currency:'USD',current:1000}];applyManualCashBalances(a,[tx(50,{transferAccount:'[[Bank]]',subtype:'transfer-in'}),tx(-50,{manual:false,accountPath:'Bank'})]);assert.equal(a[0].current,150);assert.equal(a[1].current,1000);});
 test('assets add their current value once; linked debt remains separate',()=>{const a=[{manual:true,type:'other',currency:'USD',current:300000,liabilityAccount:'[[Mortgage]]'},{type:'loan',currency:'USD',current:-200000}];assert.deepEqual(accountSummaries(a,[])[0],{currency:'USD',netWorth:100000,cash:0,investments:0,debt:200000,assets:300000});});
 test('invalid ledgers fail rather than displaying a manufactured balance',()=>{assert.throws(()=>applyManualCashBalances([wallet()], [tx(NaN)]),/invalid/);assert.throws(()=>applyManualCashBalances([wallet()], [tx(1,{currency:'EUR'})]),/currency/);assert.throws(()=>applyManualCashBalances([wallet()], [tx(1,{accountPath:'Missing'})]),/missing/);assert.throws(()=>applyManualCashBalances([wallet('Wallet',NaN)], []),/opening balance/);});
-test('creates atomic cash account and transaction with normalized tags and no cached current',async()=>{const h=harness(),account=await h.store.createAccount(input);assert.equal(h.fm(account.path).openingBalance,100);assert.equal(h.fm(account.path).current,undefined);const f=await h.store.createCashEntry({...entry,accountPath:account.path});assert.equal(h.fm(f.path).amount,-12.5);assert.deepEqual(h.fm(f.path).tags,['food']);assert.equal(h.fm(f.path).categoryOverride,'Food');const records=await h.atomic.readTransactionRecords();assert.equal(records.length,1);assert.match(records[0].line,/financeSource:: manual/);});
+test('creates atomic cash account and transaction with normalized tags and no cached current',async()=>{const h=harness(),account=await h.store.createAccount(input);assert.equal(h.fm(account.path).openingBalance,100);assert.equal(h.fm(account.path).current,undefined);const f=await h.store.createCashEntry({...entry,accountPath:account.path});assert.equal(h.fm(f.path).amount,-12.5);assert.deepEqual(h.fm(f.path).tags,['food']);assert.equal(h.fm(f.path).category,'Food');assert.equal(h.fm(f.path).categoryOverride,undefined);const records=await h.atomic.readTransactionRecords();assert.equal(records.length,1);assert.match(records[0].line,/financeSource:: manual/);});
 test('account validation reads file contents even when metadata cache is stale',async()=>{const h=harness(),account=await h.store.createAccount(input);h.app.metadataCache.getFileCache=()=>({});await h.store.createCashEntry({...entry,accountPath:account.path});assert.equal(h.app.vault.getMarkdownFiles().length,2);});
 test('transfer rejects self, missing counterpart, foreign currency, and resale asset',async()=>{const h=harness(),a=await h.store.createAccount(input),eur=await h.store.createAccount({...input,name:'EUR',currency:'EUR'}),asset=await h.store.createAccount({...input,name:'Car',kind:'asset'});for(const counterpart of ['',a.path,eur.path,asset.path])await assert.rejects(h.store.createCashEntry({...entry,accountPath:a.path,kind:'transfer-out',counterpart}));});
 test('valid transfer persists one note and links both accounts',async()=>{const h=harness(),a=await h.store.createAccount(input),b=await h.store.createAccount({...input,name:'Safe'});const f=await h.store.createCashEntry({...entry,accountPath:a.path,kind:'transfer-out',counterpart:b.path});assert.equal(h.fm(f.path).subtype,'transfer-out');assert.equal((await h.atomic.readTransactionRecords()).length,1);assert.match((await h.atomic.readTransactionRecords())[0].line,/transferAccount:: \[\[/);});
@@ -143,4 +143,22 @@ test('root manual cash and resale assets create flat notes and readable transact
  assert.ok([...h.nodes.values()].every(n=>n instanceof File));
  assert.equal((await atomic.readTransactionRecords()).length,1);
  await store.updateValue(asset.path,90,'2026-09-16');assert.equal(h.fm(asset.path).current,90);
+});
+
+test('manual creation omits redundant identity, duplicate name, false pending and empty optional properties',async()=>{
+ const h=harness(),account=await h.store.createAccount(input);
+ const accountFields=h.fm(account.path);assert.equal(accountFields.accountName,undefined,'title owns the manual account name');
+ const asset=await h.store.createAccount({...input,kind:'asset',name:'Asset'});assert.equal(h.fm(asset.path).purchaseTransaction,undefined);assert.equal(h.fm(asset.path).liabilityAccount,undefined);
+ const file=await h.store.createCashEntry({...entry,accountPath:account.path,category:'',tags:[],counterpart:'',linkedTransaction:''});
+ const fields=h.fm(file.path);
+ for(const key of ['financeId','financeAccountId','pending','categoryOverride','category','tags','transferAccount','linkedTransaction'])assert.equal(fields[key],undefined,key);
+ assert.ok(fields.id);assert.equal(fields.account,`[[${account.path.replace(/\.md$/,'')}]]`);
+ assert.equal((await h.atomic.readTransactionRecords('metadata')).length,1);
+});
+
+test('manual categories use the shared configured category field and remain readable without foreign IDs',async()=>{
+ const h=harness();h.app.plugins={plugins:{'tps-finances':{settings:{propertyNames:{keys:{category:'group'}}}}}};
+ const account=await h.store.createAccount(input),file=await h.store.createCashEntry({...entry,accountPath:account.path});
+ assert.equal(h.fm(file.path).group,'Food');assert.equal(h.fm(file.path).categoryOverride,undefined);assert.equal(h.fm(file.path).financeAccountId,undefined);
+ assert.match((await h.atomic.readTransactionRecords('metadata'))[0].line,/\[categoryOverride:: Food\]/);
 });

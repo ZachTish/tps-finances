@@ -9,19 +9,6 @@ export function transactionTitle(name: string, merchant: string, type: string): 
     || (type === "investmentTransaction" ? "Investment transaction" : "Transaction");
 }
 
-/** Re-evaluate against current frontmatter inside the atomic write callback. */
-export function providerTransactionFields(incoming: Fields, current: Fields): Fields {
-  const { categoryOverride, tags, ...fields } = incoming;
-  if (current.financeSource === "manual") throw new Error("Imported transaction conflicts with a manual transaction.");
-  const tracked = typeof current.providerTitle === "string";
-  const mayUpdate = tracked
-    ? current.title === current.providerTitle
-    : current.title === incoming.providerName;
-  // Unknown legacy titles and user edits stay unchanged until explicitly reviewed.
-  if (!mayUpdate) fields.title = current.title;
-  return fields;
-}
-
 export interface TransactionTitleChange {
   path: string;
   financeId: string;
