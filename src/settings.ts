@@ -140,7 +140,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       this.propertyDraft = { ...this.propertyBaseline.names.keys };
     }
     new Setting(parent).setName("Property names")
-      .setDesc("Choose Finance field names. The toggle beside a field stores its current name explicitly; turning it off restores the default. Global Context Menu owns record classification, Scheduled and record IDs. Renames ask whether to update existing notes; stable ID values stay unchanged.")
+      .setDesc("Choose Finance field names. The toggle stores a name explicitly; turning it off restores the default name, not whether the field is written. Optional empty fields are omitted by their creation/edit action. Global Context Menu owns record classification, Scheduled and record IDs. Renames ask whether to update existing notes; stable ID values stay unchanged.")
       .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
         button.setDisabled(true);
         try {
@@ -183,6 +183,8 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       const field = new Setting(parent).setName(propertyLabel(key));
       if (key === "category") field.setDesc("Shared saved category for transactions, rules and budgets.");
       if (key === "categoryOverride") field.setDesc("Reads older transaction categories. New manual categories use category in Common.");
+      if (key === "accountName") field.setDesc("Reads older account names. New manual accounts use title without a second name field.");
+      if (["providerName", "providerTitle", "providerCategory", "providerCategoryDetail"].includes(key)) field.setDesc("Reads imported provider data. The importing app controls which provider fields it writes; Finance does not import or add them.");
       if (key === "type" && gcmKinds?.version === 2) field.setDesc("Reads older records and distinguishes transaction kinds that share one list value. Finances omits it when the configured kind values differ.");
       field.addText(text => {
         text.setValue(this.propertyDraft![key] ?? key).onChange(value => {

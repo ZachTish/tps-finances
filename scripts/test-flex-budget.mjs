@@ -60,6 +60,20 @@ function harness(root=''){
  return {app,files,text,fm,store:new FinanceStore(app,root),create:async(p,fields,body='\nBody')=>app.vault.create(p,'---\n'+JSON.stringify(fields)+'\n---'+body),stale:()=>stale=true,fail:()=>fail=true};
 }
 test('budget create and immediate read work at vault root with a stale metadata cache',async()=>{const h=harness();h.stale();await h.create('Unrelated.md',{title:'Unrelated'});const file=await h.store.saveBudgetEntry(budget('Flexible','flex',100));assert.equal(file.path,'Flexible.md');for(const source of ['metadata','source']){const rows=await h.store.readBudgetEntries(undefined,source);assert.equal(rows.length,1);assert.equal(rows[0].bucket,'flex');assert.equal(rows[0].monthlyLimit,100);}});
+test('budget creation omits empty category and account fields without changing readback',async()=>{
+ const h=harness();const file=await h.store.saveBudgetEntry(budget('Flexible','flex',0));
+ assert.ok(!Object.hasOwn(h.fm(file.path),'category'));assert.ok(!Object.hasOwn(h.fm(file.path),'accounts'));
+ const [row]=await h.store.readBudgetEntries();assert.equal(row.category,'');assert.deepEqual(row.accounts,[]);assert.equal(row.monthlyLimit,0);assert.equal(row.bucket,'flex');
+});
+test('budget edit clears owned optional fields while retaining identity, unrelated fields, body and revision guard',async()=>{
+ const h=harness();await h.create('Save.md',{financeAccountId:'save',accountType:'depository',currency:'USD'});
+ await h.create('Plan.md',{financeBudgetId:'goal',kind:'financeBudget',title:'Goal',bucket:'savings',category:'Old',accounts:['[[Save]]'],monthlyLimit:100,currency:'USD',custom:'keep'},'\nAuthored body');
+ const [row]=await h.store.readBudgetEntries();await h.store.saveBudgetEntry({...row,bucket:'income',category:'',accounts:[]},row);
+ const saved=h.fm('Plan.md');for(const key of ['category','accounts'])assert.ok(!Object.hasOwn(saved,key));
+ assert.equal(saved.financeBudgetId,'goal');assert.equal(saved.custom,'keep');assert.match(h.text.get('Plan.md'),/Authored body/);
+ const [updated]=await h.store.readBudgetEntries();assert.equal(updated.category,'');assert.deepEqual(updated.accounts,[]);
+ await assert.rejects(h.store.saveBudgetEntry({...row,monthlyLimit:200},row),/changed while/);
+});
 test('legacy category budget notes remain readable without conversion',async()=>{const h=harness();await h.create('Old.md',{kind:'financeBudget',title:'Groceries',category:'food',monthlyLimit:200});const [row]=await h.store.readBudgetEntries();assert.equal(row.bucket,'category');assert.equal(row.currency,'USD');assert.equal(row.id,'Old.md');});
 test('editing respects direct changes, canonicalizes account links, and preserves custom metadata and body',async()=>{const h=harness();await h.create('Accounts/Save.md',{financeAccountId:'save',accountType:'depository',currency:'USD'});await h.create('Plan.md',{financeBudgetId:'goal',title:'Goal',kind:'custom-kind',bucket:'savings',monthlyLimit:100,currency:'USD',accounts:'[[Save|My savings]]',custom:42},'\nReceipt body');const [row]=await h.store.readBudgetEntries();assert.deepEqual(row.accounts,['[[Accounts/Save]]']);await h.store.saveBudgetEntry({...row,monthlyLimit:150},row);assert.equal(h.fm('Plan.md').monthlyLimit,150);assert.equal(h.fm('Plan.md').custom,42);assert.equal(h.fm('Plan.md').kind,'custom-kind');assert.match(h.text.get('Plan.md'),/Receipt body/);await assert.rejects(h.store.saveBudgetEntry({...row,monthlyLimit:200},row),/changed while/);});
 test('save rejects missing or incompatible contribution accounts before creating a goal',async()=>{const h=harness();await assert.rejects(h.store.saveBudgetEntry(budget('Goal','savings',100,{accounts:['[[Missing]]']})),/moved or was deleted/);await h.create('Debt.md',{financeAccountId:'debt',accountType:'credit',currency:'USD'});await assert.rejects(h.store.saveBudgetEntry(budget('Goal','savings',100,{accounts:['[[Debt]]']})),/existing savings/);assert.equal(h.files.size,1);});

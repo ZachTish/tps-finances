@@ -21,6 +21,21 @@ const account={financeAccountId:'account1',name:'Checking',institutionName:'Bank
 const holding={financeAccountId:'account1',securityId:'ABC',name:'Fund',ticker:'ABC',type:'equity',quantity:2,price:50,value:100,costBasis:90,currency:'USD'};
 const state={providerIdentityMap:{'transaction:provider1':'tx1'}};
 
+test('rule creation omits unset criteria and actions while preserving zero limits, disabled state and mapped names',async()=>{
+ for(const properties of [new FinanceProperties(),mapped()]){
+  const h=harness(properties);
+  const file=await h.store.createRule({id:'lean-rule',name:'Lean rule',enabled:false,priority:0,accountContains:'',nameContains:'Coffee',merchantContains:'',minAmount:0,maxAmount:null,category:'Food',tags:[]});
+  const raw=h.fm(file.path),key=k=>properties.key(k);
+  for(const absent of ['accountContains','merchantContains','maxAmount','tags'])assert.ok(!Object.hasOwn(raw,key(absent)),absent);
+  assert.equal(raw[key('minAmount')],0);assert.equal(raw[key('priority')],0);assert.equal(raw[key('enabled')],false);
+  assert.equal(raw[key('nameContains')],'Coffee');assert.equal(raw[key('category')],'Food');
+  const [rule]=h.store.readRules();assert.equal(rule.id,'lean-rule');assert.equal(rule.enabled,false);assert.equal(rule.minAmount,0);assert.equal(rule.maxAmount,null);assert.deepEqual(rule.tags,[]);
+  const tagsOnly=await h.store.createRule({id:'tags-rule',name:'Tag rule',enabled:true,priority:100,accountContains:'',nameContains:'',merchantContains:'',minAmount:null,maxAmount:0,category:'',tags:['#review']});
+  assert.ok(!Object.hasOwn(h.fm(tagsOnly.path),key('category')));assert.deepEqual(h.fm(tagsOnly.path)[key('tags')],['#review']);assert.equal(h.fm(tagsOnly.path)[key('maxAmount')],0);
+  assert.equal(h.store.readRules().length,2);
+ }
+});
+
 function configurePrimaryIdentity(h, key='recordId', kinds) {
  h.app.plugins.plugins['tps-global-context-menu']={
   settings:{nativeRecordIdentityPropertyKey:'misleadingSavedKey'},

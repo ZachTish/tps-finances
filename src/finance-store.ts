@@ -157,8 +157,17 @@ export class FinanceStore {
 
   async createRule(rule: FinanceRule): Promise<TFile> {
     const path = this.uniquePath(financePath(this.rootFolder, "Rules", `${safeName(rule.name)}.md`));
-    const body = `---\ntitle: ${yamlString(rule.name)}\nkind: financeRule\nfinanceRuleId: ${yamlString(rule.id)}\nenabled: ${rule.enabled ? "true" : "false"}\npriority: ${rule.priority}\naccountContains: ${yamlString(rule.accountContains)}\nnameContains: ${yamlString(rule.nameContains)}\nmerchantContains: ${yamlString(rule.merchantContains)}\nminAmount: ${rule.minAmount == null ? "null" : decimal(rule.minAmount)}\nmaxAmount: ${rule.maxAmount == null ? "null" : decimal(rule.maxAmount)}\ncategory: ${yamlString(rule.category)}\ntags: ${JSON.stringify(normalizeTags(rule.tags))}\n---\n`;
-    return this.app.vault.create(path, financeProperties(this.app).note(body));
+    const tags = normalizeTags(rule.tags);
+    const fields = {
+      title: rule.name, kind: "financeRule", financeRuleId: rule.id, enabled: rule.enabled, priority: rule.priority,
+      ...(rule.accountContains ? { accountContains: rule.accountContains } : {}),
+      ...(rule.nameContains ? { nameContains: rule.nameContains } : {}),
+      ...(rule.merchantContains ? { merchantContains: rule.merchantContains } : {}),
+      ...(rule.minAmount != null ? { minAmount: Number(decimal(rule.minAmount)) } : {}),
+      ...(rule.maxAmount != null ? { maxAmount: Number(decimal(rule.maxAmount)) } : {}),
+      ...(rule.category ? { category: rule.category } : {}), ...(tags.length ? { tags } : {}),
+    };
+    return this.app.vault.create(path, `---\n${stringifyYaml(financeProperties(this.app).write(fields))}---\n`);
   }
 
   async createBudget(budget: FinanceBudget): Promise<TFile> {
@@ -237,8 +246,10 @@ export class FinanceStore {
         }
       }
     }
+    const category = budget.category.trim(), accounts = budget.accounts || [];
     const fields = { title:budget.name.trim(), financeBudgetId:budget.id, bucket:budgetBucket(budget),
-      category:budget.category.trim(), monthlyLimit:budget.monthlyLimit, currency:budgetCurrency(budget), accounts:budget.accounts || [] };
+      monthlyLimit:budget.monthlyLimit, currency:budgetCurrency(budget),
+      ...(category ? {category} : {}), ...(accounts.length ? {accounts} : {}) };
     if (original?.sourcePath) {
       const file = this.app.vault.getAbstractFileByPath(original.sourcePath);
       if (!(file instanceof TFile)) throw new Error("The budget note moved or was deleted. Reopen it and try again.");
@@ -246,6 +257,8 @@ export class FinanceStore {
         if (!original.revision || budgetRevision(fm) !== original.revision) {
           throw new Error("The budget changed while you were editing. Reopen it to keep the newer values.");
         }
+        if (!category) delete fm.category;
+        if (!accounts.length) delete fm.accounts;
         Object.assign(fm,fields); // Preserve custom properties, tags, kind and the note body.
       });
       return file;
