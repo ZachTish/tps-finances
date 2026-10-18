@@ -1,5 +1,9 @@
 # TPS Finances
 
+## 7.0.1 — Keep unrelated kinds outside Finance decoding
+
+Vault-root dashboards now check the configured Finance kinds and explicit legacy Finance identities before requesting a single-record classification. Valid multi-kind daily notes are left alone; genuine Finance classification/identity errors still fail explicitly. This corrects a pre-existing root reader failure without changing notes, mappings, defaults or settings controls. A 4,049-unrelated-note dashboard regression verifies zero unrelated authoritative classifications, zero raw/cached reads and zero writes while real accounts/transactions remain visible; legacy Finance conflicts remain strict. Validation and artifact hashes are in [7.0.1 release notes](release-notes/7.0.1.md). No new service, state store, scan or repair loop. All 344 tests pass. Installed test-vault QA reproduced the ambiguity through actual GCM and confirmed one account/transaction still loads with zero raw/cached reads, zero writes and unchanged saved settings. The check uses a synthetic scoped Finance folder; the 4,049-note regression covers root inventory in the test harness. No physical iPhone acceptance is claimed.
+
 ## 7.0.0 — Lean manual finance notes and one saved category
 
 This storage-contract release reduces fields at their existing creation/edit owners. New manual accounts use their configured title without duplicating it in accountName. Account display prefers that title, appends its account mask only when absent from the title, and still includes legacy accountName in search. New manual transactions store the account wikilink without a duplicate financeAccountId foreign key; the existing codec continues to map their own ID into GCM's configured primary property. New entries omit pending:false, blank category/tags and empty transfer/linked-transaction fields. Manual assets omit empty purchase/liability links. Required cash and transfer semantics are unchanged.

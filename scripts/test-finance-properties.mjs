@@ -1132,3 +1132,17 @@ async function seedExistingTransactions(h,records,paths) {
   }));
  }
 }
+
+test('root dashboard excludes unrelated multi-kind notes before authoritative domain decoding',async()=>{
+ const h=harness(),codec=configurableListCodec();let unrelatedDecodes=0,financeDecodes=0;const decode=codec.decode;
+ codec.decode=(fields,hint)=>{if(Array.isArray(fields.kind)&&fields.kind.includes('note')&&fields.kind.includes('entity')){unrelatedDecodes++;throw Error('Ambiguous frontmatter kind classification.');}financeDecodes++;return decode(fields,hint);};
+ h.app.plugins.plugins['tps-global-context-menu']={api:{frontmatterKinds:codec,nativeRecords:{getStorageProfile:()=>({identityMode:'property',identityPropertyKey:'id'})}}};
+ const plugin=new FinancePlugin(h.app);plugin.settings={financeFolder:'',propertyNames:{keys:{}}};h.app.plugins.plugins['tps-finances']=plugin;
+ const paths=await seedExistingAccount(h);await seedExistingTransactions(h,[tx],paths);
+ for(let i=0;i<4049;i++)await h.add(`Daily-${i}.md`,{id:`day-${i}`,kind:['note','entity'],entityKind:'day'},'User daily body\n');
+ unrelatedDecodes=0;financeDecodes=0;let reads=0,writes=0;
+ h.app.vault.read=async()=>{reads++;throw Error('Unexpected raw read')};h.app.vault.cachedRead=async()=>{reads++;throw Error('Unexpected cached read')};h.app.vault.create=async()=>{writes++;throw Error('Unexpected write')};h.app.fileManager.processFrontMatter=async()=>{writes++;throw Error('Unexpected write')};
+ const model=await plugin.getDashboardModel(new Set(),'metadata');
+ assert.equal(model.accounts.length,1);assert.equal(model.transactions.length,1);assert.equal(unrelatedDecodes,0);assert.ok(financeDecodes>0);assert.deepEqual({reads,writes},{reads:0,writes:0});
+ assert.throws(()=>financeProperties(h.app).read({financeId:'legacy-finance',kind:['note','entity']}),/Ambiguous/,'an explicit legacy Finance identity still requires authoritative validation');
+});

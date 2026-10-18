@@ -317,6 +317,7 @@ export function financeKindCodec(api: KindCodec | undefined): KindCodec | undefi
   if (!api) return undefined;
   const canonical: Record<string, string> = { transaction: 'finance-transaction', investmentTransaction: 'investment-transaction', financeRule: 'finance-rule', financeBudget: 'finance-budget' };
   const original = Object.fromEntries(Object.entries(canonical).map(([from, to]) => [to, from]));
+  const financeKinds = ["account", "holding", "ledger", ...Object.values(canonical)];
   return {
     version: api.version,
     propertyKey: id => api.propertyKey?.(id) || null,
@@ -326,12 +327,17 @@ export function financeKindCodec(api: KindCodec | undefined): KindCodec | undefi
     encode: (fields, existing) => {
       const kind = canonical[fields.kind] || fields.kind;
       if (api.version === 2 && typeof kind === "string"
-        && ["account", "holding", "ledger", "finance-transaction", "investment-transaction", "finance-rule", "finance-budget"].includes(kind)
+        && financeKinds.includes(kind)
         && !api.definition(kind)) throw new Error(`Configure the ${kind} record classification in Global Context Menu before writing Finance notes.`);
       return api.encode(api.definition(kind) ? { ...fields, kind } : fields, existing);
     },
     decode: (fields, expectedKind) => {
       const hint = expectedKind && (canonical[expectedKind] || (api.definition(expectedKind) ? expectedKind : undefined));
+      // Root inventories also contain unrelated notes with multiple valid kinds.
+      // Only Finance candidates need an authoritative single-record classification.
+      if (!hint && api.version === 2 && api.matches
+        && !Object.keys(fields).some(key => /^finance(?:id|accountid|ruleid|budgetid)$/i.test(key))
+        && !financeKinds.some(kind => api.matches!(fields, kind))) return fields;
       let decoded: Fields;
       try {
         decoded = api.decode(fields, hint);
