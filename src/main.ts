@@ -49,7 +49,12 @@ export default class TPSFinancesPlugin extends Plugin {
     this.settingsWriter = new CoalescedSnapshotWriter({
       initialSnapshot: this.settings,
       readLatest: () => this.loadData(),
-      writeMerged: (value) => this.saveData(value),
+      writeMerged: (value) => {
+        delete value.plaidEnvironment;
+        delete value.oauthRedirectUri;
+        delete value.transactionHistoryDays;
+        return this.saveData(value);
+      },
       normalize: normalizeSettings,
       reconcile: (requested, persisted) => {
         this.settings = reconcilePersistedSnapshot(this.settings, requested, persisted);
@@ -716,11 +721,6 @@ function normalizeSettings(value: unknown): TPSFinancesSettings {
     recordMode: source.recordMode === "atomic-line" ? "atomic-line" : "atomic-note",
     legacyTransactionDiscovery: source.recordMode === "atomic-line" || source.legacyTransactionDiscovery === "discover" ? "discover" : "atomic-only",
     financeFolder: normalizeFinanceFolder(source.financeFolder, DEFAULT_SETTINGS.financeFolder),
-    plaidEnvironment: source.plaidEnvironment === "development" || source.plaidEnvironment === "production" ? source.plaidEnvironment : "sandbox",
-    plaidClientIdSecret: String(source.plaidClientIdSecret || DEFAULT_SETTINGS.plaidClientIdSecret).trim() || DEFAULT_SETTINGS.plaidClientIdSecret,
-    plaidSecretSecret: String(source.plaidSecretSecret || DEFAULT_SETTINGS.plaidSecretSecret).trim() || DEFAULT_SETTINGS.plaidSecretSecret,
-    oauthRedirectUri: String(source.oauthRedirectUri || "").trim(),
-    transactionHistoryDays: Math.max(30, Math.min(730, Number(source.transactionHistoryDays) || DEFAULT_SETTINGS.transactionHistoryDays)),
     enableLogging: source.enableLogging === true,
   };
 }

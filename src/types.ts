@@ -9,11 +9,6 @@ export interface TPSFinancesSettings {
   /** Upgrade review markers only. Neither value selects a runtime storage mode. */
   recordMode: "atomic-note" | "atomic-line";
   legacyTransactionDiscovery: "discover" | "atomic-only";
-  plaidEnvironment: PlaidEnvironment;
-  plaidClientIdSecret: string;
-  plaidSecretSecret: string;
-  oauthRedirectUri: string;
-  transactionHistoryDays: number;
   enableLogging: boolean;
 }
 
@@ -23,11 +18,6 @@ export const DEFAULT_SETTINGS: TPSFinancesSettings = {
   financeFolder: "Finances",
   recordMode: "atomic-note",
   legacyTransactionDiscovery: "atomic-only",
-  plaidEnvironment: "sandbox",
-  plaidClientIdSecret: "tps-finances-plaid-client-id",
-  plaidSecretSecret: "tps-finances-plaid-secret",
-  oauthRedirectUri: "",
-  transactionHistoryDays: 730,
   enableLogging: false,
 };
 

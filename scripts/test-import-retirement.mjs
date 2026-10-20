@@ -58,3 +58,25 @@ test('retired provider transaction updates cannot be reached by an explicit lega
  assert.doesNotMatch(properties,/compactTransactionProperties|absentProviderProperties/);
  assert.match(atomic,/private async createMigrationNote/);
 });
+
+
+test('retired importer preferences disappear on an ordinary save while credential references and provider state survive',async()=>{
+ const normalization=main.slice(main.indexOf('function normalizeSettings('),main.indexOf('function localDate('));
+ const writer=main.slice(main.indexOf('    this.settingsWriter = new CoalescedSnapshotWriter('),main.indexOf('    logger.setLoggingEnabled',main.indexOf('    this.settingsWriter = new CoalescedSnapshotWriter(')));
+ const source=`import {DEFAULT_SETTINGS} from './src/types'; import {CoalescedSnapshotWriter,reconcilePersistedSnapshot} from './src/settings-persistence';
+ const normalizePropertyNames=value=>value||{keys:{}};const normalizePropertyMigration=value=>value||null;const normalizeFinanceFolder=(value,fallback)=>value||fallback;
+ ${normalization}
+ export {DEFAULT_SETTINGS,normalizeSettings};export function initialize(){${writer}}`;
+ const result=await build({stdin:{contents:source,resolveDir:process.cwd(),loader:'ts'},bundle:true,write:false,platform:'node',format:'esm'});
+ const {DEFAULT_SETTINGS,normalizeSettings,initialize}=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));
+ const retired={plaidEnvironment:'production',oauthRedirectUri:'fixture://retired',transactionHistoryDays:500};
+ for(const key of [...Object.keys(retired),'plaidClientIdSecret','plaidSecretSecret'])assert.equal(Object.hasOwn(DEFAULT_SETTINGS,key),false,key);
+ let disk={...retired,plaidClientIdSecret:'existing-client-reference',plaidSecretSecret:'existing-secret-reference',enableLogging:false,deviceState:{items:[{cursor:'existing'}]},futureExtension:{keep:true}};
+ const original=structuredClone(disk);let writes=0;
+ const host={settings:normalizeSettings(disk),loadData:async()=>structuredClone(disk),saveData:async value=>{writes++;disk=structuredClone(value);}};
+ initialize.call(host);await host.settingsWriter.save(host.settings);assert.equal(writes,0);assert.deepEqual(disk,original);
+ disk.futureExtension.concurrent=true;host.settings.enableLogging=true;await host.settingsWriter.save(host.settings);
+ assert.equal(writes,1);for(const key of Object.keys(retired))assert.equal(Object.hasOwn(disk,key),false,key);
+ assert.equal(disk.plaidClientIdSecret,'existing-client-reference');assert.equal(disk.plaidSecretSecret,'existing-secret-reference');
+ assert.deepEqual(disk.deviceState,original.deviceState);assert.deepEqual(disk.futureExtension,{keep:true,concurrent:true});assert.equal(disk.enableLogging,true);
+});

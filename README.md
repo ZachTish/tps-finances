@@ -1,5 +1,16 @@
 # TPS Finances
 
+## 8.0.0 — Remove inactive importer configuration
+
+Retired Plaid environment, redirect URI, transaction-history window and secret-reference defaults are removed from the canonical typed configuration and normalizer. These five options had no importer after 6.0.0. The existing ordinary settings writer omits `plaidEnvironment`, `oauthRedirectUri` and `transactionHistoryDays` from its fresh payload. Saved `plaidClientIdSecret` and `plaidSecretSecret` values remain untouched as private legacy connection metadata; new settings no longer invent those references.
+
+Credentials and SecretStorage are neither read nor deleted. Existing provider/device state, user properties, migration journals and concurrent preferences remain protected by the existing settings queue. Manual accounts/transactions/assets, budgets/rules, historical readers, identity/property mappings and connection-retirement handoffs retain their behavior. The three destinations remain **Data & storage** (default), **Rules & budgets**, **Properties**; no controls or actions are removed from the current UI.
+
+This is a major release because persisted configuration keys are retired. No note cleanup, provider request, new scheduler, watcher, scan, cache, retry or repair system is added. Retiring fields on disk uses the existing settings-save owner; this release adds no startup save. Existing native accessible controls, focus behavior and plugin-scoped mobile styles are reused. Focused regression coverage exercises settings omission and preservation at the existing persistence boundaries. Minimum Obsidian remains **1.12.0**. Tests, build/deploy/reload evidence, limitations and artifact hashes are recorded in [the 8.0.0 release notes](release-notes/8.0.0.md). The public release is the BRAT handoff; this task does not install it in production or claim physical iPhone acceptance.
+
+
+Final validation: **348 passed; no skips**. A separate final stable build deploys only to this test vault. Targeted unload/manifest-refresh/reload confirms **8.0.0** with enabled states unchanged and Sync disabled. All three settings destinations inspected. Manual Finance actions, rules/budgets and Common property mappings remain available. No account, transaction or provider action was invoked. No preference toggle or outbound automation was enabled. The final explicit reload left each affected settings file byte-identical; settings omission/concurrent-state preservation is exercised through the real persistence owner in isolated tests.
+
 ## 7.0.2 — Omit unset rule and budget properties
 
 Rule creation now omits empty account/name/merchant match text, unset amount limits, empty categories and empty tags at its existing create action. Zero amount limits, disabled state and priority remain explicit. Budget creation and explicit saves omit empty category and account lists; clearing either in the editor removes that owned field under the existing revision guard. Custom fields, IDs, body content, nonempty links/categories and configured physical property names retain their behavior. Readers already treat absent optional fields as unset, so no note migration or new setting is required. This patch finishes omissions missed by 7.0.0 without adding a cleanup listener, scan, cache or repair system.
