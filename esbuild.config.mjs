@@ -1,11 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
-import { basename, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { runtimeDeployPlugin } from "../deploy-runtime.mjs";
-
-const sourceFolder = basename(dirname(fileURLToPath(import.meta.url)));
 
 const prod = process.argv[2] === "production";
 const context = await esbuild.context({
@@ -20,7 +15,6 @@ const context = await esbuild.context({
   treeShaking: true,
   outfile: "main.js",
   minify: prod,
-  plugins: [runtimeDeployPlugin(sourceFolder)],
 });
 
 if (prod) {
