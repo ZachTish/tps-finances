@@ -3,11 +3,9 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 const main=readFileSync('src/main.ts','utf8');
-const dashboard=readFileSync('src/dashboard-view.ts','utf8');
 test('import owners, commands and device-secret startup access are removed',()=>{
  for(const file of ['finance-relay','plaid-client','plaid-link','finance-wallet','investment-sync','device-state','hosted-link','plaid-credentials'])assert.equal(existsSync('src/'+file+'.ts'),false,file);
  assert.doesNotMatch(main,/createControllerBackend|controllerFinanceBackend|syncAll|syncLocal|getFinanceRelay|loadDeviceState|secretStorage|new PlaidClient|id: "connect-plaid"|id: "sync-finances"/);
- assert.doesNotMatch(dashboard,/plugin\.syncAll|plugin\.connectPlaid|model\.connectedItems|model\.plaidSetupState|model\.relayMessage|"Connections"/);
  for(const command of ['add-cash-account','add-resale-asset','add-cash-transaction','add-monthly-budget','review-transaction-titles'])assert.ok(main.includes('id: "'+command+'"'),command);
 });
 test('40 connection panel opens do no provider, state, timer or vault work',async()=>{

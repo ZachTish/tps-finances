@@ -8,7 +8,6 @@ const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const store = readFileSync(new URL("../src/finance-store.ts", import.meta.url), "utf8");
 const atomicStore = readFileSync(new URL("../src/atomic-finance-store.ts", import.meta.url), "utf8");
 const financeModals = readFileSync(new URL("../src/finance-modals.ts", import.meta.url), "utf8");
-const dashboard = readFileSync(new URL("../src/dashboard-view.ts", import.meta.url), "utf8");
 const connections = readFileSync(new URL("../src/connection-settings.ts", import.meta.url), "utf8");
 const settings = readFileSync(new URL("../src/settings.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
@@ -42,30 +41,6 @@ const financeStoreBuild = await build({
 const financeStoreModule = await import(`data:text/javascript;base64,${Buffer.from(financeStoreBuild.outputFiles[0].text).toString("base64")}`);
 const settingsPersistenceBuild = await build({ entryPoints: [fileURLToPath(new URL("../src/settings-persistence.ts", import.meta.url))], bundle: true, write: false, format: "esm", platform: "node" });
 const settingsPersistence = await import(`data:text/javascript;base64,${Buffer.from(settingsPersistenceBuild.outputFiles[0].text).toString("base64")}`);
-const dashboardViewBuild = await build({
-  entryPoints: [fileURLToPath(new URL("../src/dashboard-view.ts", import.meta.url))],
-  bundle: true,
-  write: false,
-  format: "esm",
-  platform: "node",
-  plugins: [{
-    name: "mock-obsidian-dashboard",
-    setup(builder) {
-      builder.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "mock" }));
-      builder.onLoad({ filter: /.*/, namespace: "mock" }, () => ({
-        contents: [
-          "export class ItemView { constructor() { this.contentEl = globalThis.__tpsCreateDashboardNode(); } }",
-          "export class Menu {}",
-          "export class Notice { constructor(message) { globalThis.__tpsDashboardNotices?.push(String(message)); } }",
-          "export class WorkspaceLeaf {}",
-          "export const Platform = { isDesktopApp: true };",
-          "export const setIcon = () => {};",
-        ].join("\n"),
-      }));
-    },
-  }],
-});
-const dashboardViewModule = await import(`data:text/javascript;base64,${Buffer.from(dashboardViewBuild.outputFiles[0].text).toString("base64")}`);
 const mainActionBuild = await build({
   entryPoints: [fileURLToPath(new URL("../src/main.ts", import.meta.url))],
   bundle: true,
@@ -121,73 +96,6 @@ const mainActionBuild = await build({
 });
 const mainActionModule = await import(`data:text/javascript;base64,${Buffer.from(mainActionBuild.outputFiles[0].text).toString("base64")}`);
 
-class DashboardNode {
-  constructor(tag = "div", options = {}) {
-    this.tag = tag;
-    this.children = [];
-    this.text = String(options.text ?? "");
-    this.emptyCalls = 0;
-  }
-
-  empty() {
-    this.children = [];
-    this.text = "";
-    this.emptyCalls += 1;
-  }
-
-  createDiv(options = {}) {
-    return this.createEl("div", options);
-  }
-
-  createEl(tag, options = {}) {
-    const child = new DashboardNode(tag, options);
-    this.children.push(child);
-    return child;
-  }
-
-  createSpan(options = {}) {
-    return this.createEl("span", options);
-  }
-
-  appendChild(child) {
-    this.children.push(child);
-    return child;
-  }
-
-  append(...children) {
-    this.children.push(...children);
-  }
-
-  addClass() {}
-  addEventListener() {}
-  setAttr() {}
-  setAttribute() {}
-
-  setText(value) {
-    this.text = String(value);
-  }
-
-  querySelector() {
-    return null;
-  }
-}
-
-function dashboardNodeText(node) {
-  return [node.text, ...node.children.map((child) => dashboardNodeText(child))].filter(Boolean).join(" ");
-}
-
-function dashboardModel(plaidSetupState) {
-  return {
-    accounts: [],
-    holdings: [],
-    transactions: [],
-    lastSyncAt: "",
-    connectedItems: 0,
-    plaidSetupState,
-    budgets: [],
-  };
-}
-
 function snapshotDashboardPlugin(app) {
   const plugin = new mainActionModule.default(app);
   plugin.settings = { financeFolder: "Finances", transactionLogTarget: "daily-note" };
@@ -201,217 +109,6 @@ function snapshotDashboardPlugin(app) {
   return plugin;
 }
 
-function createDashboardRenderHarness() {
-  let activeReads = 0;
-  let maximumActiveReads = 0;
-  let synchronousError = null;
-  const reads = [];
-  const notices = [];
-  globalThis.__tpsCreateDashboardNode = () => new DashboardNode();
-  globalThis.__tpsDashboardNotices = notices;
-  globalThis.document = {
-    createElement: (tag) => new DashboardNode(tag),
-    createTextNode: (text) => new DashboardNode("#text", { text }),
-  };
-  const plugin = {
-    getDashboardModel() {
-      if (synchronousError) {
-        const error = synchronousError;
-        synchronousError = null;
-        throw error;
-      }
-      activeReads += 1;
-      maximumActiveReads = Math.max(maximumActiveReads, activeReads);
-      const read = {};
-      read.promise = new Promise((resolve, reject) => {
-        read.resolve = (model) => {
-          activeReads -= 1;
-          resolve(model);
-        };
-        read.reject = (error) => {
-          activeReads -= 1;
-          reject(error);
-        };
-      });
-      reads.push(read);
-      return read.promise;
-    },
-  };
-  const view = new dashboardViewModule.TPSFinancesView({}, plugin);
-  return {
-    reads,
-    notices,
-    view,
-    maximumActiveReads: () => maximumActiveReads,
-    throwSynchronously(error) {
-      synchronousError = error;
-    },
-  };
-}
-
-async function waitForDashboardReads(reads, expected) {
-  for (let attempt = 0; attempt < 20 && reads.length < expected; attempt += 1) await Promise.resolve();
-  assert.equal(reads.length, expected);
-}
-
-async function waitForDashboardAction(predicate) {
-  for (let attempt = 0; attempt < 20 && !predicate(); attempt += 1) await Promise.resolve();
-  assert.equal(predicate(), true);
-}
-
-test("dashboard rendering coalesces refresh bursts and commits only the newest model", async () => {
-  const harness = createDashboardRenderHarness();
-  const firstRender = harness.view.render();
-  await waitForDashboardReads(harness.reads, 1);
-
-  const firstBurst = Array.from({ length: 100 }, () => harness.view.render());
-  let burstSettled = false;
-  void Promise.all(firstBurst).then(() => {
-    burstSettled = true;
-  });
-  await Promise.resolve();
-  await Promise.resolve();
-  assert.equal(burstSettled, false, "overlapping callers must wait for the coalesced refresh to finish");
-  assert.equal(harness.reads.length, 1, "a burst must not start parallel model reads");
-
-  harness.reads[0].resolve(dashboardModel("missing-credentials"));
-  await waitForDashboardReads(harness.reads, 2);
-  assert.equal(harness.view.contentEl.emptyCalls, 0, "a superseded model must not rebuild the DOM");
-
-  const secondBurst = Array.from({ length: 50 }, () => harness.view.render());
-  harness.reads[1].resolve(dashboardModel("conflicting-credentials"));
-  await waitForDashboardReads(harness.reads, 3);
-  assert.equal(harness.view.contentEl.emptyCalls, 0, "each superseded model must remain uncommitted");
-
-  harness.reads[2].resolve(dashboardModel("ready"));
-  await Promise.all([firstRender, ...firstBurst, ...secondBurst]);
-
-  const renderedText = dashboardNodeText(harness.view.contentEl);
-  assert.equal(harness.reads.length, 3, "150 overlapping requests across two active reads must coalesce into two follow-ups");
-  assert.equal(harness.maximumActiveReads(), 1);
-  assert.equal(harness.view.contentEl.emptyCalls, 1, "only the newest model should rebuild the DOM");
-  assert.match(renderedText, /Add cash or assets/);
-  assert.doesNotMatch(renderedText, /same Obsidian secret|Add separate Plaid client ID/);
-});
-
-test("dashboard rendering retries dirty failures without flashing stale errors or becoming stuck", async () => {
-  const harness = createDashboardRenderHarness();
-  const firstRender = harness.view.render();
-  await waitForDashboardReads(harness.reads, 1);
-  const queuedRender = harness.view.render();
-  harness.reads[0].reject(new Error("superseded failure"));
-  await waitForDashboardReads(harness.reads, 2);
-  assert.doesNotMatch(dashboardNodeText(harness.view.contentEl), /superseded failure/);
-
-  harness.reads[1].resolve(dashboardModel("ready"));
-  await Promise.all([firstRender, queuedRender]);
-  assert.match(dashboardNodeText(harness.view.contentEl), /Add cash or assets/);
-
-  harness.throwSynchronously(new Error("final failure"));
-  await harness.view.render();
-  assert.match(dashboardNodeText(harness.view.contentEl), /final failure/);
-
-  const recoveryRender = harness.view.render();
-  await waitForDashboardReads(harness.reads, 3);
-  harness.reads[2].resolve(dashboardModel("ready"));
-  await recoveryRender;
-  assert.doesNotMatch(dashboardNodeText(harness.view.contentEl), /final failure/);
-  assert.match(dashboardNodeText(harness.view.contentEl), /Add cash or assets/);
-});
-
-test("dashboard close cancels queued commits and reopening requests a fresh model", async () => {
-  const deferredHarness = createDashboardRenderHarness();
-  const deferredRender = deferredHarness.view.render();
-  await deferredHarness.view.onClose();
-  await deferredRender;
-  assert.equal(deferredHarness.reads.length, 0, "closing before the deferred drain starts must avoid a post-close model read");
-
-  const harness = createDashboardRenderHarness();
-  const closingRender = harness.view.render();
-  await waitForDashboardReads(harness.reads, 1);
-  const queuedRender = harness.view.render();
-  await harness.view.onClose();
-  harness.reads[0].resolve(dashboardModel("missing-credentials"));
-  await Promise.all([closingRender, queuedRender]);
-  assert.equal(harness.reads.length, 1);
-  assert.equal(harness.view.contentEl.emptyCalls, 0);
-
-  const reopeningRender = harness.view.onOpen();
-  await waitForDashboardReads(harness.reads, 2);
-  assert.match(dashboardNodeText(harness.view.contentEl), /Loading finances/);
-  harness.reads[1].resolve(dashboardModel("ready"));
-  await reopeningRender;
-  assert.equal(harness.view.contentEl.emptyCalls, 2, "reopen clears the old view for loading, then commits one model");
-  assert.match(dashboardNodeText(harness.view.contentEl), /Add cash or assets/);
-  assert.doesNotMatch(dashboardNodeText(harness.view.contentEl), /Loading finances/);
-});
-
-test("dashboard action wrapper leaves successful refresh ownership to the action", async () => {
-  const harness = createDashboardRenderHarness();
-  let settled = false;
-  const action = harness.view.runAction(() => harness.view.render());
-  void action.then(() => {
-    settled = true;
-  });
-  await waitForDashboardReads(harness.reads, 1);
-  harness.reads[0].resolve(dashboardModel("ready"));
-  await waitForDashboardAction(() => settled || harness.reads.length > 1);
-  const readsBeforeCleanup = harness.reads.length;
-  if (harness.reads[1]) harness.reads[1].resolve(dashboardModel("ready"));
-  await action;
-  assert.equal(readsBeforeCleanup, 1, "a self-refreshing action must not trigger a second model read");
-  assert.equal(harness.view.contentEl.emptyCalls, 1, "a self-refreshing action must rebuild the DOM once");
-});
-
-test("dashboard action wrapper does not refresh after a no-op or rejected action", async () => {
-  const noOpHarness = createDashboardRenderHarness();
-  let noOpSettled = false;
-  const noOp = noOpHarness.view.runAction(async () => {});
-  void noOp.then(() => {
-    noOpSettled = true;
-  });
-  await waitForDashboardAction(() => noOpSettled || noOpHarness.reads.length > 0);
-  const noOpReadsBeforeCleanup = noOpHarness.reads.length;
-  if (noOpHarness.reads[0]) noOpHarness.reads[0].resolve(dashboardModel("ready"));
-  await noOp;
-  assert.equal(noOpReadsBeforeCleanup, 0, "an action that makes no change must not read or rebuild the dashboard");
-
-  const rejectedHarness = createDashboardRenderHarness();
-  await rejectedHarness.view.runAction(async () => {
-    throw new Error("action failed");
-  });
-  assert.equal(rejectedHarness.reads.length, 0);
-  assert.deepEqual(rejectedHarness.notices, ["action failed"]);
-});
-
-test("dashboard action-owned render errors remain visible without a silent fallback retry", async () => {
-  const harness = createDashboardRenderHarness();
-  let settled = false;
-  const action = harness.view.runAction(() => harness.view.render());
-  void action.then(() => {
-    settled = true;
-  });
-  await waitForDashboardReads(harness.reads, 1);
-  harness.reads[0].reject(new Error("action refresh failed"));
-  await waitForDashboardAction(() => settled || harness.reads.length > 1);
-  const readsBeforeCleanup = harness.reads.length;
-  if (harness.reads[1]) harness.reads[1].resolve(dashboardModel("ready"));
-  await action;
-  assert.equal(readsBeforeCleanup, 1, "the wrapper must not hide a failed action-owned refresh with a retry");
-  assert.match(dashboardNodeText(harness.view.contentEl), /action refresh failed/);
-});
-
-test("dashboard action wrapper is limited to owned mutations and navigation", () => {
-  const actionTargets = [...dashboard.matchAll(/this\.runAction\(\(\) => this\.plugin\.(\w+)/g)]
-    .map((match) => match[1])
-    .sort();
-  assert.deepEqual(actionTargets, [
-    "addCashTransaction",
-    "openFinanceBase",
-  ]);
-  assert.doesNotMatch(dashboard, /setAccountTransactionLogTarget/);
-  assert.doesNotMatch(dashboard, /await action\(\);\s*await this\.render\(\)/);
-});
 
 test("finance settings use a shallow routed hub with complete controls and actions", () => {
   for (const route of ["Data & storage", "Rules & budgets", "Properties"]) {
@@ -424,7 +121,7 @@ test("finance settings use a shallow routed hub with complete controls and actio
   ]) {
     assert.match(settings + connections, new RegExp(`setName\\("${control}"\\)`));
   }
-  for (const action of ["Open finances", "Add rule", "Add budget"]) {
+  for (const action of ["Open Budgets Base", "Add rule", "Add budget"]) {
     assert.match(settings + connections, new RegExp(`setButtonText\\("${action}"\\)`));
   }
   assert.match(settings, /setButtonText\("Check old entries"\)/);
@@ -436,7 +133,7 @@ test("finance settings use a shallow routed hub with complete controls and actio
   assert.match(settings, /pageHeading\.focus\(\{ preventScroll: true \}\)/);
   assert.match(settings, /pageHeading\.scrollIntoView\(\{ block: "start" \}\)/);
   assert.match(settings, /activeRouteButton\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest" \}\)/);
-  assert.doesNotMatch(settings, /createEl\("details"/);
+  // The real-tab harness checks the intentional single-depth disclosures.
   assert.doesNotMatch(types, /activeRoute|settingsRoute/);
 
   assert.match(styles, /\.tps-finances-settings-hub\s*\{[^}]*position:\s*sticky/s);
@@ -1081,7 +778,6 @@ test("snapshot reuse preserves filename dates and propagates selected-file read 
 test("transaction routing controls are retired without changing historical note properties", () => {
   assert.doesNotMatch(settings, /Default transaction location|Record format|Transaction discovery/);
   assert.doesNotMatch(main, /setAccountTransactionLogTarget|setDefaultTransactionLogTarget|resolveFinanceTransactionTarget/);
-  assert.doesNotMatch(dashboard, /showAccountRouteMenu|tps-finances-account-route/);
   assert.match(atomicStore, /financePath\(this\.folder, "Transactions",/);
 });
 
@@ -1090,9 +786,6 @@ test("finance modal saves are single-flight and dashboard month keys are local",
   assert.match(financeModals, /saveButton\.setDisabled\(true\)/);
   assert.match(financeModals, /await save\(\)/);
   assert.match(financeModals, /TPS Finances could not save/);
-  assert.match(dashboard, /now\.getFullYear\(\)/);
-  assert.match(dashboard, /now\.getMonth\(\) \+ 1/);
-  assert.doesNotMatch(dashboard, /toISOString\(\)\.slice\(0, 7\)/);
 });
 
 test("settings writes merge local intent into latest data and preserve external and future fields", async () => {
@@ -1336,11 +1029,7 @@ test('summary separates cash, debt, and currencies and uses authoritative invest
  assert.equal(accountSummaries([{...accounts[2],current:null}],[{financeAccountId:'invest',value:450,currency:'USD'}])[0].investments,450);
 });
 
-test('sync owns dashboard refresh rather than rescanning after every imported note',()=>{
- const handler=main.slice(main.indexOf('this.app.metadataCache.on("changed"'),main.indexOf('(this as any).api'));
- assert.equal((handler.match(/if \(!this\.syncing && !this\.settings\.propertyMigration\) void this\.refreshDashboard\(/g)||[]).length,3,
-   'metadata, rename and delete all defer to the owning sync/migration');
-});
+
 
 test('refunds reduce category spending while transfers are excluded',()=>{
  const transactions=[{date:'2026-09-13',amount:-100,type:'transaction',subtype:'purchase',category:'food'},{date:'2026-09-13',amount:20,type:'transaction',subtype:'refund',category:'food'},{date:'2026-09-13',amount:-100,type:'transaction',subtype:'transfer-out',category:'food'}];
@@ -1361,7 +1050,7 @@ test('blank and slash finance destinations survive saving, serialized persistenc
   await plugin.setFinanceFolder(value);assert.equal(disk.financeFolder,'');
   plugin.settings=JSON.parse(JSON.stringify(disk));await plugin.saveSettings();assert.equal(plugin.settings.financeFolder,'');
  }
- assert.equal(refreshed,4);
+ assert.equal(refreshed,0);
  await plugin.setFinanceFolder('Money/Personal');assert.equal(disk.financeFolder,'Money/Personal');
  await assert.rejects(plugin.setFinanceFolder('../Outside'),/inside the vault/);assert.equal(disk.financeFolder,'Money/Personal');
  plugin.settings={};await plugin.saveSettings();assert.equal(disk.financeFolder,'Finances');
@@ -1439,8 +1128,6 @@ test('account display uses the shared title without requiring a duplicate accoun
  delete file.fm.accountName;assert.equal(plugin.readAccountsFromVault(null)[0].name,'Chosen account');
  file.fm.title='Chosen account •1234';file.fm.accountMask='1234';const accounts=plugin.readAccountsFromVault(null,labels);
  assert.equal(labels.get('Account').display,'Chosen account •1234');
- const h=createDashboardRenderHarness(),root=new DashboardNode();h.view.renderAccounts(root,accounts);
- assert.doesNotMatch(dashboardNodeText(root),/•1234 •1234/,'title masks are not appended twice');
 });
 
 test('cleaned holdings resolve the account wikilink without a foreign account property or extra reads',()=>{

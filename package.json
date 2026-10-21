@@ -1,11 +1,11 @@
 {
   "name": "tps-finances",
-  "version": "8.0.0",
+  "version": "9.0.0",
   "description": "Accounts, transactions, and investments as atomic notes for TPS.",
   "main": "main.js",
   "scripts": {
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node --test scripts/test-import-retirement.mjs && node --test scripts/test-finance-summary.mjs scripts/test-finance-properties.mjs scripts/test-finance-identity-migration.mjs scripts/test-transaction-titles.mjs scripts/test-flex-budget.mjs scripts/test-dashboard-render-ownership.mjs scripts/test-dashboard-failure-dependencies.mjs scripts/test-gcm-readiness.mjs scripts/test-transaction-index-batching.mjs scripts/test-finance-contract.mjs scripts/test-atomic-finance.mjs scripts/test-manual-finance.mjs scripts/test-mobile-loading.mjs"
+    "test": "node --test scripts/test-import-retirement.mjs scripts/test-settings-ownership.mjs && node --test scripts/test-finance-summary.mjs scripts/test-finance-properties.mjs scripts/test-finance-identity-migration.mjs scripts/test-transaction-titles.mjs scripts/test-flex-budget.mjs scripts/test-finance-model-errors.mjs scripts/test-transaction-index-batching.mjs scripts/test-finance-contract.mjs scripts/test-atomic-finance.mjs scripts/test-manual-finance.mjs scripts/test-mobile-loading.mjs"
   },
   "license": "MIT",
   "devDependencies": {

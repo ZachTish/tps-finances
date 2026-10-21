@@ -99,18 +99,18 @@ test('cash form configuration and snapshot failures do not open a partial form',
  assert.equal(h.counts.accounts,0);assert.equal(h.forms.length,0);assert.equal(h.nodes.size,0);
 });
 
-test('cash form keeps the actual validated writer and refreshes only after a successful record',async()=>{
+test('cash form keeps the actual validated writer and leaves dashboard refresh to metadata publication',async()=>{
  const h=cashFormHarness(),account=await h.store.createAccount(input);
  h.accounts=[{...h.accounts[0],path:account.path,currency:'USD'}];
  await h.owner.addCashTransaction();const save=h.forms[0].save;
  const before=h.app.vault.getMarkdownFiles().length;
  await save({...entry,accountPath:account.path});
- assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,1);
+ assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,0);
  const tx=h.app.vault.getMarkdownFiles().find(f=>f.path!==account.path);
  assert.equal(h.fm(tx.path).amount,-12.5);assert.equal(h.fm(tx.path).currency,'USD');
  assert.deepEqual(h.fm(tx.path).tags,['food']);assert.equal(h.fm(account.path).openingBalance,100);
  await assert.rejects(save({...entry,accountPath:account.path,amount:-1}),/positive amount/);
- assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,1);
+ assert.equal(h.app.vault.getMarkdownFiles().length,before+1);assert.equal(h.counts.refreshes,0);
 });
 test('cash form rechecks legacy review before saving an already open modal',async()=>{
  const h=cashFormHarness(),account=await h.store.createAccount(input);

@@ -8,7 +8,7 @@ export class TransactionTitleModal extends Modal {
   private page = 0;
   private busy = false;
   constructor(app: App, private changes: TransactionTitleChange[], private store: AtomicFinanceStore,
-    private refreshed: () => Promise<void>, private includeEmptyProperties = false) {
+    private includeEmptyProperties = false) {
     super(app);
     // Obsidian's modal scope consumes Enter before the browser activates a button.
     this.scope.register([], "Enter", () => {
@@ -93,7 +93,6 @@ export class TransactionTitleModal extends Modal {
       this.busy = false;
       this.render();
       this.contentEl.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-      if (saved) await this.refreshed().catch(() => new Notice(`${this.includeEmptyProperties ? "Records" : "Titles"} saved. Reopen Finances to refresh.`));
     }
   }
 }

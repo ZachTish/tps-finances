@@ -1,5 +1,5 @@
 import type { FinanceAccount, FinanceBudget } from "./types";
-import type { DashboardTransaction } from "./dashboard-view";
+import type { FinanceTransaction } from "./finance-model";
 
 export type BudgetBucket = NonNullable<FinanceBudget["bucket"]>;
 export const BUDGET_BUCKETS: Record<BudgetBucket, string> = {
@@ -32,7 +32,7 @@ export function budgetOverlapError(budget: FinanceBudget, others: readonly Finan
 export interface BudgetRow {
   budget: FinanceBudget;
   actual: number | null;
-  transactions: DashboardTransaction[];
+  transactions: FinanceTransaction[];
   amounts: Map<string, number>;
   error?: string;
 }
@@ -46,13 +46,13 @@ export interface FlexBudgetModel {
   flexRemaining: number;
   pendingCount: number;
   uncategorizedCount: number;
-  review: DashboardTransaction[];
+  review: FinanceTransaction[];
   errors: string[];
-  flexTransactions: DashboardTransaction[];
+  flexTransactions: FinanceTransaction[];
 }
 
 export function buildFlexBudget(
-  budgets: readonly FinanceBudget[], transactions: readonly DashboardTransaction[], accounts: readonly FinanceAccount[], month: string, currency: string,
+  budgets: readonly FinanceBudget[], transactions: readonly FinanceTransaction[], accounts: readonly FinanceAccount[], month: string, currency: string,
 ): FlexBudgetModel {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error("Choose a valid budget month.");
   const model: FlexBudgetModel = {
@@ -147,7 +147,7 @@ export function buildFlexBudget(
 }
 
 /** Normalized amounts are positive for cash in, negative for cash out. */
-export function savingsContribution(t: DashboardTransaction): number | null {
+export function savingsContribution(t: FinanceTransaction): number | null {
   if (t.type === "transaction") return ["transfer-in","transfer-out"].includes(t.subtype) ? t.amount : 0;
   if (t.subtype === "contribution" && t.investmentType === "buy") return Math.abs(t.amount);
   if (["contribution","deposit","withdrawal"].includes(t.subtype)) {

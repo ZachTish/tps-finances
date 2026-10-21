@@ -1,6 +1,6 @@
 import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import { normalizeTags } from "./classification";
-import type { DashboardTransaction } from "./dashboard-view";
+import type { FinanceTransaction } from "./finance-model";
 import type { FinanceRule } from "./types";
 
 export class FinanceRuleModal extends Modal {
@@ -43,7 +43,7 @@ export class FinanceRuleModal extends Modal {
 export { FinanceBudgetModal } from "./budget-modal";
 
 export class TransactionClassificationModal extends Modal {
-  constructor(app: App, private readonly transaction: DashboardTransaction, private readonly save: (category: string, tags: string[]) => Promise<void>) {
+  constructor(app: App, private readonly transaction: FinanceTransaction, private readonly save: (category: string, tags: string[]) => Promise<void>) {
     super(app);
   }
 

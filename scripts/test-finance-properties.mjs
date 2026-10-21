@@ -303,7 +303,7 @@ test('migration updates recognized generated Bases but preserves customized defi
  assert.equal(h.contents.get('Accounts.base'),'custom base');assert.equal(parse(h.contents.get('Transactions.base')).views[0].order[1],'custom date');h.plugin.settings.propertyNames=to.names;await h.store.ensureStructure();assert.ok(!h.files.has('Transactions (Atomic notes).base'));
 });
 test('settings expose every group, preserve existing actions, and explicitly ask migration or decline',()=>{
- const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & storage','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Configure in GCM','Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/api\?\.ui\?\.openCustomPropertySettings/);assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);assert.doesNotMatch(source,/createEl\("details"/);
+ const source=readFileSync('src/settings.ts','utf8');for(const label of ['Data & storage','Rules & budgets','Properties'])assert.ok(source.includes(`title: "${label}"`));for(const action of ['Configure in GCM','Save property names','Discard edits','Resume migration','Migrate and save','Save without migrating','Cancel'])assert.ok(source.includes(`"${action}"`));assert.match(source,/api\?\.ui\?\.openCustomPropertySettings/);assert.match(source,/PROPERTY_GROUPS\[this.propertyGroup\]/);assert.match(source,/aria-label/);
  const properties=readFileSync('src/finance-properties.ts','utf8');assert.doesNotMatch(properties,/aliases\(/);assert.doesNotMatch(readFileSync('src/types.ts','utf8'),/propertyDraft|propertyGroup/);
 });
 test('property editor keeps a sparse explicit map and exposes a generic reset control',()=>{
@@ -410,7 +410,7 @@ test('review state follows persisted settings when a later coalesced write fails
  await assert.rejects(p.plugin.reviewLegacyTransactionMarkers(),/debug settings write failure/);
  assert.match(String(await later),/debug settings write failure/);
  assert.equal(writes,2);assert.equal(disk.legacyTransactionDiscovery,'atomic-only');
- assert.equal(p.plugin.legacyReviewRequired(),false);assert.equal(refreshes,1);
+ assert.equal(p.plugin.legacyReviewRequired(),false);assert.equal(refreshes,0);
  setLoggingEnabled(false);
 });
 test('dashboard and API never discover inline entries, including after legacy review',async()=>{
@@ -490,7 +490,7 @@ test('atomic-only classification targets one rendered file without reading 10,00
  assert.equal(scans,1,'one model uses one shared Markdown file list');assert.equal(metadata,30000,'root readers memoize one lookup and atomic discovery rechecks candidates twice');assert.equal(cached,0);assert.equal(fresh,0);assert.equal(frontmatterWrites,0);assert.equal(legacyWrites,0);
  t.diagnostic(`synthetic 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${scans} enumerations, ${metadata} metadata lookups, ${cached} cached reads, ${fresh} fresh reads, 0 writes`);
 });
-test('folder-mode save is path-bound while dashboard and home summaries use indexed display reads',async t=>{
+test('folder-mode save is path-bound while the retained model supports indexed reads',async t=>{
  const h=harness(),p=pluginHarness(h);p.plugin.settings.financeFolder='Finances';await p.plugin.reviewLegacyTransactionMarkers();
  for(let i=0;i<10000;i++)await h.add(`Finances/Transactions/tx-${i}.md`,classificationFields(`tx-${i}`));
  const row=await displayedTransaction(h,p,'tx-5000');assert.equal(row.sourceFile,h.files.get(row.sourcePath));
@@ -507,10 +507,7 @@ test('folder-mode save is path-bound while dashboard and home summaries use inde
  const refreshCounts={scans,metadata,cached,fresh,writes};reset();
  const sourceStarted=performance.now();await p.plugin.getDashboardModel();const sourceMs=performance.now()-sourceStarted;
  assert.equal(scans,1);assert.equal(cached,10000,'the old source-backed home model reads every atomic body');assert.equal(metadata,0,'folder candidates need no metadata preflight for source reads');const sourceCounts={scans,metadata,cached,fresh,writes};reset();
- const element={empty(){},addClass(){},createDiv(){return this},createEl(){return this},createSpan(){return this},addEventListener(){}};
- const homeStarted=performance.now();await p.plugin.renderHomeSummary(element);const homeMs=performance.now()-homeStarted;
- assert.equal(scans,1);assert.equal(cached,0,'read-only home display uses the indexed model');assert.equal(metadata,10000);assert.equal(fresh,0);assert.equal(writes,0);
- t.diagnostic(`synthetic folder 10k save: ${saveMs.toFixed(1)} ms, 0 enumerations/metadata/body reads, 1 frontmatter write; model refresh: ${refreshMs.toFixed(1)} ms, ${JSON.stringify(refreshCounts)}; old source model: ${sourceMs.toFixed(1)} ms, ${JSON.stringify(sourceCounts)}; home summary: ${homeMs.toFixed(1)} ms, ${JSON.stringify({scans,metadata,cached,fresh,writes})}`);
+ t.diagnostic(`synthetic folder 10k save: ${saveMs.toFixed(1)} ms, zero reads/one write; metadata model: ${JSON.stringify(refreshCounts)}; source model: ${JSON.stringify(sourceCounts)}`);
 });
 test('model-scoped discovery enumerates once with 90,000 indexed unrelated notes',async t=>{
  for(const folder of ['', 'Finances']){

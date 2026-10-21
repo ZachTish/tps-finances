@@ -5,8 +5,8 @@ import { applyFinanceIdentityMigration, previewFinanceIdentityMigration, Finance
 import { budgetBucket, budgetCurrency, type BudgetBucket } from "./flex-budget";
 import type { FinanceBudget } from "./types";
 import { financePath, financePrefix, normalizeFinanceFolder } from "./finance-paths";
-import { Notice, Platform, Plugin, TAbstractFile, TFile, WorkspaceLeaf, normalizePath, setIcon } from "obsidian";
-import { DashboardModel, DashboardTransaction, TPSFinancesView, TPS_FINANCES_VIEW_TYPE } from "./dashboard-view";
+import { Notice, Plugin, TFile, normalizePath } from "obsidian";
+import { FinanceModel, FinanceTransaction } from "./finance-model";
 import { calculateMonthlyBudgetProgress, normalizeTags, prepareTransactionClassifier } from "./classification";
 import { AtomicFinanceStore } from "./atomic-finance-store";
 import { TransactionTitleModal } from "./transaction-title-modal";
@@ -40,8 +40,6 @@ type AccountLabel = {
 export default class TPSFinancesPlugin extends Plugin {
   settings: TPSFinancesSettings = { ...DEFAULT_SETTINGS };
   private syncing = false;
-  private unregisterGcmAction: (() => void) | null = null;
-  private registeredGcmApi: any = null;
   private settingsWriter: CoalescedSnapshotWriter<TPSFinancesSettings> | null = null;
 
   async onload(): Promise<void> {
@@ -61,37 +59,26 @@ export default class TPSFinancesPlugin extends Plugin {
       },
     });
     logger.setLoggingEnabled(this.settings.enableLogging);
-    this.registerView(TPS_FINANCES_VIEW_TYPE, (leaf) => new TPSFinancesView(leaf, this));
     const financeSettingsTab = new TPSFinancesSettingTab(this.app, this);
     this.addSettingTab(financeSettingsTab);
-    this.addRibbonIcon("landmark", "Open TPS Finances", () => void this.openDashboard());
-    this.addCommand({ id: "open-finances", name: "Open finances", callback: () => void this.openDashboard() });
     this.addCommand({ id: "add-categorization-rule", name: "Add categorization rule", callback: () => this.addCategorizationRule() });
-    this.addCommand({ id: "open-budget", name: "Open budget", callback: () => void this.openDashboard("budget") });
+    this.addCommand({ id: "open-budget", name: "Open Budgets Base", callback: () => void this.runUserAction("Base", "command", () => this.openFinanceBase("Budgets")) });
     this.addCommand({ id: "add-monthly-budget", name: "Add monthly budget", callback: () => this.addMonthlyBudget() });
     this.addCommand({ id: "add-cash-account", name: "Add cash account", callback: () => this.addManualAccount("cash") });
     this.addCommand({ id: "add-resale-asset", name: "Add resale asset", callback: () => this.addManualAccount("asset") });
     this.addCommand({ id: "add-cash-transaction", name: "Log cash transaction", callback: () => void this.runUserAction("Cash", "command", () => this.addCashTransaction()) });
     this.addCommand({ id: "review-transaction-titles", name: "Review transaction titles", callback: () => void this.runUserAction("Titles", "command", () => this.reviewTransactionTitles()) });
     this.addCommand({ id: "review-transaction-records", name: "Review transaction records", callback: () => void this.runUserAction("Titles", "records-command", () => this.reviewTransactionTitles(true)) });
-    this.registerEvent((this.app.workspace as any).on("tps:gcm-api-changed", (event: any) => {
-      if (event?.sourcePluginId !== "tps-global-context-menu"
-        || (event.available !== true && event.available !== false)
-        || (event.available && !event.api)) return;
-      const identityReady = event.available && event.api !== this.registeredGcmApi
-        && typeof event.api.nativeRecords?.getStorageProfile === "function";
-      this.registerGcmIntegration(event.available ? event.api : null);
-      if (identityReady && this.app.workspace.getLeavesOfType(TPS_FINANCES_VIEW_TYPE).length) void this.refreshDashboard();
-    }));
-    this.registerGcmIntegration();
-    this.registerEvent(this.app.metadataCache.on("changed", (file, data) => {
-      if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, data });
-    }));
-    this.registerEvent(this.app.vault.on("delete", file => {
-      if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, deleted: true });
-    }));
-    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      if (!this.syncing && !this.settings.propertyMigration) void this.refreshDashboard({ file, oldPath });
+    this.addCommand({ id: "edit-finance-record", name: "Edit current finance record", checkCallback: checking => {
+      const file = this.app.workspace.getActiveFile();
+      if (!file || !this.editableRecordKind(file)) return false;
+      if (!checking) void this.runUserAction("Edit", "command", () => this.editFinanceRecord(file));
+      return true;
+    } });
+    this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+      if (!(file instanceof TFile) || !this.editableRecordKind(file)) return;
+      menu.addItem(item => item.setTitle("Edit finance record").setIcon("pencil")
+        .onClick(() => void this.runUserAction("Edit", "file-menu", () => this.editFinanceRecord(file))));
     }));
     (this as any).api = {
       connectionSettings: { version: 1, render: (parent: HTMLElement) => {
@@ -100,9 +87,7 @@ export default class TPSFinancesPlugin extends Plugin {
         return () => panel.dispose();
       } },
       openConnectionSettings: () => this.openConnectionSettings(),
-      openDashboard: () => this.openDashboard(),
       getDashboardModel: () => this.getDashboardModel(),
-      renderHomeSummary: (container: HTMLElement) => this.renderHomeSummary(container),
       getTransactionsBasePath: () => this.getTransactionsBasePath(),
       getDailyNotePathForIsoDate: (isoDate: string) => this.getDailyNotePathForIsoDate(isoDate),
       classificationBases: { version: 1, preview: (change: {recordKind: string;
@@ -114,11 +99,6 @@ export default class TPSFinancesPlugin extends Plugin {
     logger.flow("Lifecycle", "load", {
       financeFolder: this.settings.financeFolder,
     });
-  }
-
-  async onunload(): Promise<void> {
-    this.registerGcmIntegration(null);
-    this.app.workspace.detachLeavesOfType(TPS_FINANCES_VIEW_TYPE);
   }
 
   async saveSettings(): Promise<void> {
@@ -164,7 +144,6 @@ export default class TPSFinancesPlugin extends Plugin {
       const updated = await applyFinanceIdentityMigration(this.app, preview);
       await remapGeneratedBaseIdentities(this.app, this.settings.financeFolder, preview.bases);
       logger.flow("Properties", "identities-consolidated", { updated, inspected: preview.inspected });
-      await this.refreshDashboard();
       return updated;
     } finally { this.syncing = false; }
   }
@@ -199,7 +178,6 @@ export default class TPSFinancesPlugin extends Plugin {
       catch (error) { this.settings.propertyMigration = null; throw error; }
       await this.finishPropertyMigration();
     } finally { this.syncing = false; }
-    await this.refreshDashboard();
   }
 
   async resumePropertyMigration(): Promise<void> {
@@ -207,7 +185,6 @@ export default class TPSFinancesPlugin extends Plugin {
     this.syncing = true;
     try { await this.finishPropertyMigration(); }
     finally { this.syncing = false; }
-    await this.refreshDashboard();
   }
 
   private async finishPropertyMigration(): Promise<void> {
@@ -231,7 +208,6 @@ export default class TPSFinancesPlugin extends Plugin {
     if (this.syncing) throw new Error("Wait for the current finance sync to finish before changing its folder.");
     this.settings.financeFolder = normalizeFinanceFolder(value);
     await this.saveSettings();
-    await this.refreshDashboard();
     logger.flow("Storage", "destination-saved", { root: this.settings.financeFolder === "" });
   }
 
@@ -239,17 +215,37 @@ export default class TPSFinancesPlugin extends Plugin {
     new Notice('Bank and Wallet importing are retired in this plugin. Configure imports in TishOS; existing notes remain available.');
   }
 
-  async openDashboard(page?: "budget"): Promise<void> {
-    let leaf = this.app.workspace.getLeavesOfType(TPS_FINANCES_VIEW_TYPE)[0];
-    if (!leaf) {
-      leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: TPS_FINANCES_VIEW_TYPE, active: true });
-    }
-    this.app.workspace.revealLeaf(leaf);
-    if (page === "budget" && leaf.view instanceof TPSFinancesView) await leaf.view.showBudget();
+  private editableRecordKind(file: TFile): "budget" | "asset" | "transaction" | null {
+    if (file.extension !== "md") return null;
+    let fields: Record<string, any>;
+    try { fields = financeProperties(this.app).cache(this.app, file) || {}; }
+    catch { return null; } // Wait for the configured classification owner to become ready.
+    if (fields.financeBudgetId) return "budget";
+    if (fields.financeAccountId && fields.financeSource === "manual" && fields.accountType === "other") return "asset";
+    if (fields.financeId && ["transaction", "investmentTransaction"].includes(fields.type)) return "transaction";
+    return null;
   }
 
-  async getDashboardModel(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<DashboardModel> {
+  async editFinanceRecord(file: TFile): Promise<void> {
+    if (this.app.vault.getAbstractFileByPath(file.path) !== file) throw new Error("This record was removed. Reopen the note.");
+    const kind = this.editableRecordKind(file);
+    if (kind === "budget") {
+      const budget = (await this.createStore().readBudgetEntries()).find(entry => entry.sourcePath === file.path);
+      if (!budget) throw new Error("This budget is no longer available.");
+      await this.openBudgetEditor(budget);
+    } else if (kind === "asset") {
+      const account = this.readAccountsFromVault(null).find(entry => entry.path === file.path);
+      if (!account) throw new Error("This asset is no longer available.");
+      this.updateAssetValue(account);
+    } else if (kind === "transaction") {
+      const transaction = (await this.getDashboardModel()).transactions.find(entry => entry.sourcePath === file.path);
+      if (!transaction) throw new Error("This transaction is no longer available.");
+      this.editTransactionClassification(transaction);
+    } else throw new Error("Select a budget, manual asset, or transaction note.");
+  }
+
+  // Retained read-only API name for existing consumers; no dashboard view is registered.
+  async getDashboardModel(sourcePaths?: Set<string>, source: TransactionReadSource = "source"): Promise<FinanceModel> {
     const files = new DashboardFileSnapshot(this.app, sourcePaths);
     const snapshot = await this.readLatestSnapshotDocument(sourcePaths, files);
     const accountLabels = new Map<string, AccountLabel>();
@@ -260,9 +256,9 @@ export default class TPSFinancesPlugin extends Plugin {
     if (sourcePaths) for (const record of transactionRecords) sourcePaths.add(record.path);
     const rules = store.readRules(sourcePaths, files);
     const classifyForDashboard = prepareTransactionClassifier(rules);
-    const transactions: DashboardTransaction[] = [];
+    const transactions: FinanceTransaction[] = [];
     for (const record of transactionRecords) {
-      const transaction = parseDashboardTransaction(record.line, record.path, record.lineNumber);
+      const transaction = parseFinanceTransaction(record.line, record.path, record.lineNumber);
       if (!transaction) continue;
       const accountLabel = accountLabels.get(transaction.accountPath);
       const resolved = accountLabel ? { ...transaction, account: accountLabel.display, accountSearchText: accountLabel.search } : transaction;
@@ -292,7 +288,6 @@ export default class TPSFinancesPlugin extends Plugin {
       const file = await new ManualFinanceStore(this.app, this.settings.financeFolder).createAccount(input);
       logger.flow("Manual", "account-created", {kind});
       await this.app.workspace.getLeaf("tab").openFile(file);
-      await this.refreshDashboard();
     }).open();
   }
 
@@ -302,7 +297,7 @@ export default class TPSFinancesPlugin extends Plugin {
     // The form needs account choices, not transaction balances or a dashboard.
     const accounts = this.readAccountsFromVault(await this.readLatestSnapshotDocument());
     if (!accounts.some(a => a.manual && a.type === "depository" && a.subtype === "cash")) {
-      new Notice("Create a cash account first using Add → Cash account.");
+      new Notice("Create a cash account first using the Add cash account command.");
       return;
     }
     new CashTransactionModal(this.app, accounts, async input => {
@@ -311,7 +306,6 @@ export default class TPSFinancesPlugin extends Plugin {
       await new ManualFinanceStore(this.app, this.settings.financeFolder).createCashEntry(input);
       logger.flow("Manual", "cash-entry-created", {kind: input.kind});
       new Notice("Cash transaction recorded.");
-      await this.refreshDashboard();
     }).open();
   }
 
@@ -320,7 +314,6 @@ export default class TPSFinancesPlugin extends Plugin {
       if (this.syncing) throw new Error("Wait for the current finance operation to finish.");
       await new ManualFinanceStore(this.app, this.settings.financeFolder).updateValue(account.path || "", value, date);
       logger.flow("Manual", "asset-value-updated");
-      await this.refreshDashboard();
     }).open();
   }
 
@@ -331,8 +324,7 @@ export default class TPSFinancesPlugin extends Plugin {
       await store.ensureStructure();
       await store.createRule({ ...input, id: createLocalId("finance-rule") });
       logger.flow("Classification", "rule-created", { hasCategory: Boolean(input.category), tagCount: input.tags.length, priority: input.priority });
-      new Notice("Categorization rule created. Existing transactions were re-evaluated.");
-      await this.refreshDashboard();
+      new Notice("Categorization rule created.");
     }).open();
   }
 
@@ -349,7 +341,7 @@ export default class TPSFinancesPlugin extends Plugin {
       const current = budget.sourcePath
         ? model.budgetEntries?.find(entry => entry.sourcePath === budget.sourcePath && entry.id === budget.id)
         : budget;
-      if (!current) throw new Error("The budget note changed or was removed. Reopen the dashboard and try again.");
+      if (!current) throw new Error("The budget note changed or was removed. Reopen the budget editor and try again.");
       const categories=Array.from(new Set(model.transactions.map(transaction=>transaction.category).filter(Boolean))).sort();
       new FinanceBudgetModal(this.app,current,model.accounts,categories,async input=>{
         const save=this.budgetSave.catch(()=>{}).then(async()=>{
@@ -361,12 +353,11 @@ export default class TPSFinancesPlugin extends Plugin {
         });
         this.budgetSave=save;
         await save;
-        await this.refreshDashboard();
       }).open();
     } catch(error) { new Notice(`Could not open budget: ${error instanceof Error?error.message:String(error)}`); }
   }
 
-  editTransactionClassification(transaction: DashboardTransaction): void {
+  editTransactionClassification(transaction: FinanceTransaction): void {
     const financeId = transaction.financeId;
     const renderedFile = transaction.sourceFile;
     const sourcePath = transaction.sourcePath;
@@ -384,7 +375,6 @@ export default class TPSFinancesPlugin extends Plugin {
       if (!updated) throw new Error("The transaction could not be found.");
       logger.flow("Classification", "transaction-updated", { source: category ? "manual" : "automatic", tagCount: tags.length });
       new Notice(category || tags.length ? "Transaction classification saved." : "Transaction returned to automatic classification.");
-      await this.refreshDashboard();
     }).open();
   }
 
@@ -404,46 +394,6 @@ export default class TPSFinancesPlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
-  async renderHomeSummary(container: HTMLElement): Promise<void> {
-    const model = await this.getDashboardModel(undefined, "metadata");
-    container.empty();
-    container.addClass("tps-finances-home-summary");
-    if (!model.accounts.length) {
-      container.createDiv({ cls: "tps-finances-home-empty", text: "No accounts found. Add a manual account or import accounts with TishOS." });
-    } else {
-      const investmentAccountIds = new Set(model.holdings.map((holding) => holding.financeAccountId));
-      const cash = model.accounts.filter((account) => !investmentAccountIds.has(account.financeAccountId)).reduce((sum, account) => sum + (account.current || 0), 0);
-      const investments = model.holdings.reduce((sum, holding) => sum + holding.value, 0);
-      const month = localDate(new Date()).slice(0, 7);
-      const spending = -model.transactions.filter((transaction) => transaction.date.startsWith(month) && transaction.amount < 0 && isSpendingTransaction(transaction)).reduce((sum, transaction) => sum + transaction.amount, 0);
-      const metrics = container.createDiv({ cls: "tps-finances-home-metrics" });
-      homeMetric(metrics, "Net worth", cash + investments);
-      homeMetric(metrics, "Investments", investments);
-      homeMetric(metrics, "Spent this month", spending);
-      if (model.budgets.length) homeMetric(metrics, "Budget remaining", model.budgets.reduce((sum, budget) => sum + budget.monthlyLimit - budget.spent, 0));
-      const staleHoldings = model.holdings.filter((holding) => holding.stale);
-      if (staleHoldings.length) {
-        const oldest = staleHoldings.map((holding) => holding.asOf || "").filter(Boolean).sort()[0] || "an earlier sync";
-        container.createDiv({ cls: "tps-finances-home-empty", text: `Investment values include ${staleHoldings.length} last-known holding${staleHoldings.length === 1 ? "" : "s"} as of ${oldest}.` });
-      }
-    }
-    const open = container.createEl("button", { cls: "tps-finances-home-open", attr: { type: "button" } });
-    const icon = open.createSpan();
-    setIcon(icon, "arrow-up-right");
-    open.createSpan({ text: "Open finances" });
-    open.addEventListener("click", () => this.runUserAction("Open", "home", () => this.openDashboard()));
-  }
-
-  async openTransactionSource(transaction: DashboardTransaction): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(transaction.sourcePath);
-    if (!(file instanceof TFile)) throw new Error("The transaction ledger could not be found.");
-    const gcmApi = this.getGcmApi();
-    const leaf = gcmApi?.openFileInLeaf
-      ? await gcmApi.openFileInLeaf(file, false, () => this.app.workspace.getLeaf(false), { revealLeaf: true, active: true, reuseLeafIfNoExisting: true })
-      : this.app.workspace.getLeaf(false);
-    if (!gcmApi?.openFileInLeaf) await leaf.openFile(file);
-  }
-
   private async runUserAction(scope: string, trigger: string, action: () => Promise<void>): Promise<void> {
     try {
       await action();
@@ -460,7 +410,7 @@ export default class TPSFinancesPlugin extends Plugin {
 
   async reviewTransactionTitles(includeEmptyProperties = false): Promise<void> {
     const store = new AtomicFinanceStore(this.app, this.settings.financeFolder);
-    new TransactionTitleModal(this.app, await store.reviewTransactionTitles(includeEmptyProperties), store, () => this.refreshDashboard(), includeEmptyProperties).open();
+    new TransactionTitleModal(this.app, await store.reviewTransactionTitles(includeEmptyProperties), store, includeEmptyProperties).open();
   }
 
   async reviewLegacyTransactionMarkers(): Promise<{ markers: number; firstPath: string }> {
@@ -476,10 +426,8 @@ export default class TPSFinancesPlugin extends Plugin {
         try { await this.saveSettings(); }
         catch (error) {
           await this.reconcileStoredTransactionMode();
-          if (!this.legacyReviewRequired()) await this.refreshDashboard();
           throw error;
         }
-        await this.refreshDashboard();
       }
       return audit;
     } finally { this.syncing = false; }
@@ -491,7 +439,6 @@ export default class TPSFinancesPlugin extends Plugin {
     try {
       const result = await this.createStore().migrateLegacyTransactionLedgers();
       new Notice(`Converted ${result.moved} transactions; ${result.skipped} need review.`);
-      await this.refreshDashboard();
     } finally { this.syncing = false; }
   }
 
@@ -508,57 +455,6 @@ export default class TPSFinancesPlugin extends Plugin {
 
   private getGcmApi(): any {
     return (this.app as any)?.plugins?.getPlugin?.("tps-global-context-menu")?.api || null;
-  }
-
-  private registerGcmIntegration(gcmApi: any = this.getGcmApi()): void {
-    if (gcmApi === this.registeredGcmApi) return;
-    const unregister = this.unregisterGcmAction;
-    this.unregisterGcmAction = null;
-    this.registeredGcmApi = null;
-    unregister?.();
-    if (typeof gcmApi?.externalActions?.register !== "function") return;
-    this.unregisterGcmAction = gcmApi.externalActions.register({
-      id: "open-finances",
-      pluginId: "tps-finances",
-      order: 35,
-      icon: "landmark",
-      label: "Open finances",
-      title: "Open the TPS Finances dashboard",
-      isVisible: ({ file }: { file: TFile }) => {
-        const root = financePrefix(this.settings.financeFolder);
-        return this.isFinanceRecord(file) || Boolean(root && file.path.startsWith(root));
-      },
-      onClick: () => this.openDashboard(),
-    });
-    this.registeredGcmApi = gcmApi;
-  }
-
-  private async refreshDashboard(change?: { file: TAbstractFile; oldPath?: string; data?: string; deleted?: boolean }): Promise<void> {
-    const isFolder = change && !(change.file instanceof TFile);
-    if (change && !isFolder && ![change.file.path, change.oldPath || ""].some(path => /\.md$/i.test(path))) return;
-    for (const leaf of this.app.workspace.getLeavesOfType(TPS_FINANCES_VIEW_TYPE)) {
-      const view = leaf.view;
-      if (!(view instanceof TPSFinancesView)) continue;
-      if (change && !view.dependsOnSource(change.file.path, isFolder)
-        && !(change.oldPath && view.dependsOnSource(change.oldPath, isFolder))
-        && (change.deleted || !this.dashboardChangeMayIntroduceRecord(change.file, change.data))) continue;
-      await view.render();
-    }
-  }
-
-  private dashboardChangeMayIntroduceRecord(file: TAbstractFile, data?: string): boolean {
-    if (file instanceof TFile) {
-      const fm = financeProperties(this.app).cache(this.app, file);
-      if (fm.financeAccountId || fm.financeId || fm.financeRuleId || fm.financeBudgetId
-        || ["account", "financeRule", "financeBudget"].includes(fm.kind)
-        || ["holding", "financeSnapshot"].includes(fm.type)) return true;
-    }
-    if (!this.settings.financeFolder) return false;
-    return ["Accounts", "Transactions", "Rules", "Budgets", "Holdings", "Snapshots"].some(section => {
-      const prefix = financePrefix(this.settings.financeFolder, section);
-      return file.path.startsWith(prefix) || (!(file instanceof TFile)
-        && (file.path === prefix.slice(0, -1) || prefix.startsWith(`${file.path}/`)));
-    });
   }
 
   private readAccountsFromVault(
@@ -691,11 +587,6 @@ export default class TPSFinancesPlugin extends Plugin {
     return latest;
   }
 
-  private isFinanceRecord(file: TFile): boolean {
-    const fm = financeProperties(this.app).cache(this.app, file) || {};
-    return Boolean(fm.financeAccountId || fm.financeId || fm.financeRuleId || fm.financeBudgetId || fm.type === "financeSnapshot");
-  }
-
   private accountFiles(): TFile[] {
     const prefix = financePrefix(this.settings.financeFolder, "Accounts");
     return this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(prefix) && Boolean(financeProperties(this.app).cache(this.app, file)?.financeAccountId) && (Boolean(this.settings.financeFolder) || financeProperties(this.app).cache(this.app, file)?.kind === "account"));
@@ -729,7 +620,7 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function parseDashboardTransaction(line: string, sourcePath: string, sourceLine: number): DashboardTransaction | null {
+function parseFinanceTransaction(line: string, sourcePath: string, sourceLine: number): FinanceTransaction | null {
   const financeId = field(line, "financeId");
   const date = field(line, "date");
   if (!financeId || !date) return null;
@@ -795,25 +686,6 @@ function accountSortRank(type: string): number {
   if (type === "loan") return 2;
   if (type === "investment") return 3;
   return 4;
-}
-
-function homeMetric(parent: HTMLElement, label: string, value: number): void {
-  const metric = parent.createDiv({ cls: "tps-finances-home-metric" });
-  metric.createEl("small", { text: label });
-  metric.createEl("strong", { text: signedMoney(value, "USD", false) });
-}
-
-function signedMoney(value: number, currency: string, showSign = true): string {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: currency || "USD",
-    maximumFractionDigits: 2,
-    signDisplay: showSign ? "always" : "auto",
-  }).format(value);
-}
-
-function isSpendingTransaction(transaction: DashboardTransaction): boolean {
-  return transaction.type === "transaction" && ["purchase", "payment", "fee", "cash-advance"].includes(transaction.subtype);
 }
 
 function userFacingError(error: unknown): string {

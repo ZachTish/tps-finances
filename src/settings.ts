@@ -19,10 +19,22 @@ const FINANCE_SETTINGS_ROUTES: Array<{
   {
     id: "rules",
     title: "Rules & budgets",
-    description: "Open the dashboard or create a rule or monthly budget.",
+    description: "Create rules and budgets, or open your Budgets Base.",
   },
-  { id: "properties", title: "Properties", description: "Choose the property names written to finance notes." },
+  { id: "properties", title: "Properties", description: "Configure manual Finance fields and names used to read existing records." },
 ];
+
+// Presentation only: these mappings stay in the existing codec and migration owner.
+const IMPORTED_PROPERTIES = new Set([
+  "authorizedDate", "pending", "merchant", "providerName", "providerTitle", "providerCategory", "providerCategoryDetail", "investmentType",
+  "institution", "accountMask", "available", "limit", "name", "ticker", "holdingType", "quantity", "price", "fees", "value", "costBasis", "asOf", "stale", "active",
+]);
+const EARLIER_PROPERTIES: Record<string, string> = {
+  accountName: "Reads older account names. New manual accounts use title without a second name field.",
+  categoryOverride: "Reads older transaction categories. New manual categories use category in Common.",
+  transactionLogTarget: "Retained for older property mappings and explicit renames. Current manual actions do not use a transaction log target.",
+  migrationSource: "Written only by explicit older-entry conversion to verify its source. Manual entries do not add it.",
+};
 
 export class TPSFinancesSettingTab extends PluginSettingTab {
   private activeRoute: FinanceSettingsRoute = "data";
@@ -42,6 +54,8 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
   private renderSettings(focusRouteHeading = false, focusControlName?: string): void {
     const { containerEl } = this;
     const scrollTop = containerEl.scrollTop;
+    const expanded = new Set(Array.from(containerEl.querySelectorAll<HTMLDetailsElement>("details[open]"))
+      .map(section => section.dataset.financeDisclosure));
     containerEl.empty();
     containerEl.createEl("h2", { text: "TPS Finances" });
     new Setting(containerEl).setName("Bank connections")
@@ -82,6 +96,9 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     else if (route.id === "properties") this.renderPropertySettings(page);
     else this.renderRulesSettings(page);
 
+    for (const section of Array.from(containerEl.querySelectorAll<HTMLDetailsElement>("details[data-finance-disclosure]"))) {
+      section.open = expanded.has(section.dataset.financeDisclosure);
+    }
     if (!focusRouteHeading) containerEl.scrollTop = scrollTop;
     if (focusRouteHeading || focusControlName) {
       requestAnimationFrame(() => {
@@ -103,7 +120,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
 
   private renderPropertySettings(parent: HTMLElement): void {
     new Setting(parent).setName("Record classification")
-      .setDesc("Configure each record's kind list in Global Context Menu. Finances uses those mappings for new records and generated views; older classifications remain readable during migration.")
+      .setDesc("Global Context Menu owns record classification, Scheduled and record IDs. Review older IDs under Data & storage → Older records.")
       .addButton(button => button.setButtonText("Configure in GCM").onClick(() => {
         const open = (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.ui?.openCustomPropertySettings;
         if (typeof open !== "function" || !open()) new Notice("Enable TPS Global Context Menu to configure record classifications.");
@@ -119,28 +136,12 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         }));
       return;
     }
-    new Setting(parent).setName("Record IDs")
-      .setDesc("New finance notes use one record ID. Review existing notes to remove matching duplicate self IDs. Notes with only an older ID stay unchanged and readable. Account and security references remain unchanged.")
-      .addButton(button => button.setButtonText("Review existing IDs").onClick(async () => {
-        button.setDisabled(true);
-        try {
-          const preview = await this.plugin.previewFinanceIdentityConsolidation();
-          if (!preview.notes.length && !preview.bases.length && !preview.conflicts.length) {
-            new Notice("No matching duplicate finance IDs or generated views need changes.");
-            return;
-          }
-          new FinanceIdentityModal(this.app, preview,
-            reviewed => this.plugin.consolidateFinanceIdentities(reviewed),
-            () => this.renderSettings(false, "Record IDs")).open();
-        } catch (error) { new Notice(String(error), 12000); }
-        finally { button.setDisabled(false); }
-      }));
     if (!this.propertyDraft) {
       this.propertyBaseline = new FinanceProperties(this.plugin.settings.propertyNames);
       this.propertyDraft = { ...this.propertyBaseline.names.keys };
     }
     new Setting(parent).setName("Property names")
-      .setDesc("Choose Finance field names. The toggle stores a name explicitly; turning it off restores the default name, not whether the field is written. Optional empty fields are omitted by their creation/edit action. Global Context Menu owns record classification, Scheduled and record IDs. Renames ask whether to update existing notes; stable ID values stay unchanged.")
+      .setDesc("Current manual fields appear first. Imported and older-record mappings remain below. The toggle pins a property name; turning it off restores the default name, not whether a field is written. Import output is configured in TishOS. Save asks before renaming existing properties; ID values stay unchanged.")
       .addButton(button => button.setButtonText("Save property names").setCta().onClick(async () => {
         button.setDisabled(true);
         try {
@@ -171,8 +172,19 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       });
       dropdown.selectEl.setAttribute("aria-label", "Property group");
     });
+    const keys = PROPERTY_GROUPS[this.propertyGroup];
+    const earlier = keys.filter(key => IMPORTED_PROPERTIES.has(key) || key in EARLIER_PROPERTIES);
+    this.renderPropertyFields(parent, keys.filter(key => !earlier.includes(key)));
+    if (earlier.length) {
+      const section = this.compatibilitySection(parent, "imported-properties", `Imported and older records (${earlier.length})`);
+      section.createEl("p", {text: "These names read existing data or support explicit conversion. Changing them does not change TishOS import settings. Conversion can preserve source values; opening this section changes no notes."});
+      this.renderPropertyFields(section, earlier);
+    }
+  }
+
+  private renderPropertyFields(parent: HTMLElement, keys: readonly string[]): void {
     const gcmKinds = (this.app as any).plugins?.plugins?.["tps-global-context-menu"]?.api?.frontmatterKinds;
-    for (const key of PROPERTY_GROUPS[this.propertyGroup]) {
+    for (const key of keys) {
       if (gcmKinds?.version === 2 && (key === "kind" || key === "date")) {
         const currentKey = gcmKinds.propertyKey?.(key === "date" ? "scheduled" : "kind");
         new Setting(parent).setName(key === "date" ? "Scheduled" : "Record kind")
@@ -181,11 +193,12 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
       }
       let explicitToggle: ToggleComponent | null = null;
       const field = new Setting(parent).setName(propertyLabel(key));
-      if (key === "category") field.setDesc("Shared saved category for transactions, rules and budgets.");
-      if (key === "categoryOverride") field.setDesc("Reads older transaction categories. New manual categories use category in Common.");
-      if (key === "accountName") field.setDesc("Reads older account names. New manual accounts use title without a second name field.");
-      if (["providerName", "providerTitle", "providerCategory", "providerCategoryDetail"].includes(key)) field.setDesc("Reads imported provider data. The importing app controls which provider fields it writes; Finance does not import or add them.");
-      if (key === "type" && gcmKinds?.version === 2) field.setDesc("Reads older records and distinguishes transaction kinds that share one list value. Finances omits it when the configured kind values differ.");
+      field.setDesc(EARLIER_PROPERTIES[key] || (IMPORTED_PROPERTIES.has(key)
+        ? "Reads imported or manually edited data. TishOS controls import output; Finance manual actions do not add this field."
+        : key === "category" ? "Shared saved category for transactions, rules and budgets."
+        : key === "type" && gcmKinds?.version === 2
+          ? "Reads older records and distinguishes transaction kinds that share one list value. Finances omits it when the configured kind values differ."
+          : "Used by Finance manual creation or editing and by existing-record readers."));
       field.addText(text => {
         text.setValue(this.propertyDraft![key] ?? key).onChange(value => {
           this.propertyDraft![key] = value.trim();
@@ -209,16 +222,33 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
   }
 
   private renderDataSettings(parent: HTMLElement): void {
-    new Setting(parent).setName("Legacy inline transactions")
+    new Setting(parent)
+      .setName("Finance folder")
+      .setDesc("Leave blank for the vault root, without subfolders. Existing notes stay where they are.")
+      .addText((text) => text.setPlaceholder("Vault root").setValue(this.plugin.settings.financeFolder).onChange(async (value) => {
+        try {
+          await this.plugin.setFinanceFolder(value);
+        } catch (error) { new Notice(String(error)); }
+      }));
+
+    new Setting(parent).setName("Debug logging")
+      .setDesc("Log record operations without tokens or transaction descriptions.")
+      .addToggle(toggle => toggle.setValue(this.plugin.settings.enableLogging).onChange(async value => {
+        this.plugin.settings.enableLogging = value;
+        await this.plugin.saveSettings();
+      }));
+
+    const earlier = this.compatibilitySection(parent, "older-records", "Older records");
+    new Setting(earlier).setName("Legacy inline transactions")
       .setDesc(this.plugin.legacyReviewRequired()
-        ? "Older inline entries may still exist. Transaction notes are the active format; adding and syncing transactions stay paused until a full check finds no remaining markers. Existing notes are left untouched."
+        ? "Older inline entries may still exist. Transaction notes are the active format; adding transactions stays paused until a full check finds no remaining markers. Existing notes are left untouched."
         : "Transaction notes are the active format. Check older inline entries when reviewing an imported or older vault; the check changes no notes.")
       .addButton(button => button.setButtonText("Check old entries").onClick(async () => {
         button.setDisabled(true);
         try {
           const result = await this.plugin.reviewLegacyTransactionMarkers();
           new Notice(result.markers
-            ? `${result.markers} inline financeId marker${result.markers === 1 ? "" : "s"} remain; first file: ${result.firstPath}. Review or convert them before syncing. No notes changed.`
+            ? `${result.markers} inline financeId marker${result.markers === 1 ? "" : "s"} remain; first file: ${result.firstPath}. Review or convert them before adding transactions. No notes changed.`
             : "No inline financeId markers remain. Transaction writes are ready.", 12000);
         } catch (error) { new Notice(String(error), 12000); }
         finally { this.renderSettings(false, "Legacy inline transactions"); }
@@ -230,34 +260,39 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
         finally { button.setDisabled(false); }
       }));
 
-    new Setting(parent)
-      .setName("Finance folder")
-      .setDesc("Leave blank for the vault root, without subfolders. Existing notes stay where they are.")
-      .addText((text) => text.setPlaceholder("Vault root").setValue(this.plugin.settings.financeFolder).onChange(async (value) => {
+    this.renderIdentityReview(earlier);
+  }
+
+  private compatibilitySection(parent: HTMLElement, id: string, label: string): HTMLDetailsElement {
+    const section = parent.createEl("details", {cls: "tps-finances-settings-compatibility", attr: {"data-finance-disclosure": id}});
+    section.createEl("summary", {text: label});
+    return section;
+  }
+
+  private renderIdentityReview(parent: HTMLElement): void {
+    new Setting(parent).setName("Record IDs")
+      .setDesc("New finance notes use one record ID. Review existing notes to remove matching duplicate self IDs. Notes with only an older ID stay unchanged and readable. Account and security references remain unchanged.")
+      .addButton(button => button.setButtonText("Review existing IDs").onClick(async () => {
+        button.setDisabled(true);
         try {
-          await this.plugin.setFinanceFolder(value);
-        } catch (error) { new Notice(String(error)); }
+          const preview = await this.plugin.previewFinanceIdentityConsolidation();
+          if (!preview.notes.length && !preview.bases.length && !preview.conflicts.length) {
+            new Notice("No matching duplicate finance IDs or generated views need changes.");
+            return;
+          }
+          new FinanceIdentityModal(this.app, preview,
+            reviewed => this.plugin.consolidateFinanceIdentities(reviewed),
+            () => this.renderSettings(false, "Record IDs")).open();
+        } catch (error) { new Notice(String(error), 12000); }
+        finally { button.setDisabled(false); }
       }));
-
-    new Setting(parent).setName("Debug logging")
-      .setDesc("Log record and sync outcomes without tokens or transaction descriptions.")
-      .addToggle(toggle => toggle.setValue(this.plugin.settings.enableLogging).onChange(async value => {
-        this.plugin.settings.enableLogging = value;
-        await this.plugin.saveSettings();
-      }));
-
   }
 
   private renderRulesSettings(parent: HTMLElement): void {
     parent.createEl("p", {
-      text: "Rules and budgets are ordinary notes. Use these shortcuts to create them, then manage the full collections from the dashboard or their Bases.",
+      text: "Rules and budgets are ordinary notes. Use these shortcuts to create them, then manage the full collections in their notes or your Bases.",
       cls: "tps-finances-settings-callout",
     });
-
-    new Setting(parent)
-      .setName("Finance dashboard")
-      .setDesc("Review accounts, recent transactions, rules, budgets, and sync status.")
-      .addButton((button) => button.setButtonText("Open finances").setCta().onClick(() => void this.plugin.openDashboard()));
 
     new Setting(parent)
       .setName("Categorization rules")
@@ -267,7 +302,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
     new Setting(parent)
       .setName("Monthly budgets")
       .setDesc("Plan income, fixed expenses, flexible spending, and savings contributions.")
-      .addButton((button) => button.setButtonText("Open budget").onClick(() => void this.plugin.openDashboard("budget")))
+      .addButton((button) => button.setButtonText("Open Budgets Base").onClick(() => void this.plugin.openFinanceBase("Budgets").catch(error => new Notice(String(error)))))
       .addButton((button) => button.setButtonText("Add budget").onClick(() => this.plugin.addMonthlyBudget()));
   }
 }
