@@ -1,11 +1,13 @@
 {
   "name": "tps-finances",
-  "version": "9.0.0",
+  "version": "9.1.0",
   "description": "Accounts, transactions, and investments as atomic notes for TPS.",
   "main": "main.js",
   "scripts": {
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node --test scripts/test-import-retirement.mjs scripts/test-settings-ownership.mjs && node --test scripts/test-finance-summary.mjs scripts/test-finance-properties.mjs scripts/test-finance-identity-migration.mjs scripts/test-transaction-titles.mjs scripts/test-flex-budget.mjs scripts/test-finance-model-errors.mjs scripts/test-transaction-index-batching.mjs scripts/test-finance-contract.mjs scripts/test-atomic-finance.mjs scripts/test-manual-finance.mjs scripts/test-mobile-loading.mjs"
+    "build": "npm run settings:search:check && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node --test scripts/test-native-settings-search.mjs && node --test scripts/test-import-retirement.mjs scripts/test-settings-ownership.mjs && node --test scripts/test-finance-summary.mjs scripts/test-finance-properties.mjs scripts/test-finance-identity-migration.mjs scripts/test-transaction-titles.mjs scripts/test-flex-budget.mjs scripts/test-finance-model-errors.mjs scripts/test-transaction-index-batching.mjs scripts/test-finance-contract.mjs scripts/test-atomic-finance.mjs scripts/test-manual-finance.mjs scripts/test-mobile-loading.mjs",
+    "settings:search": "node scripts/generate-settings-search.mjs",
+    "settings:search:check": "node scripts/generate-settings-search.mjs --check"
   },
   "license": "MIT",
   "devDependencies": {

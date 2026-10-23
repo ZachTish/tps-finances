@@ -47,7 +47,9 @@ function load(file,bindings){const code=ts.transpileModule(readFileSync(file,'ut
   const module={exports:{}};new Function('module','exports','require',code)(module,module.exports,id=>{assert.ok(id in bindings,id);return bindings[id];});return module.exports;}
 const properties=load('src/finance-properties.ts',{obsidian});
 const migrations=load('src/property-migration.ts',{obsidian,'./bounded-work':{},'./finance-properties':properties,'./finance-store':{},'./atomic-finance-store':{},'./finance-paths':{}});
-const {TPSFinancesSettingTab}=load('src/settings.ts',{obsidian,'./finance-properties':properties,'./property-migration':{...migrations,async previewPropertyMigration(app,from,to,root){app.counts.previews++;return {journal:{notes:[],from:from.names,to:to.names,root},conflicts:[]};}}});
+const search=load('src/native-settings-search.ts',{});
+const catalog=load('src/settings-search-catalog.ts',{});
+const {TPSFinancesSettingTab}=load('src/settings.ts',{obsidian,'./native-settings-search':search,'./settings-search-catalog':catalog,'./finance-properties':properties,'./property-migration':{...migrations,async previewPropertyMigration(app,from,to,root){app.counts.previews++;return {journal:{notes:[],from:from.names,to:to.names,root},conflicts:[]};}}});
 const priorFrame=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=fn=>fn();test.after(()=>{globalThis.requestAnimationFrame=priorFrame;});
 const label=key=>key==='kind'?'Record kind':key==='type'?'Record type':key.replace(/([A-Z])/g,' $1').replace(/^./,x=>x.toUpperCase()).replace(/(?<=.)[A-Z]/g,x=>x.toLowerCase());
 const poison=new Proxy({}, {get(){throw Error('Settings accessed vault or provider state');}});

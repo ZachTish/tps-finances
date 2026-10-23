@@ -1,3 +1,5 @@
+import { nativeSettingsSearch, focusSettingsSearchResult, type SettingsSearchEntry } from "./native-settings-search";
+import { SETTINGS_SEARCH_ENTRIES, SETTINGS_SEARCH_ROUTES } from "./settings-search-catalog";
 import { FinanceProperties, PROPERTY_GROUPS, FINANCE_PROPERTY_KEYS, financeIdentityKey } from "./finance-properties";
 import type { FinanceIdentityMigrationPreview } from "./identity-migration";
 import { previewPropertyMigration, propertyChanges } from "./property-migration";
@@ -37,6 +39,41 @@ const EARLIER_PROPERTIES: Record<string, string> = {
 };
 
 export class TPSFinancesSettingTab extends PluginSettingTab {
+  private searchContentEl: HTMLElement | null = null;
+  private get settingsContentEl(): HTMLElement {
+    return this.searchContentEl?.isConnected ? this.searchContentEl : this.containerEl;
+  }
+
+  getSettingDefinitions() {
+    const properties: SettingsSearchEntry[] = Object.entries(PROPERTY_GROUPS).flatMap(([group, keys]) => keys.map(key => ({
+      name: propertyLabel(key), desc: `${group} property name. Changes use the existing reviewed migration.`,
+      aliases: [key], key, route: 'properties',
+    })));
+    return nativeSettingsSearch([...SETTINGS_SEARCH_ENTRIES, ...properties], SETTINGS_SEARCH_ROUTES,
+      container => {
+        this.searchContentEl = container;
+        this.display();
+        return () => { this.hide(); if (this.searchContentEl === container) this.searchContentEl = null; };
+      }, entry => this.openSearchResult(entry));
+  }
+
+  private openSearchResult(entry: SettingsSearchEntry): void {
+    this.activeRoute = entry.route as FinanceSettingsRoute;
+    if (entry.key) this.propertyGroup = Object.entries(PROPERTY_GROUPS).find(([, keys]) => keys.includes(entry.key!))?.[0] || this.propertyGroup;
+    const manager = (this.app as App & { setting?: { openTabById?: (id: string) => void } }).setting;
+    manager?.openTabById?.(this.plugin.manifest.id);
+    this.display();
+    if (!focusSettingsSearchResult(this.settingsContentEl, entry.name)) {
+      const message = this.settingsContentEl.createDiv({
+        text: `“${entry.name}” is in this area. Its control appears when the relevant feature or saved item is selected.`,
+        attr: { role: 'status', tabindex: '-1' },
+      });
+      this.settingsContentEl.prepend(message);
+      message.focus();
+      message.scrollIntoView({ block: 'start' });
+    }
+  }
+
   private activeRoute: FinanceSettingsRoute = "data";
   private propertyGroup = "Common";
   private propertyDraft: Record<string, string> | null = null;
@@ -52,7 +89,7 @@ export class TPSFinancesSettingTab extends PluginSettingTab {
   }
 
   private renderSettings(focusRouteHeading = false, focusControlName?: string): void {
-    const { containerEl } = this;
+    const containerEl = this.settingsContentEl;
     const scrollTop = containerEl.scrollTop;
     const expanded = new Set(Array.from(containerEl.querySelectorAll<HTMLDetailsElement>("details[open]"))
       .map(section => section.dataset.financeDisclosure));
